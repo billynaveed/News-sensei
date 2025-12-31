@@ -24,13 +24,14 @@ client/
 │   ├── lib/            # Utility functions
 │   ├── pages/          # Page components
 │   │   ├── dashboard.tsx   # Main lead view with collapsible insights
-│   │   ├── settings.tsx    # Configuration page with log retention
+│   │   ├── settings.tsx    # Configuration page with source/RSS management
 │   │   └── logs.tsx        # Scan history with expandable details
 │   └── App.tsx         # Root component with routing
 server/
 ├── routes.ts           # API endpoints
 ├── storage.ts          # PostgreSQL database storage
 ├── scanner.ts          # News scanning & AI extraction with progress tracking
+├── adapters.ts         # News fetching adapters (RSS, Google News, ScrapingBee)
 ├── sendgrid.ts         # Email alert integration
 ├── db.ts               # Database connection
 └── index.ts            # Server entry point
@@ -43,7 +44,7 @@ shared/
 2. **Lead Cards** - Show headline, source, companies, founders, AI summary, keywords with colored action buttons
 3. **Filters** - Filter by status, region, source tier, priority level
 4. **Saved Leads** - Dedicated sidebar section showing saved lead count
-5. **Settings** - Configure keywords, regions, email alerts, summary length, log retention period
+5. **Settings** - Configure keywords, regions, email alerts, scanning methods, sources, and RSS feeds
 6. **Scan Logs** - View history with expandable details (sources searched, articles processed, errors)
 7. **Scan Progress** - Real-time tracking of scan status via polling
 
@@ -53,7 +54,16 @@ shared/
 - `GET /api/leads/stats` - Get lead statistics
 - `PATCH /api/leads/:id` - Update lead status
 - `GET /api/settings` - Get user settings
-- `PUT /api/settings` - Update user settings (includes logRetentionDays)
+- `PUT /api/settings` - Update user settings (includes scanning method toggles)
+- `GET /api/sources` - Get all sources
+- `POST /api/sources` - Create a new source
+- `PATCH /api/sources/:id` - Update a source
+- `DELETE /api/sources/:id` - Delete a source
+- `GET /api/sources/:sourceId/rss-feeds` - Get RSS feeds for a source
+- `GET /api/rss-feeds` - Get all active RSS feeds with source metadata
+- `POST /api/rss-feeds` - Create a new RSS feed
+- `PATCH /api/rss-feeds/:id` - Update an RSS feed
+- `DELETE /api/rss-feeds/:id` - Delete an RSS feed
 - `GET /api/scan-logs` - Get scan history
 - `GET /api/scan-logs/:id` - Get specific scan log details
 - `POST /api/scan` - Trigger manual scan (returns scanId)
@@ -62,8 +72,13 @@ shared/
 
 ## Database Schema
 - **leads** - News article matches with AI-extracted data
-- **settings** - User preferences including logRetentionDays
-- **sources** - Configured news sources
+- **settings** - User preferences including:
+  - Global scanning method toggles (googleNewsEnabled, rssEnabled, scrapingBeeEnabled)
+  - Keywords, regions, email settings, summary length, log retention
+- **sources** - News websites identified by unique domain:
+  - name, domain (unique), tier (tier1/tier2/tier3), active
+- **rss_feeds** - RSS feed subcategories per source:
+  - sourceId (foreign key), name, url, active
 - **scan_logs** - Detailed scan history with sourcesSearched, articlesProcessed, errors
 
 ## User Preferences
@@ -77,27 +92,39 @@ npm run dev
 ```
 Frontend runs on port 5000.
 
-## Recent Changes
-- Implemented real news source fetching via RSS adapters replacing simulated articles
-- Added Sources management UI in Settings with tier-based grouping and enable/disable toggles
-- Seeded 12 curated Southeast Asian financial news sources (Business Times, SCMP, Tech in Asia, etc.)
-- Created modular adapter interface (RSSAdapter, ScrapeAdapter, ManualAdapter) for different source types
-- Added URL normalization for deduplication (removes tracking params, standardizes to HTTPS)
-- Scanner now filters enabled sources by selected regions before fetching
-- Added collapsible dashboard insights panel consolidating stats, filters, and scan button
-- Implemented colored action buttons (green Save, blue Contact, red Dismiss)
-- Added Saved Leads sidebar section with count
-- Extended scan logging with detailed tracking: sources searched, articles processed, duration, errors
-- Added expandable log rows showing detailed scan information
-- Implemented configurable log retention period (1-30 days) with automatic cleanup
-- Added scan progress tracking with real-time status updates
-- Database storage with PostgreSQL for data persistence across restarts
-
 ## News Source Architecture
-- **Sources Table**: name, url, rssUrl, type (rss/api/scrape/manual), tier (tier1/tier2/tier3), region, enabled
-- **Adapters**: Modular system for fetching from different source types
-  - ScrapingBeeAdapter: Primary method - uses ScrapingBee API to extract articles from any website
-  - RSSAdapter: Fallback method - parses RSS feeds, filters by keywords in title/content
-  - ManualAdapter: For sources without auto-fetching capability
-- **Fetch Strategy**: ScrapingBee first → RSS fallback → deduplication
-- **Deduplication**: URL normalization removes tracking params (utm_*, ref) and standardizes protocol
+
+### Domain-Based Source Model
+Sources are identified by their unique domain (e.g., "straitstimes.com") rather than full URLs. This simplifies deduplication and allows multiple RSS feeds per source.
+
+### Global Scanning Method Toggles
+Three independent toggles that apply to ALL active sources:
+1. **Google News** - Searches Google News RSS for articles from each source's domain
+2. **RSS Feeds** - Fetches from all active RSS feeds in the rss_feeds table
+3. **ScrapingBee** - Fallback web scraping when no articles found from other methods
+
+### RSS Feeds Table
+Each source can have multiple RSS feed subcategories (e.g., "Business", "Startups & Tech"). Users can add, enable/disable, or remove individual feeds.
+
+### Fetch Strategy
+1. If RSS enabled: Fetch from all active RSS feeds, filter by keywords
+2. If Google News enabled: Search Google News for each source's domain
+3. If ScrapingBee enabled: Only used as fallback when a source has zero articles from above methods
+4. Deduplicate all results by normalized URL
+
+### Adapters
+- `fetchFromRssFeed()` - Parses RSS feeds, filters by keywords
+- `fetchFromGoogleNews()` - Searches Google News RSS using site:domain
+- `fetchFromScrapingBee()` - Web scraping with article extraction rules
+- `fetchAllArticles()` - Orchestrates all methods based on global toggles
+
+### Deduplication
+URL normalization removes tracking params (utm_*, ref) and standardizes to HTTPS protocol.
+
+## Recent Changes
+- Refactored news source management to use domain-based identification
+- Added global scanning method toggles (Google News, RSS, ScrapingBee) in settings
+- Created separate rss_feeds table for per-source RSS feed subcategories
+- Updated Settings UI with collapsible source cards showing RSS feeds
+- Fixed circular dependency by making scanner pass data to adapters as parameters
+- Maintained ScrapingBee as fallback-only method when other sources return no articles
