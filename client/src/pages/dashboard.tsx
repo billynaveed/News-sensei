@@ -16,7 +16,9 @@ import {
   Calendar,
   TrendingUp,
   AlertCircle,
-  Clock
+  Clock,
+  ChevronDown,
+  ChevronUp
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardFooter } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -34,6 +36,11 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Lead, LeadStatus, PriorityLevel, SourceTier } from "@shared/schema";
 
@@ -302,6 +309,8 @@ export default function Dashboard() {
     status: filterParam === "saved" ? "saved" : "active",
   });
 
+  const [statsExpanded, setStatsExpanded] = useState(true);
+
   useEffect(() => {
     if (filterParam === "saved") {
       setFilters(f => ({ ...f, status: "saved" }));
@@ -357,23 +366,67 @@ export default function Dashboard() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 p-6 border-b border-border">
-        <StatsCard 
-          title="Today's Leads" 
-          value={stats?.today ?? 0} 
-          icon={TrendingUp}
-        />
-        <StatsCard 
-          title="This Week" 
-          value={stats?.thisWeek ?? 0} 
-          icon={Calendar}
-        />
-        <StatsCard 
-          title="High Priority" 
-          value={stats?.highPriority ?? 0} 
-          icon={AlertCircle}
-        />
-      </div>
+      <Collapsible open={statsExpanded} onOpenChange={setStatsExpanded}>
+        <div className="border-b border-border">
+          {statsExpanded ? (
+            <CollapsibleContent forceMount>
+              <div className="p-6 pb-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <StatsCard 
+                    title="Today's Leads" 
+                    value={stats?.today ?? 0} 
+                    icon={TrendingUp}
+                  />
+                  <StatsCard 
+                    title="This Week" 
+                    value={stats?.thisWeek ?? 0} 
+                    icon={Calendar}
+                  />
+                  <StatsCard 
+                    title="High Priority" 
+                    value={stats?.highPriority ?? 0} 
+                    icon={AlertCircle}
+                  />
+                </div>
+              </div>
+              <div className="flex justify-center pb-2">
+                <CollapsibleTrigger asChild>
+                  <Button variant="ghost" size="sm" data-testid="button-collapse-stats">
+                    <ChevronUp className="h-4 w-4 mr-1" />
+                    Collapse
+                  </Button>
+                </CollapsibleTrigger>
+              </div>
+            </CollapsibleContent>
+          ) : (
+            <div className="flex items-center justify-between gap-4 px-6 py-3">
+              <div className="flex items-center gap-6 text-sm">
+                <div className="flex items-center gap-2">
+                  <TrendingUp className="h-4 w-4 text-primary" />
+                  <span className="text-muted-foreground">Today:</span>
+                  <span className="font-bold tabular-nums">{stats?.today ?? 0}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Calendar className="h-4 w-4 text-primary" />
+                  <span className="text-muted-foreground">This Week:</span>
+                  <span className="font-bold tabular-nums">{stats?.thisWeek ?? 0}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 text-primary" />
+                  <span className="text-muted-foreground">High Priority:</span>
+                  <span className="font-bold tabular-nums">{stats?.highPriority ?? 0}</span>
+                </div>
+              </div>
+              <CollapsibleTrigger asChild>
+                <Button variant="ghost" size="sm" data-testid="button-expand-stats">
+                  <ChevronDown className="h-4 w-4 mr-1" />
+                  Expand
+                </Button>
+              </CollapsibleTrigger>
+            </div>
+          )}
+        </div>
+      </Collapsible>
 
       <div className="sticky top-0 z-50 bg-background border-b border-border p-4">
         <div className="flex items-center justify-between gap-4 flex-wrap">
