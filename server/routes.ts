@@ -3,7 +3,7 @@ import { createServer, type Server } from "http";
 import { z } from "zod";
 import { storage } from "./storage";
 import { sendTestEmail, sendLeadAlertEmail } from "./sendgrid";
-import { scanForLeads } from "./scanner";
+import { scanForLeads, getScanProgress } from "./scanner";
 import type { LeadStatus } from "@shared/schema";
 
 const updateLeadStatusSchema = z.object({
@@ -18,12 +18,26 @@ const updateSettingsSchema = z.object({
   emailFrequency: z.enum(["hourly", "daily", "weekly"]).optional(),
   emailEnabled: z.boolean().optional(),
   alertEmail: z.string().email().optional(),
+  logRetentionDays: z.number().min(1).max(30).optional(),
 });
 
 export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
+  // Run log cleanup on startup
+  try {
+    const settings = await storage.getSettings();
+    if (settings) {
+      const deletedCount = await storage.cleanupOldScanLogs(settings.logRetentionDays ?? 2);
+      if (deletedCount > 0) {
+        console.log(`Cleaned up ${deletedCount} old scan logs on startup`);
+      }
+    }
+  } catch (error) {
+    console.error("Error cleaning up scan logs on startup:", error);
+  }
+
   // Leads endpoints
   app.get("/api/leads", async (req, res) => {
     try {
@@ -111,6 +125,19 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/scan-logs/:id", async (req, res) => {
+    try {
+      const log = await storage.getScanLogById(req.params.id);
+      if (!log) {
+        return res.status(404).json({ error: "Scan log not found" });
+      }
+      res.json(log);
+    } catch (error) {
+      console.error("Error fetching scan log:", error);
+      res.status(500).json({ error: "Failed to fetch scan log" });
+    }
+  });
+
   // Trigger scan endpoint
   app.post("/api/scan", async (req, res) => {
     try {
@@ -119,6 +146,20 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error triggering scan:", error);
       res.status(500).json({ error: "Failed to trigger scan" });
+    }
+  });
+
+  // Scan progress endpoint
+  app.get("/api/scan-progress/:scanId", async (req, res) => {
+    try {
+      const progress = getScanProgress(req.params.scanId);
+      if (!progress) {
+        return res.json({ status: "not_found" });
+      }
+      res.json(progress);
+    } catch (error) {
+      console.error("Error fetching scan progress:", error);
+      res.status(500).json({ error: "Failed to fetch scan progress" });
     }
   });
 

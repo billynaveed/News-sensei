@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import { storage } from "./storage";
 import { sendLeadAlertEmail } from "./sendgrid";
-import type { InsertLead, PriorityLevel, SourceTier } from "@shared/schema";
+import type { InsertLead, PriorityLevel, SourceTier, SourceSearched, ArticleProcessed } from "@shared/schema";
 
 const openai = new OpenAI({
   apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
@@ -163,63 +163,195 @@ Return only valid JSON, no markdown.`;
   }
 }
 
-export async function scanForLeads(): Promise<{ articlesScanned: number; matchesFound: number; newLeads: number; duplicatesSkipped: number }> {
+export interface ScanProgress {
+  status: "scanning" | "processing" | "complete" | "error";
+  currentSource?: string;
+  articlesFound?: number;
+  articlesProcessed?: number;
+  totalArticles?: number;
+  message?: string;
+}
+
+// In-memory scan progress tracking
+const scanProgress: Map<string, ScanProgress> = new Map();
+
+export function getScanProgress(scanId: string): ScanProgress | undefined {
+  return scanProgress.get(scanId);
+}
+
+export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: number; matchesFound: number; newLeads: number; duplicatesSkipped: number; scanId: string }> {
+  const currentScanId = scanId || crypto.randomUUID();
+  const startTime = Date.now();
+  
+  scanProgress.set(currentScanId, { status: "scanning", message: "Initializing scan..." });
+
   const settings = await storage.getSettings();
   if (!settings) {
+    scanProgress.set(currentScanId, { status: "error", message: "Settings not configured" });
+    // Cleanup progress after delay even on error
+    setTimeout(() => scanProgress.delete(currentScanId), 60000);
     throw new Error("Settings not configured");
   }
-
-  const articles = generateSimulatedArticles(settings.keywords, settings.regions);
   
-  let newLeads = 0;
-  let duplicatesSkipped = 0;
-  const createdLeads: InsertLead[] = [];
-
-  for (const article of articles) {
-    const existingLead = await storage.getLeadByUrl(article.url);
-    if (existingLead) {
-      duplicatesSkipped++;
-      continue;
+  // Helper function to ensure cleanup always runs
+  const runCleanup = async () => {
+    try {
+      await storage.cleanupOldScanLogs(settings.logRetentionDays ?? 2);
+    } catch (e) {
+      console.error("Error cleaning up old scan logs:", e);
     }
+  };
 
-    const leadInfo = await extractLeadInfo(article, settings.keywords, settings.summaryLength);
-    if (leadInfo && leadInfo.companyNames && leadInfo.companyNames.length > 0) {
-      const lead = await storage.createLead(leadInfo as InsertLead);
-      createdLeads.push(leadInfo as InsertLead);
-      newLeads++;
-    }
-  }
+  scanProgress.set(currentScanId, { status: "scanning", message: "Searching news sources..." });
 
-  await storage.createScanLog({
-    articlesScanned: articles.length,
-    matchesFound: articles.length,
-    newLeads,
-    duplicatesSkipped,
-  });
+  try {
+    const articles = generateSimulatedArticles(settings.keywords, settings.regions);
+    
+    // Track sources searched
+    const sourceMap = new Map<string, { tier: SourceTier; count: number }>();
+    articles.forEach(a => {
+      const existing = sourceMap.get(a.source);
+      if (existing) {
+        existing.count++;
+      } else {
+        sourceMap.set(a.source, { tier: a.sourceTier, count: 1 });
+      }
+    });
+    
+    const sourcesSearched: SourceSearched[] = Array.from(sourceMap.entries()).map(([name, data]) => ({
+      name,
+      tier: data.tier,
+      articlesFound: data.count,
+    }));
 
-  if (settings.emailEnabled && settings.alertEmail && createdLeads.length > 0) {
-    const highPriorityLeads = createdLeads.filter(l => l.priorityLevel === "high");
-    if (highPriorityLeads.length > 0) {
+    scanProgress.set(currentScanId, { 
+      status: "processing", 
+      currentSource: "Multiple sources",
+      articlesFound: articles.length,
+      articlesProcessed: 0,
+      totalArticles: articles.length,
+      message: `Found ${articles.length} articles, processing...` 
+    });
+
+    let newLeads = 0;
+    let duplicatesSkipped = 0;
+    const createdLeads: InsertLead[] = [];
+    const articlesProcessed: ArticleProcessed[] = [];
+    const errors: string[] = [];
+
+    for (let i = 0; i < articles.length; i++) {
+      const article = articles[i];
+      
+      scanProgress.set(currentScanId, { 
+        status: "processing", 
+        currentSource: article.source,
+        articlesFound: articles.length,
+        articlesProcessed: i,
+        totalArticles: articles.length,
+        message: `Processing: ${article.headline.substring(0, 50)}...` 
+      });
+
+      const existingLead = await storage.getLeadByUrl(article.url);
+      if (existingLead) {
+        duplicatesSkipped++;
+        articlesProcessed.push({
+          headline: article.headline,
+          source: article.source,
+          region: article.region,
+          status: "skipped",
+          reason: "Duplicate - already in database",
+        });
+        continue;
+      }
+
       try {
-        const leads = await storage.getAllLeads();
-        const newHighPriorityLeads = leads.filter(l => 
-          l.status === "new" && 
-          l.priorityLevel === "high" &&
-          createdLeads.some(cl => cl.sourceUrl === l.sourceUrl)
-        );
-        if (newHighPriorityLeads.length > 0) {
-          await sendLeadAlertEmail(settings.alertEmail, newHighPriorityLeads);
+        const leadInfo = await extractLeadInfo(article, settings.keywords, settings.summaryLength);
+        if (leadInfo && leadInfo.companyNames && leadInfo.companyNames.length > 0) {
+          await storage.createLead(leadInfo as InsertLead);
+          createdLeads.push(leadInfo as InsertLead);
+          newLeads++;
+          articlesProcessed.push({
+            headline: article.headline,
+            source: article.source,
+            region: article.region,
+            status: "success",
+          });
+        } else {
+          articlesProcessed.push({
+            headline: article.headline,
+            source: article.source,
+            region: article.region,
+            status: "skipped",
+            reason: "No company names extracted",
+          });
         }
       } catch (error) {
-        console.error("Error sending lead alert email:", error);
+        const errorMessage = error instanceof Error ? error.message : "Unknown error";
+        errors.push(`Error processing "${article.headline}": ${errorMessage}`);
+        articlesProcessed.push({
+          headline: article.headline,
+          source: article.source,
+          region: article.region,
+          status: "error",
+          reason: errorMessage,
+        });
       }
     }
-  }
 
-  return {
-    articlesScanned: articles.length,
-    matchesFound: articles.length,
-    newLeads,
-    duplicatesSkipped,
-  };
+    const durationMs = Date.now() - startTime;
+
+    await storage.createScanLog({
+      articlesScanned: articles.length,
+      matchesFound: articles.length,
+      newLeads,
+      duplicatesSkipped,
+      durationMs,
+      sourcesSearched,
+      articlesProcessed,
+      errors: errors.length > 0 ? errors : null,
+    });
+
+    scanProgress.set(currentScanId, { 
+      status: "complete", 
+      articlesFound: articles.length,
+      articlesProcessed: articles.length,
+      totalArticles: articles.length,
+      message: `Complete! ${newLeads} new leads found.` 
+    });
+
+    if (settings.emailEnabled && settings.alertEmail && createdLeads.length > 0) {
+      const highPriorityLeads = createdLeads.filter(l => l.priorityLevel === "high");
+      if (highPriorityLeads.length > 0) {
+        try {
+          const leads = await storage.getAllLeads();
+          const newHighPriorityLeads = leads.filter(l => 
+            l.status === "new" && 
+            l.priorityLevel === "high" &&
+            createdLeads.some(cl => cl.sourceUrl === l.sourceUrl)
+          );
+          if (newHighPriorityLeads.length > 0) {
+            await sendLeadAlertEmail(settings.alertEmail, newHighPriorityLeads);
+          }
+        } catch (error) {
+          console.error("Error sending lead alert email:", error);
+        }
+      }
+    }
+
+    // Clean up progress after a delay
+    setTimeout(() => {
+      scanProgress.delete(currentScanId);
+    }, 60000);
+
+    return {
+      articlesScanned: articles.length,
+      matchesFound: articles.length,
+      newLeads,
+      duplicatesSkipped,
+      scanId: currentScanId,
+    };
+  } finally {
+    // Always clean up old logs based on retention setting
+    await runCleanup();
+  }
 }

@@ -11,7 +11,8 @@ import {
   Globe, 
   Tag,
   Bell,
-  Loader2
+  Loader2,
+  Clock
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -61,6 +62,7 @@ const settingsSchema = z.object({
   emailFrequency: z.enum(["hourly", "daily", "weekly"]),
   emailEnabled: z.boolean(),
   alertEmail: z.string().email("Please enter a valid email address"),
+  logRetentionDays: z.number().min(1).max(30),
 });
 
 type SettingsFormData = z.infer<typeof settingsSchema>;
@@ -192,6 +194,7 @@ export default function SettingsPage() {
       emailFrequency: "daily",
       emailEnabled: true,
       alertEmail: "",
+      logRetentionDays: 2,
     },
   });
 
@@ -204,6 +207,7 @@ export default function SettingsPage() {
         emailFrequency: settings.emailFrequency as "hourly" | "daily" | "weekly",
         emailEnabled: settings.emailEnabled,
         alertEmail: settings.alertEmail,
+        logRetentionDays: settings.logRetentionDays ?? 2,
       });
     }
   }, [settings, form]);
@@ -430,6 +434,40 @@ export default function SettingsPage() {
                   )}
                 />
               </div>
+
+              <Separator />
+
+              <FormField
+                control={form.control}
+                name="logRetentionDays"
+                render={({ field }) => (
+                  <FormItem className="flex flex-row items-center justify-between gap-4">
+                    <div className="space-y-0.5 flex-1">
+                      <FormLabel className="flex items-center gap-2">
+                        <Clock className="h-4 w-4 text-muted-foreground" />
+                        Log Retention Period
+                      </FormLabel>
+                      <FormDescription>
+                        How long to keep scan history logs before automatic cleanup.
+                      </FormDescription>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <FormControl>
+                        <Input 
+                          type="number" 
+                          min={1} 
+                          max={30}
+                          className="w-20 text-center"
+                          {...field}
+                          onChange={(e) => field.onChange(parseInt(e.target.value) || 1)}
+                          data-testid="input-log-retention-days"
+                        />
+                      </FormControl>
+                      <span className="text-sm text-muted-foreground">days</span>
+                    </div>
+                  </FormItem>
+                )}
+              />
             </CardContent>
           </Card>
 

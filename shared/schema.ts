@@ -61,6 +61,7 @@ export const settings = pgTable("settings", {
   emailFrequency: text("email_frequency").notNull().default("daily"),
   emailEnabled: boolean("email_enabled").notNull().default(true),
   alertEmail: text("alert_email").notNull(),
+  logRetentionDays: integer("log_retention_days").notNull().default(2),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
 
@@ -88,6 +89,21 @@ export const insertSourceSchema = createInsertSchema(sources).omit({
 export type InsertSource = z.infer<typeof insertSourceSchema>;
 export type Source = typeof sources.$inferSelect;
 
+// Types for detailed scan log information
+export interface SourceSearched {
+  name: string;
+  tier: SourceTier;
+  articlesFound: number;
+}
+
+export interface ArticleProcessed {
+  headline: string;
+  source: string;
+  region: string;
+  status: "success" | "skipped" | "error";
+  reason?: string;
+}
+
 // Scan logs for tracking scraping activity
 export const scanLogs = pgTable("scan_logs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -96,6 +112,10 @@ export const scanLogs = pgTable("scan_logs", {
   matchesFound: integer("matches_found").notNull(),
   newLeads: integer("new_leads").notNull(),
   duplicatesSkipped: integer("duplicates_skipped").notNull(),
+  durationMs: integer("duration_ms"),
+  sourcesSearched: json("sources_searched").$type<SourceSearched[]>(),
+  articlesProcessed: json("articles_processed").$type<ArticleProcessed[]>(),
+  errors: text("errors").array(),
 });
 
 export const insertScanLogSchema = createInsertSchema(scanLogs).omit({

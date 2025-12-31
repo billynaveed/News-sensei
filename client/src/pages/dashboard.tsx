@@ -370,8 +370,8 @@ export default function Dashboard() {
         <div className="border-b border-border">
           {statsExpanded ? (
             <CollapsibleContent forceMount>
-              <div className="p-6 pb-3">
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="p-6 pb-4">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
                   <StatsCard 
                     title="Today's Leads" 
                     value={stats?.today ?? 0} 
@@ -388,6 +388,78 @@ export default function Dashboard() {
                     icon={AlertCircle}
                   />
                 </div>
+                <div className="flex items-center justify-between gap-4 flex-wrap pt-4 border-t border-border">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Filter className="h-4 w-4 text-muted-foreground" />
+                    <Select value={filters.status} onValueChange={(v) => setFilters(f => ({ ...f, status: v }))}>
+                      <SelectTrigger className="w-[130px]" data-testid="filter-status">
+                        <SelectValue placeholder="Status" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="active">Active</SelectItem>
+                        <SelectItem value="saved">Saved</SelectItem>
+                        <SelectItem value="contacted">Contacted</SelectItem>
+                        <SelectItem value="all">All</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Select value={filters.region} onValueChange={(v) => setFilters(f => ({ ...f, region: v }))}>
+                      <SelectTrigger className="w-[140px]" data-testid="filter-region">
+                        <SelectValue placeholder="Region" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All Regions</SelectItem>
+                        <SelectItem value="Singapore">Singapore</SelectItem>
+                        <SelectItem value="Hong Kong">Hong Kong</SelectItem>
+                        <SelectItem value="Taiwan">Taiwan</SelectItem>
+                        <SelectItem value="Indonesia">Indonesia</SelectItem>
+                        <SelectItem value="Vietnam">Vietnam</SelectItem>
+                        <SelectItem value="Thailand">Thailand</SelectItem>
+                        <SelectItem value="Malaysia">Malaysia</SelectItem>
+                        <SelectItem value="Philippines">Philippines</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Select value={filters.sourceTier} onValueChange={(v) => setFilters(f => ({ ...f, sourceTier: v }))}>
+                      <SelectTrigger className="w-[120px]" data-testid="filter-tier">
+                        <SelectValue placeholder="Tier" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All Tiers</SelectItem>
+                        <SelectItem value="tier1">Tier 1</SelectItem>
+                        <SelectItem value="tier2">Tier 2</SelectItem>
+                        <SelectItem value="tier3">Tier 3</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Select value={filters.priority} onValueChange={(v) => setFilters(f => ({ ...f, priority: v }))}>
+                      <SelectTrigger className="w-[130px]" data-testid="filter-priority">
+                        <SelectValue placeholder="Priority" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All Priority</SelectItem>
+                        <SelectItem value="high">High</SelectItem>
+                        <SelectItem value="medium">Medium</SelectItem>
+                        <SelectItem value="low">Low</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {(filters.region !== "all" || filters.sourceTier !== "all" || filters.priority !== "all" || filters.status !== "active") && (
+                      <Button 
+                        variant="ghost" 
+                        size="sm"
+                        onClick={() => setFilters({ dateRange: "all", region: "all", sourceTier: "all", priority: "all", status: "active" })}
+                        data-testid="button-clear-filters"
+                      >
+                        Clear filters
+                      </Button>
+                    )}
+                  </div>
+                  <Button
+                    onClick={() => triggerScanMutation.mutate()}
+                    disabled={triggerScanMutation.isPending}
+                    data-testid="button-scan-now"
+                  >
+                    <RefreshCw className={`h-4 w-4 ${triggerScanMutation.isPending ? "animate-spin" : ""}`} />
+                    {triggerScanMutation.isPending ? "Scanning..." : "Scan Now"}
+                  </Button>
+                </div>
               </div>
               <div className="flex justify-center pb-2">
                 <CollapsibleTrigger asChild>
@@ -400,7 +472,7 @@ export default function Dashboard() {
             </CollapsibleContent>
           ) : (
             <div className="flex items-center justify-between gap-4 px-6 py-3">
-              <div className="flex items-center gap-6 text-sm">
+              <div className="flex items-center gap-6 text-sm flex-wrap">
                 <div className="flex items-center gap-2">
                   <TrendingUp className="h-4 w-4 text-primary" />
                   <span className="text-muted-foreground">Today:</span>
@@ -417,91 +489,27 @@ export default function Dashboard() {
                   <span className="font-bold tabular-nums">{stats?.highPriority ?? 0}</span>
                 </div>
               </div>
-              <CollapsibleTrigger asChild>
-                <Button variant="ghost" size="sm" data-testid="button-expand-stats">
-                  <ChevronDown className="h-4 w-4 mr-1" />
-                  Expand
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  onClick={() => triggerScanMutation.mutate()}
+                  disabled={triggerScanMutation.isPending}
+                  data-testid="button-scan-now-collapsed"
+                >
+                  <RefreshCw className={`h-4 w-4 ${triggerScanMutation.isPending ? "animate-spin" : ""}`} />
+                  {triggerScanMutation.isPending ? "Scanning..." : "Scan"}
                 </Button>
-              </CollapsibleTrigger>
+                <CollapsibleTrigger asChild>
+                  <Button variant="ghost" size="sm" data-testid="button-expand-stats">
+                    <ChevronDown className="h-4 w-4 mr-1" />
+                    Expand
+                  </Button>
+                </CollapsibleTrigger>
+              </div>
             </div>
           )}
         </div>
       </Collapsible>
-
-      <div className="sticky top-0 z-50 bg-background border-b border-border p-4">
-        <div className="flex items-center justify-between gap-4 flex-wrap">
-          <div className="flex items-center gap-2 flex-wrap">
-            <Filter className="h-4 w-4 text-muted-foreground" />
-            <Select value={filters.status} onValueChange={(v) => setFilters(f => ({ ...f, status: v }))}>
-              <SelectTrigger className="w-[130px]" data-testid="filter-status">
-                <SelectValue placeholder="Status" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="active">Active</SelectItem>
-                <SelectItem value="saved">Saved</SelectItem>
-                <SelectItem value="contacted">Contacted</SelectItem>
-                <SelectItem value="all">All</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select value={filters.region} onValueChange={(v) => setFilters(f => ({ ...f, region: v }))}>
-              <SelectTrigger className="w-[140px]" data-testid="filter-region">
-                <SelectValue placeholder="Region" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Regions</SelectItem>
-                <SelectItem value="Singapore">Singapore</SelectItem>
-                <SelectItem value="Hong Kong">Hong Kong</SelectItem>
-                <SelectItem value="Taiwan">Taiwan</SelectItem>
-                <SelectItem value="Indonesia">Indonesia</SelectItem>
-                <SelectItem value="Vietnam">Vietnam</SelectItem>
-                <SelectItem value="Thailand">Thailand</SelectItem>
-                <SelectItem value="Malaysia">Malaysia</SelectItem>
-                <SelectItem value="Philippines">Philippines</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select value={filters.sourceTier} onValueChange={(v) => setFilters(f => ({ ...f, sourceTier: v }))}>
-              <SelectTrigger className="w-[120px]" data-testid="filter-tier">
-                <SelectValue placeholder="Tier" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Tiers</SelectItem>
-                <SelectItem value="tier1">Tier 1</SelectItem>
-                <SelectItem value="tier2">Tier 2</SelectItem>
-                <SelectItem value="tier3">Tier 3</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select value={filters.priority} onValueChange={(v) => setFilters(f => ({ ...f, priority: v }))}>
-              <SelectTrigger className="w-[130px]" data-testid="filter-priority">
-                <SelectValue placeholder="Priority" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Priority</SelectItem>
-                <SelectItem value="high">High</SelectItem>
-                <SelectItem value="medium">Medium</SelectItem>
-                <SelectItem value="low">Low</SelectItem>
-              </SelectContent>
-            </Select>
-            {(filters.region !== "all" || filters.sourceTier !== "all" || filters.priority !== "all" || filters.status !== "active") && (
-              <Button 
-                variant="ghost" 
-                size="sm"
-                onClick={() => setFilters({ dateRange: "all", region: "all", sourceTier: "all", priority: "all", status: "active" })}
-                data-testid="button-clear-filters"
-              >
-                Clear filters
-              </Button>
-            )}
-          </div>
-          <Button
-            onClick={() => triggerScanMutation.mutate()}
-            disabled={triggerScanMutation.isPending}
-            data-testid="button-scan-now"
-          >
-            <RefreshCw className={`h-4 w-4 ${triggerScanMutation.isPending ? "animate-spin" : ""}`} />
-            {triggerScanMutation.isPending ? "Scanning..." : "Scan Now"}
-          </Button>
-        </div>
-      </div>
 
       <div className="flex-1 overflow-auto p-6">
         {leadsLoading ? (

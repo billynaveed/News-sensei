@@ -1,4 +1,4 @@
-import { eq, desc, gte, and, ne, sql } from "drizzle-orm";
+import { eq, desc, gte, and, ne, sql, lt } from "drizzle-orm";
 import { db } from "./db";
 import { 
   users, leads, settings, sources, scanLogs,
@@ -28,7 +28,9 @@ export interface IStorage {
   createSource(source: InsertSource): Promise<Source>;
 
   getAllScanLogs(): Promise<ScanLog[]>;
+  getScanLogById(id: string): Promise<ScanLog | undefined>;
   createScanLog(log: InsertScanLog): Promise<ScanLog>;
+  cleanupOldScanLogs(retentionDays: number): Promise<number>;
 }
 
 const DEFAULT_KEYWORDS = [
@@ -115,6 +117,7 @@ export class DatabaseStorage implements IStorage {
       emailFrequency: "daily",
       emailEnabled: true,
       alertEmail: "billynaveed@gmail.com",
+      logRetentionDays: 2,
     }).returning();
     return newSettings;
   }
@@ -136,6 +139,7 @@ export class DatabaseStorage implements IStorage {
       emailFrequency: update.emailFrequency || "daily",
       emailEnabled: update.emailEnabled ?? true,
       alertEmail: update.alertEmail || "",
+      logRetentionDays: update.logRetentionDays ?? 2,
     }).returning();
     return created;
   }
@@ -153,9 +157,29 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(scanLogs).orderBy(desc(scanLogs.scannedAt));
   }
 
+  async getScanLogById(id: string): Promise<ScanLog | undefined> {
+    const [log] = await db.select().from(scanLogs).where(eq(scanLogs.id, id));
+    return log || undefined;
+  }
+
   async createScanLog(insertLog: InsertScanLog): Promise<ScanLog> {
     const [log] = await db.insert(scanLogs).values(insertLog).returning();
     return log;
+  }
+
+  async cleanupOldScanLogs(retentionDays: number): Promise<number> {
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
+    
+    const oldLogs = await db.select({ id: scanLogs.id })
+      .from(scanLogs)
+      .where(lt(scanLogs.scannedAt, cutoffDate));
+    
+    if (oldLogs.length > 0) {
+      await db.delete(scanLogs).where(lt(scanLogs.scannedAt, cutoffDate));
+    }
+    
+    return oldLogs.length;
   }
 }
 
