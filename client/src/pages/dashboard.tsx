@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useSearch } from "wouter";
 import { format } from "date-fns";
+import { motion, AnimatePresence } from "framer-motion";
 import { 
   ExternalLink, 
   Bookmark, 
@@ -346,7 +347,27 @@ export default function Dashboard() {
     mutationFn: async ({ id, status }: { id: string; status: LeadStatus }) => {
       await apiRequest("PATCH", `/api/leads/${id}`, { status });
     },
-    onSuccess: () => {
+    onMutate: async ({ id, status }) => {
+      // Cancel any outgoing refetches
+      await queryClient.cancelQueries({ queryKey: ["/api/leads"] });
+      
+      // Snapshot the previous value
+      const previousLeads = queryClient.getQueryData<Lead[]>(["/api/leads"]);
+      
+      // Optimistically update to the new value
+      queryClient.setQueryData<Lead[]>(["/api/leads"], (old) => 
+        old?.map(lead => lead.id === id ? { ...lead, status } : lead) || []
+      );
+      
+      return { previousLeads };
+    },
+    onError: (err, variables, context) => {
+      // Rollback on error
+      if (context?.previousLeads) {
+        queryClient.setQueryData(["/api/leads"], context.previousLeads);
+      }
+    },
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/leads"] });
       queryClient.invalidateQueries({ queryKey: ["/api/leads/stats"] });
     },
@@ -605,13 +626,23 @@ export default function Dashboard() {
           </div>
         ) : (
           <div className="grid gap-4">
-            {filteredLeads.map((lead) => (
-              <LeadCard 
-                key={lead.id} 
-                lead={lead} 
-                onUpdateStatus={handleUpdateStatus}
-              />
-            ))}
+            <AnimatePresence mode="popLayout">
+              {filteredLeads.map((lead) => (
+                <motion.div
+                  key={lead.id}
+                  layout
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, x: -100, transition: { duration: 0.2 } }}
+                  transition={{ duration: 0.2 }}
+                >
+                  <LeadCard 
+                    lead={lead} 
+                    onUpdateStatus={handleUpdateStatus}
+                  />
+                </motion.div>
+              ))}
+            </AnimatePresence>
           </div>
         )}
       </div>
