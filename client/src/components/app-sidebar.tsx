@@ -1,5 +1,6 @@
-import { LayoutDashboard, Settings, Activity, TrendingUp } from "lucide-react";
+import { LayoutDashboard, Settings, Activity, TrendingUp, BookmarkCheck } from "lucide-react";
 import { Link, useLocation } from "wouter";
+import { useQuery } from "@tanstack/react-query";
 import {
   Sidebar,
   SidebarContent,
@@ -9,9 +10,11 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  SidebarMenuBadge,
   SidebarHeader,
   SidebarFooter,
 } from "@/components/ui/sidebar";
+import type { Lead } from "@shared/schema";
 
 const menuItems = [
   {
@@ -33,6 +36,12 @@ const menuItems = [
 
 export function AppSidebar() {
   const [location] = useLocation();
+
+  const { data: leads } = useQuery<Lead[]>({
+    queryKey: ["/api/leads"],
+  });
+
+  const savedCount = leads?.filter(lead => lead.status === "saved").length ?? 0;
 
   return (
     <Sidebar>
@@ -66,6 +75,30 @@ export function AppSidebar() {
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               ))}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+        <SidebarGroup>
+          <SidebarGroupLabel>Quick Access</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  asChild
+                  isActive={location === "/?filter=saved"}
+                  data-testid="nav-saved-leads"
+                >
+                  <Link href="/?filter=saved">
+                    <BookmarkCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+                    <span>Saved Leads</span>
+                  </Link>
+                </SidebarMenuButton>
+                {savedCount > 0 && (
+                  <SidebarMenuBadge className="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                    {savedCount}
+                  </SidebarMenuBadge>
+                )}
+              </SidebarMenuItem>
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>

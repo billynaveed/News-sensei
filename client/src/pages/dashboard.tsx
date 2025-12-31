@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { useSearch } from "wouter";
 import { format } from "date-fns";
 import { 
   ExternalLink, 
   Bookmark, 
+  BookmarkCheck,
   Phone, 
   X, 
   Filter, 
@@ -181,13 +183,18 @@ function LeadCard({ lead, onUpdateStatus }: { lead: Lead; onUpdateStatus: (id: s
                 size="sm"
                 onClick={() => onUpdateStatus(lead.id, "saved")}
                 disabled={lead.status === "saved"}
+                className={lead.status === "saved" ? "text-emerald-600 dark:text-emerald-400" : "text-emerald-600 dark:text-emerald-400"}
                 data-testid={`button-save-${lead.id}`}
               >
-                <Bookmark className="h-4 w-4" />
-                Save
+                {lead.status === "saved" ? (
+                  <BookmarkCheck className="h-4 w-4 fill-current" />
+                ) : (
+                  <Bookmark className="h-4 w-4" />
+                )}
+                {lead.status === "saved" ? "Saved" : "Save"}
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Bookmark for later</TooltipContent>
+            <TooltipContent>{lead.status === "saved" ? "Already saved" : "Bookmark for later"}</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -196,13 +203,14 @@ function LeadCard({ lead, onUpdateStatus }: { lead: Lead; onUpdateStatus: (id: s
                 size="sm"
                 onClick={() => onUpdateStatus(lead.id, "contacted")}
                 disabled={lead.status === "contacted"}
+                className={lead.status === "contacted" ? "text-blue-600 dark:text-blue-400" : "text-blue-600 dark:text-blue-400"}
                 data-testid={`button-contacted-${lead.id}`}
               >
-                <Phone className="h-4 w-4" />
-                Contacted
+                <Phone className={`h-4 w-4 ${lead.status === "contacted" ? "fill-current" : ""}`} />
+                {lead.status === "contacted" ? "Contacted" : "Contact"}
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Mark as contacted</TooltipContent>
+            <TooltipContent>{lead.status === "contacted" ? "Already contacted" : "Mark as contacted"}</TooltipContent>
           </Tooltip>
         </div>
         <Tooltip>
@@ -211,6 +219,7 @@ function LeadCard({ lead, onUpdateStatus }: { lead: Lead; onUpdateStatus: (id: s
               variant="ghost"
               size="sm"
               onClick={() => onUpdateStatus(lead.id, "dismissed")}
+              className="text-red-600 dark:text-red-400"
               data-testid={`button-dismiss-${lead.id}`}
             >
               <X className="h-4 w-4" />
@@ -281,13 +290,23 @@ function StatsCard({ title, value, icon: Icon, trend }: { title: string; value: 
 }
 
 export default function Dashboard() {
+  const searchString = useSearch();
+  const searchParams = new URLSearchParams(searchString);
+  const filterParam = searchParams.get("filter");
+
   const [filters, setFilters] = useState<FilterState>({
     dateRange: "all",
     region: "all",
     sourceTier: "all",
     priority: "all",
-    status: "active",
+    status: filterParam === "saved" ? "saved" : "active",
   });
+
+  useEffect(() => {
+    if (filterParam === "saved") {
+      setFilters(f => ({ ...f, status: "saved" }));
+    }
+  }, [filterParam]);
 
   const { data: leads, isLoading: leadsLoading } = useQuery<Lead[]>({
     queryKey: ["/api/leads"],
