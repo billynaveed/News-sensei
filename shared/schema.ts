@@ -96,6 +96,29 @@ export const insertSourceSchema = createInsertSchema(sources).omit({
 export type InsertSource = z.infer<typeof insertSourceSchema>;
 export type Source = typeof sources.$inferSelect;
 
+// Debug entry for ScrapingBee API calls
+export interface ScrapingBeeDebugEntry {
+  sourceName: string;
+  sourceId: string;
+  timestamp: string;
+  method: "scrapingbee" | "rss" | "fallback_rss";
+  request: {
+    url: string;
+    renderJs: boolean;
+    extractRules: string;
+  };
+  response: {
+    status: number;
+    statusText: string;
+    latencyMs: number;
+    rawResponseSnippet: string;  // First 3KB of response
+    extractedCount: number;
+    matchedCount: number;
+  };
+  error?: string;
+  fallbackReason?: string;
+}
+
 // Types for detailed scan log information
 export interface SourceSearched {
   name: string;
@@ -123,6 +146,7 @@ export const scanLogs = pgTable("scan_logs", {
   sourcesSearched: json("sources_searched").$type<SourceSearched[]>(),
   articlesProcessed: json("articles_processed").$type<ArticleProcessed[]>(),
   errors: text("errors").array(),
+  scrapingBeeDebug: json("scraping_bee_debug").$type<ScrapingBeeDebugEntry[]>(),
 });
 
 export const insertScanLogSchema = createInsertSchema(scanLogs).omit({

@@ -2,7 +2,7 @@ import OpenAI from "openai";
 import { storage } from "./storage";
 import { sendLeadAlertEmail } from "./sendgrid";
 import { fetchAllArticles, type RawArticle } from "./adapters";
-import type { InsertLead, PriorityLevel, SourceTier, SourceSearched, ArticleProcessed } from "@shared/schema";
+import type { InsertLead, PriorityLevel, SourceTier, SourceSearched, ArticleProcessed, ScrapingBeeDebugEntry } from "@shared/schema";
 
 const openai = new OpenAI({
   apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
@@ -122,7 +122,7 @@ export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: 
       return { articlesScanned: 0, matchesFound: 0, newLeads: 0, duplicatesSkipped: 0, scanId: currentScanId };
     }
 
-    const { articles, sourcesSearched, errors: fetchErrors } = await fetchAllArticles(
+    const { articles, sourcesSearched, errors: fetchErrors, debugEntries } = await fetchAllArticles(
       filteredSources,
       settings.keywords
     );
@@ -212,6 +212,7 @@ export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: 
       sourcesSearched,
       articlesProcessed,
       errors: errors.length > 0 ? errors : null,
+      scrapingBeeDebug: debugEntries.length > 0 ? debugEntries : null,
     });
 
     scanProgress.set(currentScanId, { 
