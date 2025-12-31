@@ -78,6 +78,12 @@ npm run dev
 Frontend runs on port 5000.
 
 ## Recent Changes
+- Implemented real news source fetching via RSS adapters replacing simulated articles
+- Added Sources management UI in Settings with tier-based grouping and enable/disable toggles
+- Seeded 12 curated Southeast Asian financial news sources (Business Times, SCMP, Tech in Asia, etc.)
+- Created modular adapter interface (RSSAdapter, ScrapeAdapter, ManualAdapter) for different source types
+- Added URL normalization for deduplication (removes tracking params, standardizes to HTTPS)
+- Scanner now filters enabled sources by selected regions before fetching
 - Added collapsible dashboard insights panel consolidating stats, filters, and scan button
 - Implemented colored action buttons (green Save, blue Contact, red Dismiss)
 - Added Saved Leads sidebar section with count
@@ -86,3 +92,11 @@ Frontend runs on port 5000.
 - Implemented configurable log retention period (1-30 days) with automatic cleanup
 - Added scan progress tracking with real-time status updates
 - Database storage with PostgreSQL for data persistence across restarts
+
+## News Source Architecture
+- **Sources Table**: name, url, rssUrl, type (rss/api/scrape/manual), tier (tier1/tier2/tier3), region, enabled
+- **Adapters**: Modular system for fetching from different source types
+  - RSSAdapter: Parses RSS feeds, filters by keywords in title/content
+  - ScrapeAdapter: Placeholder for web scraping (requires implementation)
+  - ManualAdapter: For sources without auto-fetching capability
+- **Deduplication**: URL normalization removes tracking params (utm_*, ref) and standardizes protocol
