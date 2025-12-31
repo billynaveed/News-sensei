@@ -12,7 +12,9 @@ import {
   Tag,
   Bell,
   Loader2,
-  Clock
+  Clock,
+  Newspaper,
+  ExternalLink
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -39,7 +41,7 @@ import {
 } from "@/components/ui/form";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import type { Settings, SourceTier } from "@shared/schema";
+import type { Settings, SourceTier, Source } from "@shared/schema";
 
 const DEFAULT_KEYWORDS = [
   "Liquidity event", "IPO", "Initial Public Offering", "Trade sale",
@@ -178,11 +180,171 @@ function RegionsSection({
   );
 }
 
+function SourcesSection({ 
+  sources, 
+  isLoading,
+  onToggle,
+  isToggling
+}: { 
+  sources: Source[];
+  isLoading: boolean;
+  onToggle: (id: string, enabled: boolean) => void;
+  isToggling: boolean;
+}) {
+  const tierLabel = (tier: string) => {
+    switch (tier) {
+      case "tier1": return "Major";
+      case "tier2": return "Regional";
+      case "tier3": return "Niche";
+      default: return tier;
+    }
+  };
+
+  const typeLabel = (type: string) => {
+    switch (type) {
+      case "rss": return "RSS";
+      case "api": return "API";
+      case "scrape": return "Scrape";
+      case "manual": return "Manual";
+      default: return type;
+    }
+  };
+
+  const groupedSources = sources.reduce((acc, source) => {
+    const tier = source.tier || "tier2";
+    if (!acc[tier]) acc[tier] = [];
+    acc[tier].push(source);
+    return acc;
+  }, {} as Record<string, Source[]>);
+
+  const tierOrder = ["tier1", "tier2", "tier3"];
+
+  if (isLoading) {
+    return (
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <Newspaper className="h-5 w-5 text-primary" />
+            <CardTitle className="text-lg">News Sources</CardTitle>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-3">
+            <Skeleton className="h-12 w-full" />
+            <Skeleton className="h-12 w-full" />
+            <Skeleton className="h-12 w-full" />
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <Newspaper className="h-5 w-5 text-primary" />
+          <CardTitle className="text-lg">News Sources</CardTitle>
+        </div>
+        <CardDescription>
+          Configure which news sources to scan for wealth-related events. Toggle sources on or off.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        {tierOrder.map((tier) => {
+          const tierSources = groupedSources[tier];
+          if (!tierSources || tierSources.length === 0) return null;
+          
+          return (
+            <div key={tier} className="space-y-3">
+              <h3 className="text-sm font-medium text-muted-foreground">
+                {tierLabel(tier)} Sources
+              </h3>
+              <div className="space-y-2">
+                {tierSources.map((source) => (
+                  <div 
+                    key={source.id} 
+                    className="flex items-center justify-between gap-4 p-3 rounded-md border bg-card"
+                    data-testid={`source-row-${source.id}`}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-medium truncate">{source.name}</span>
+                        <Badge variant="outline" className="text-xs">
+                          {source.region}
+                        </Badge>
+                        <Badge variant="secondary" className="text-xs">
+                          {typeLabel(source.type || "manual")}
+                        </Badge>
+                      </div>
+                      {source.description && (
+                        <p className="text-sm text-muted-foreground mt-1 truncate">
+                          {source.description}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-3 shrink-0">
+                      <a 
+                        href={source.url} 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="text-muted-foreground hover:text-foreground"
+                        data-testid={`link-source-${source.id}`}
+                      >
+                        <ExternalLink className="h-4 w-4" />
+                      </a>
+                      <Switch
+                        checked={source.enabled}
+                        onCheckedChange={(checked) => onToggle(source.id, checked)}
+                        disabled={isToggling}
+                        data-testid={`switch-source-${source.id}`}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+        {sources.length === 0 && (
+          <p className="text-sm text-muted-foreground">
+            No news sources configured. Sources will be added automatically.
+          </p>
+        )}
+        <div className="pt-2 text-sm text-muted-foreground">
+          <span className="font-medium">{sources.filter(s => s.enabled).length}</span> of{" "}
+          <span className="font-medium">{sources.length}</span> sources enabled
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function SettingsPage() {
   const { toast } = useToast();
 
   const { data: settings, isLoading } = useQuery<Settings>({
     queryKey: ["/api/settings"],
+  });
+
+  const { data: sources = [], isLoading: isLoadingSources } = useQuery<Source[]>({
+    queryKey: ["/api/sources"],
+  });
+
+  const toggleSourceMutation = useMutation({
+    mutationFn: async ({ id, enabled }: { id: string; enabled: boolean }) => {
+      await apiRequest("PATCH", `/api/sources/${id}/toggle`, { enabled });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/sources"] });
+    },
+    onError: () => {
+      toast({
+        title: "Error updating source",
+        description: "There was a problem updating the source. Please try again.",
+        variant: "destructive",
+      });
+    },
   });
 
   const form = useForm<SettingsFormData>({
@@ -309,6 +471,13 @@ export default function SettingsPage() {
             regions={form.watch("regions")}
             allRegions={DEFAULT_REGIONS}
             onToggle={handleToggleRegion}
+          />
+
+          <SourcesSection
+            sources={sources}
+            isLoading={isLoadingSources}
+            onToggle={(id, enabled) => toggleSourceMutation.mutate({ id, enabled })}
+            isToggling={toggleSourceMutation.isPending}
           />
 
           <Card>

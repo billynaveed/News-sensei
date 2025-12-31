@@ -73,12 +73,19 @@ export const insertSettingsSchema = createInsertSchema(settings).omit({
 export type InsertSettings = z.infer<typeof insertSettingsSchema>;
 export type Settings = typeof settings.$inferSelect;
 
+// Source type for ingestion method
+export type SourceType = "rss" | "api" | "scrape" | "manual";
+
 // News sources configuration
 export const sources = pgTable("sources", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   name: text("name").notNull(),
   url: text("url").notNull(),
+  rssUrl: text("rss_url"),
   tier: text("tier").notNull().$type<SourceTier>(),
+  type: text("type").notNull().$type<SourceType>().default("manual"),
+  region: text("region").notNull().default("Singapore"),
+  description: text("description"),
   enabled: boolean("enabled").notNull().default(true),
 });
 

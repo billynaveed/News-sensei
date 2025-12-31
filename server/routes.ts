@@ -21,11 +21,22 @@ const updateSettingsSchema = z.object({
   logRetentionDays: z.number().min(1).max(30).optional(),
 });
 
+const toggleSourceSchema = z.object({
+  enabled: z.boolean(),
+});
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
-  // Run log cleanup on startup
+  // Seed default sources and run log cleanup on startup
+  try {
+    await storage.seedDefaultSources();
+    console.log("Default sources seeded");
+  } catch (error) {
+    console.error("Error seeding default sources:", error);
+  }
+
   try {
     const settings = await storage.getSettings();
     if (settings) {
@@ -175,6 +186,34 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error sending test email:", error);
       res.status(500).json({ error: "Failed to send test email" });
+    }
+  });
+
+  // Sources endpoints
+  app.get("/api/sources", async (req, res) => {
+    try {
+      const sources = await storage.getAllSources();
+      res.json(sources);
+    } catch (error) {
+      console.error("Error fetching sources:", error);
+      res.status(500).json({ error: "Failed to fetch sources" });
+    }
+  });
+
+  app.patch("/api/sources/:id/toggle", async (req, res) => {
+    try {
+      const parsed = toggleSourceSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: "enabled must be a boolean" });
+      }
+      const source = await storage.updateSourceEnabled(req.params.id, parsed.data.enabled);
+      if (!source) {
+        return res.status(404).json({ error: "Source not found" });
+      }
+      res.json(source);
+    } catch (error) {
+      console.error("Error toggling source:", error);
+      res.status(500).json({ error: "Failed to toggle source" });
     }
   });
 

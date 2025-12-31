@@ -25,7 +25,10 @@ export interface IStorage {
   upsertSettings(settings: Partial<InsertSettings>): Promise<Settings>;
 
   getAllSources(): Promise<Source[]>;
+  getEnabledSources(): Promise<Source[]>;
   createSource(source: InsertSource): Promise<Source>;
+  updateSourceEnabled(id: string, enabled: boolean): Promise<Source | undefined>;
+  seedDefaultSources(): Promise<void>;
 
   getAllScanLogs(): Promise<ScanLog[]>;
   getScanLogById(id: string): Promise<ScanLog | undefined>;
@@ -148,9 +151,43 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(sources);
   }
 
+  async getEnabledSources(): Promise<Source[]> {
+    return db.select().from(sources).where(eq(sources.enabled, true));
+  }
+
   async createSource(insertSource: InsertSource): Promise<Source> {
     const [source] = await db.insert(sources).values(insertSource).returning();
     return source;
+  }
+
+  async updateSourceEnabled(id: string, enabled: boolean): Promise<Source | undefined> {
+    const [source] = await db.update(sources)
+      .set({ enabled })
+      .where(eq(sources.id, id))
+      .returning();
+    return source || undefined;
+  }
+
+  async seedDefaultSources(): Promise<void> {
+    const existing = await db.select().from(sources);
+    if (existing.length > 0) return;
+
+    const defaultSources: InsertSource[] = [
+      { name: "The Business Times", url: "https://www.businesstimes.com.sg", rssUrl: "https://www.businesstimes.com.sg/rss/companies", tier: "tier1", type: "rss", region: "Singapore", description: "Singapore's leading business daily" },
+      { name: "South China Morning Post", url: "https://www.scmp.com", rssUrl: "https://www.scmp.com/rss/91/feed", tier: "tier1", type: "rss", region: "Hong Kong", description: "Hong Kong's premier English-language news source" },
+      { name: "Nikkei Asia", url: "https://asia.nikkei.com", tier: "tier1", type: "scrape", region: "Singapore", description: "Asian business and economic news from Nikkei" },
+      { name: "Tech in Asia", url: "https://www.techinasia.com", rssUrl: "https://www.techinasia.com/feed", tier: "tier2", type: "rss", region: "Singapore", description: "Southeast Asia's startup and tech news" },
+      { name: "DealStreetAsia", url: "https://www.dealstreetasia.com", tier: "tier2", type: "scrape", region: "Singapore", description: "Private equity and venture capital news in Asia" },
+      { name: "The Edge Markets", url: "https://www.theedgemarkets.com", tier: "tier1", type: "scrape", region: "Malaysia", description: "Malaysia's leading financial news portal" },
+      { name: "VnExpress International", url: "https://e.vnexpress.net", rssUrl: "https://e.vnexpress.net/rss/business.rss", tier: "tier2", type: "rss", region: "Vietnam", description: "Vietnam's most-read news source in English" },
+      { name: "Bangkok Post", url: "https://www.bangkokpost.com", rssUrl: "https://www.bangkokpost.com/rss/data/business.xml", tier: "tier2", type: "rss", region: "Thailand", description: "Thailand's largest English-language newspaper" },
+      { name: "Philippine Daily Inquirer", url: "https://business.inquirer.net", tier: "tier2", type: "scrape", region: "Philippines", description: "Philippines' leading business news" },
+      { name: "Taiwan News", url: "https://www.taiwannews.com.tw", tier: "tier2", type: "scrape", region: "Taiwan", description: "Taiwan's leading English news source" },
+      { name: "The Jakarta Post", url: "https://www.thejakartapost.com", tier: "tier2", type: "scrape", region: "Indonesia", description: "Indonesia's leading English-language daily" },
+      { name: "Channel NewsAsia", url: "https://www.channelnewsasia.com", rssUrl: "https://www.channelnewsasia.com/api/v1/rss-outbound-feed?_format=xml&category=6511", tier: "tier1", type: "rss", region: "Singapore", description: "Singapore's 24-hour news channel" },
+    ];
+
+    await db.insert(sources).values(defaultSources);
   }
 
   async getAllScanLogs(): Promise<ScanLog[]> {
