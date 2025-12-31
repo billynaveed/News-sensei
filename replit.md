@@ -96,7 +96,8 @@ Frontend runs on port 5000.
 ## News Source Architecture
 - **Sources Table**: name, url, rssUrl, type (rss/api/scrape/manual), tier (tier1/tier2/tier3), region, enabled
 - **Adapters**: Modular system for fetching from different source types
-  - RSSAdapter: Parses RSS feeds, filters by keywords in title/content
-  - ScrapeAdapter: Placeholder for web scraping (requires implementation)
+  - ScrapingBeeAdapter: Primary method - uses ScrapingBee API to extract articles from any website
+  - RSSAdapter: Fallback method - parses RSS feeds, filters by keywords in title/content
   - ManualAdapter: For sources without auto-fetching capability
+- **Fetch Strategy**: ScrapingBee first → RSS fallback → deduplication
 - **Deduplication**: URL normalization removes tracking params (utm_*, ref) and standardizes protocol
