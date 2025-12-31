@@ -62,6 +62,7 @@ Return only valid JSON, no markdown.`;
       priorityLevel: extracted.priorityLevel || "medium",
       region: article.region,
       status: "new",
+      fetchMethod: article.fetchMethod,
     };
   } catch (error) {
     console.error("Error extracting lead info:", error);
@@ -167,6 +168,7 @@ export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: 
           region: article.region,
           status: "skipped",
           reason: "Duplicate - already in database",
+          fetchMethod: article.fetchMethod,
         });
         continue;
       }
@@ -182,6 +184,7 @@ export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: 
             source: article.source,
             region: article.region,
             status: "success",
+            fetchMethod: article.fetchMethod,
           });
         } else {
           articlesProcessed.push({
@@ -190,6 +193,7 @@ export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: 
             region: article.region,
             status: "skipped",
             reason: "No company names extracted",
+            fetchMethod: article.fetchMethod,
           });
         }
       } catch (error) {
@@ -201,6 +205,7 @@ export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: 
           region: article.region,
           status: "error",
           reason: errorMessage,
+          fetchMethod: article.fetchMethod,
         });
       }
     }

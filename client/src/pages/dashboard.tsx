@@ -42,7 +42,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import type { Lead, LeadStatus, PriorityLevel, SourceTier } from "@shared/schema";
+import type { Lead, LeadStatus, PriorityLevel, SourceTier, FetchMethod } from "@shared/schema";
 
 type FilterState = {
   dateRange: string;
@@ -78,6 +78,18 @@ const statusLabels: Record<LeadStatus, string> = {
   dismissed: "Dismissed",
 };
 
+const fetchMethodLabels: Record<FetchMethod, string> = {
+  rss: "RSS",
+  google_news: "Google News",
+  scrapingbee: "ScrapingBee",
+};
+
+const fetchMethodColors: Record<FetchMethod, string> = {
+  rss: "bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/20",
+  google_news: "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20",
+  scrapingbee: "bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/20",
+};
+
 function LeadCard({ lead, onUpdateStatus }: { lead: Lead; onUpdateStatus: (id: string, status: LeadStatus) => void }) {
   const priorityClass = priorityColors[lead.priorityLevel];
   const tierClass = tierColors[lead.sourceTier];
@@ -93,6 +105,11 @@ function LeadCard({ lead, onUpdateStatus }: { lead: Lead; onUpdateStatus: (id: s
             <Badge variant="outline" className={priorityClass} size="sm">
               {lead.priorityLevel.charAt(0).toUpperCase() + lead.priorityLevel.slice(1)} Priority
             </Badge>
+            {lead.fetchMethod && (
+              <Badge variant="outline" className={fetchMethodColors[lead.fetchMethod]} size="sm">
+                {fetchMethodLabels[lead.fetchMethod]}
+              </Badge>
+            )}
             {lead.status === "new" && (
               <Badge variant="default" size="sm">New</Badge>
             )}
@@ -350,9 +367,10 @@ export default function Dashboard() {
   };
 
   const filteredLeads = leads?.filter((lead) => {
-    if (filters.status === "active" && lead.status === "dismissed") return false;
+    if (filters.status === "active" && (lead.status === "dismissed" || lead.status === "saved")) return false;
     if (filters.status === "saved" && lead.status !== "saved") return false;
     if (filters.status === "contacted" && lead.status !== "contacted") return false;
+    if (filters.status === "dismissed" && lead.status !== "dismissed") return false;
     if (filters.region !== "all" && lead.region !== filters.region) return false;
     if (filters.sourceTier !== "all" && lead.sourceTier !== filters.sourceTier) return false;
     if (filters.priority !== "all" && lead.priorityLevel !== filters.priority) return false;
@@ -399,6 +417,7 @@ export default function Dashboard() {
                         <SelectItem value="active">Active</SelectItem>
                         <SelectItem value="saved">Saved</SelectItem>
                         <SelectItem value="contacted">Contacted</SelectItem>
+                        <SelectItem value="dismissed">Dismissed</SelectItem>
                         <SelectItem value="all">All</SelectItem>
                       </SelectContent>
                     </Select>

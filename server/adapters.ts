@@ -1,5 +1,5 @@
 import Parser from "rss-parser";
-import type { Source, SourceTier, RssFeed, ScrapingBeeDebugEntry } from "@shared/schema";
+import type { Source, SourceTier, RssFeed, ScrapingBeeDebugEntry, FetchMethod } from "@shared/schema";
 
 const SCRAPINGBEE_API_KEY = process.env.SCRAPINGBEE_API_KEY;
 
@@ -11,6 +11,7 @@ export interface RawArticle {
   publishedAt: Date;
   content: string;
   region: string;
+  fetchMethod: FetchMethod;
 }
 
 export interface AdapterResult {
@@ -88,6 +89,7 @@ export async function fetchFromRssFeed(
         publishedAt: item.pubDate ? new Date(item.pubDate) : new Date(),
         content: content.slice(0, 2000),
         region: defaultRegion,
+        fetchMethod: "rss",
       });
     }
 
@@ -124,7 +126,7 @@ export async function fetchFromGoogleNews(
     sourceName: `${source.name} (Google News)`,
     sourceId: source.id,
     timestamp: new Date().toISOString(),
-    method: "rss",
+    method: "google_news",
     request: {
       url: `Google News search: site:${source.domain}`,
       renderJs: false,
@@ -166,6 +168,7 @@ export async function fetchFromGoogleNews(
         publishedAt: item.pubDate ? new Date(item.pubDate) : new Date(),
         content: content.slice(0, 2000),
         region: defaultRegion,
+        fetchMethod: "google_news",
       });
     }
 
@@ -307,6 +310,7 @@ export async function fetchFromScrapingBee(
         publishedAt: item.date ? new Date(item.date) : new Date(),
         content: summary.slice(0, 2000),
         region: defaultRegion,
+        fetchMethod: "scrapingbee",
       });
     }
 

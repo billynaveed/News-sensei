@@ -22,7 +22,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import type { ScanLog, SourceSearched, ArticleProcessed } from "@shared/schema";
+import type { ScanLog, SourceSearched, ArticleProcessed, ScrapingBeeDebugEntry, FetchMethod } from "@shared/schema";
 
 function LogsTableSkeleton() {
   return (
@@ -40,11 +40,26 @@ function formatDuration(ms: number | null | undefined): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
+const fetchMethodLabels: Record<string, string> = {
+  rss: "RSS Feed",
+  google_news: "Google News",
+  scrapingbee: "ScrapingBee",
+  fallback_rss: "RSS (fallback)",
+};
+
+const fetchMethodColors: Record<string, string> = {
+  rss: "bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/20",
+  google_news: "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20",
+  scrapingbee: "bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/20",
+  fallback_rss: "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20",
+};
+
 function LogRow({ log }: { log: ScanLog }) {
   const [isOpen, setIsOpen] = useState(false);
   const hasDetails = (log.sourcesSearched && log.sourcesSearched.length > 0) || 
                      (log.articlesProcessed && log.articlesProcessed.length > 0) ||
-                     (log.errors && log.errors.length > 0);
+                     (log.errors && log.errors.length > 0) ||
+                     (log.scrapingBeeDebug && log.scrapingBeeDebug.length > 0);
 
   return (
     <Collapsible open={isOpen} onOpenChange={setIsOpen}>
@@ -149,7 +164,12 @@ function LogRow({ log }: { log: ScanLog }) {
                       )}
                       <div className="flex-1 min-w-0">
                         <div className="truncate font-medium">{article.headline}</div>
-                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
+                          {article.fetchMethod && (
+                            <Badge variant="outline" className={fetchMethodColors[article.fetchMethod] || "bg-muted"}>
+                              {fetchMethodLabels[article.fetchMethod] || article.fetchMethod}
+                            </Badge>
+                          )}
                           <span>{article.source}</span>
                           <span>-</span>
                           <span>{article.region}</span>
@@ -177,6 +197,70 @@ function LogRow({ log }: { log: ScanLog }) {
                   {log.errors.map((error, idx) => (
                     <div key={idx} className="text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30 p-2 rounded" data-testid={`text-error-${log.id}-${idx}`}>
                       {error}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {log.scrapingBeeDebug && log.scrapingBeeDebug.length > 0 && (
+              <div data-testid={`section-debug-${log.id}`}>
+                <h4 className="text-sm font-medium mb-2 flex items-center gap-2">
+                  <Activity className="h-4 w-4 text-primary" />
+                  API Debug Log ({log.scrapingBeeDebug.length} calls)
+                </h4>
+                <div className="space-y-2 max-h-64 overflow-y-auto">
+                  {(log.scrapingBeeDebug as ScrapingBeeDebugEntry[]).map((entry, idx) => (
+                    <div 
+                      key={idx} 
+                      className="text-sm bg-muted/50 rounded-md p-3 space-y-2"
+                      data-testid={`debug-entry-${log.id}-${idx}`}
+                    >
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <Badge 
+                          variant="outline" 
+                          className={fetchMethodColors[entry.method] || "bg-muted"}
+                        >
+                          {fetchMethodLabels[entry.method] || entry.method}
+                        </Badge>
+                        <span className="font-medium">{entry.sourceName}</span>
+                        <span className="text-xs text-muted-foreground ml-auto">
+                          {format(new Date(entry.timestamp), "h:mm:ss a")}
+                        </span>
+                      </div>
+                      
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <div>
+                          <span className="text-muted-foreground">Request URL:</span>
+                          <div className="font-mono truncate">{entry.request.url}</div>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">Status:</span>
+                          <div className={entry.response.status === 200 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}>
+                            {entry.response.status} {entry.response.statusText}
+                          </div>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">Latency:</span>
+                          <div className="font-mono">{formatDuration(entry.response.latencyMs)}</div>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">Results:</span>
+                          <div>{entry.response.extractedCount} extracted, {entry.response.matchedCount} matched</div>
+                        </div>
+                      </div>
+
+                      {entry.fallbackReason && (
+                        <div className="text-xs bg-amber-500/10 text-amber-600 dark:text-amber-400 p-2 rounded">
+                          Fallback reason: {entry.fallbackReason}
+                        </div>
+                      )}
+
+                      {entry.error && (
+                        <div className="text-xs bg-red-500/10 text-red-600 dark:text-red-400 p-2 rounded">
+                          Error: {entry.error}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>

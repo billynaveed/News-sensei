@@ -22,6 +22,7 @@ export type User = typeof users.$inferSelect;
 export type LeadStatus = "new" | "reviewed" | "saved" | "contacted" | "dismissed";
 export type PriorityLevel = "high" | "medium" | "low";
 export type SourceTier = "tier1" | "tier2" | "tier3";
+export type FetchMethod = "rss" | "google_news" | "scrapingbee";
 
 // Leads table - the main data model for news article matches
 export const leads = pgTable("leads", {
@@ -40,6 +41,7 @@ export const leads = pgTable("leads", {
   priorityLevel: text("priority_level").notNull().$type<PriorityLevel>(),
   region: text("region").notNull(),
   status: text("status").notNull().$type<LeadStatus>().default("new"),
+  fetchMethod: text("fetch_method").$type<FetchMethod>(),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
 
@@ -113,12 +115,12 @@ export const insertRssFeedSchema = createInsertSchema(rssFeeds).omit({
 export type InsertRssFeed = z.infer<typeof insertRssFeedSchema>;
 export type RssFeed = typeof rssFeeds.$inferSelect;
 
-// Debug entry for ScrapingBee API calls
+// Debug entry for API calls (RSS, Google News, ScrapingBee)
 export interface ScrapingBeeDebugEntry {
   sourceName: string;
   sourceId: string;
   timestamp: string;
-  method: "scrapingbee" | "rss" | "fallback_rss";
+  method: "scrapingbee" | "rss" | "google_news" | "fallback_rss";
   request: {
     url: string;
     renderJs: boolean;
@@ -149,6 +151,7 @@ export interface ArticleProcessed {
   region: string;
   status: "success" | "skipped" | "error";
   reason?: string;
+  fetchMethod?: FetchMethod;
 }
 
 // Scan logs for tracking scraping activity
