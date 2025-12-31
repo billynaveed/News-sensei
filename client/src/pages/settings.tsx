@@ -14,7 +14,12 @@ import {
   Loader2,
   Clock,
   Newspaper,
-  ExternalLink
+  ExternalLink,
+  Rss,
+  Search,
+  Trash2,
+  ChevronDown,
+  ChevronRight
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -23,6 +28,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   Select,
   SelectContent,
@@ -39,9 +45,18 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import type { Settings, SourceTier, Source } from "@shared/schema";
+import type { Settings, SourceTier, Source, RssFeed } from "@shared/schema";
 
 const DEFAULT_KEYWORDS = [
   "Liquidity event", "IPO", "Initial Public Offering", "Trade sale",
@@ -65,7 +80,9 @@ const settingsSchema = z.object({
   emailEnabled: z.boolean(),
   alertEmail: z.string().email("Please enter a valid email address"),
   logRetentionDays: z.number().min(1).max(30),
-  useScrapingBee: z.boolean(),
+  googleNewsEnabled: z.boolean(),
+  rssEnabled: z.boolean(),
+  scrapingBeeEnabled: z.boolean(),
 });
 
 type SettingsFormData = z.infer<typeof settingsSchema>;
@@ -181,17 +198,118 @@ function RegionsSection({
   );
 }
 
-function SourcesSection({ 
-  sources, 
-  isLoading,
+function GlobalMethodToggles({
+  googleNewsEnabled,
+  rssEnabled,
+  scrapingBeeEnabled,
   onToggle,
-  isToggling
-}: { 
-  sources: Source[];
-  isLoading: boolean;
-  onToggle: (id: string, enabled: boolean) => void;
-  isToggling: boolean;
+}: {
+  googleNewsEnabled: boolean;
+  rssEnabled: boolean;
+  scrapingBeeEnabled: boolean;
+  onToggle: (method: 'googleNews' | 'rss' | 'scrapingBee', value: boolean) => void;
 }) {
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <Search className="h-5 w-5 text-primary" />
+          <CardTitle className="text-lg">Scanning Methods</CardTitle>
+        </div>
+        <CardDescription>
+          Configure which methods to use for scanning ALL active websites. These toggles apply globally.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex flex-row items-center justify-between p-3 rounded-md border">
+          <div className="space-y-0.5">
+            <div className="flex items-center gap-2">
+              <Search className="h-4 w-4 text-muted-foreground" />
+              <span className="font-medium">Google News Search</span>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Search Google News for articles from all active websites.
+            </p>
+          </div>
+          <Switch
+            checked={googleNewsEnabled}
+            onCheckedChange={(checked) => onToggle('googleNews', checked)}
+            data-testid="switch-google-news"
+          />
+        </div>
+
+        <div className="flex flex-row items-center justify-between p-3 rounded-md border">
+          <div className="space-y-0.5">
+            <div className="flex items-center gap-2">
+              <Rss className="h-4 w-4 text-muted-foreground" />
+              <span className="font-medium">RSS Feeds</span>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Fetch articles from all configured RSS feeds.
+            </p>
+          </div>
+          <Switch
+            checked={rssEnabled}
+            onCheckedChange={(checked) => onToggle('rss', checked)}
+            data-testid="switch-rss"
+          />
+        </div>
+
+        <div className="flex flex-row items-center justify-between p-3 rounded-md border">
+          <div className="space-y-0.5">
+            <div className="flex items-center gap-2">
+              <Globe className="h-4 w-4 text-muted-foreground" />
+              <span className="font-medium">ScrapingBee</span>
+              <Badge variant="secondary" className="text-xs">Paid</Badge>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Use ScrapingBee API for enhanced web scraping. Incurs API costs.
+            </p>
+          </div>
+          <Switch
+            checked={scrapingBeeEnabled}
+            onCheckedChange={(checked) => onToggle('scrapingBee', checked)}
+            data-testid="switch-scrapingbee"
+          />
+        </div>
+
+        <div className="text-sm text-muted-foreground bg-muted/50 p-3 rounded-md">
+          <strong>Active methods:</strong>{" "}
+          {[
+            googleNewsEnabled && "Google News",
+            rssEnabled && "RSS Feeds",
+            scrapingBeeEnabled && "ScrapingBee",
+          ].filter(Boolean).join(", ") || "None (scanning disabled)"}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function SourceCard({
+  source,
+  rssFeeds,
+  isLoadingFeeds,
+  onToggle,
+  onAddFeed,
+  onDeleteFeed,
+  onToggleFeed,
+  onDeleteSource,
+}: {
+  source: Source;
+  rssFeeds: RssFeed[];
+  isLoadingFeeds: boolean;
+  onToggle: (active: boolean) => void;
+  onAddFeed: (feed: { name: string; url: string }) => void;
+  onDeleteFeed: (feedId: string) => void;
+  onToggleFeed: (feedId: string, active: boolean) => void;
+  onDeleteSource: () => void;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [newFeedName, setNewFeedName] = useState("");
+  const [newFeedUrl, setNewFeedUrl] = useState("");
+  const [addFeedOpen, setAddFeedOpen] = useState(false);
+
   const tierLabel = (tier: string) => {
     switch (tier) {
       case "tier1": return "Major";
@@ -201,13 +319,304 @@ function SourcesSection({
     }
   };
 
-  const typeLabel = (type: string) => {
-    switch (type) {
-      case "rss": return "RSS";
-      case "api": return "API";
-      case "scrape": return "Scrape";
-      case "manual": return "Manual";
-      default: return type;
+  const handleAddFeed = () => {
+    if (newFeedName.trim() && newFeedUrl.trim()) {
+      onAddFeed({ name: newFeedName.trim(), url: newFeedUrl.trim() });
+      setNewFeedName("");
+      setNewFeedUrl("");
+      setAddFeedOpen(false);
+    }
+  };
+
+  return (
+    <Collapsible open={isOpen} onOpenChange={setIsOpen}>
+      <div className="border rounded-md bg-card">
+        <CollapsibleTrigger asChild>
+          <div 
+            className="flex items-center justify-between gap-4 p-3 cursor-pointer hover-elevate"
+            data-testid={`source-row-${source.id}`}
+          >
+            <div className="flex items-center gap-2 min-w-0 flex-1">
+              {isOpen ? <ChevronDown className="h-4 w-4 shrink-0" /> : <ChevronRight className="h-4 w-4 shrink-0" />}
+              <span className="font-medium truncate">{source.name}</span>
+              <Badge variant="outline" className="text-xs shrink-0">
+                {tierLabel(source.tier)}
+              </Badge>
+              <span className="text-sm text-muted-foreground truncate">
+                {source.domain}
+              </span>
+            </div>
+            <div className="flex items-center gap-3 shrink-0">
+              <Badge variant="secondary" className="text-xs">
+                {rssFeeds.length} feed{rssFeeds.length !== 1 ? 's' : ''}
+              </Badge>
+              <Switch
+                checked={source.active}
+                onCheckedChange={(checked) => {
+                  onToggle(checked);
+                }}
+                onClick={(e) => e.stopPropagation()}
+                data-testid={`switch-source-${source.id}`}
+              />
+            </div>
+          </div>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="border-t px-3 pb-3 space-y-3">
+            <div className="flex items-center justify-between pt-3">
+              <h4 className="text-sm font-medium text-muted-foreground">RSS Feeds</h4>
+              <div className="flex items-center gap-2">
+                <Dialog open={addFeedOpen} onOpenChange={setAddFeedOpen}>
+                  <DialogTrigger asChild>
+                    <Button size="sm" variant="outline" data-testid={`button-add-feed-${source.id}`}>
+                      <Plus className="h-3 w-3" />
+                      Add Feed
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Add RSS Feed</DialogTitle>
+                      <DialogDescription>
+                        Add a new RSS feed for {source.name}
+                      </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4 py-4">
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium">Feed Name</label>
+                        <Input
+                          placeholder="e.g., Companies & Markets"
+                          value={newFeedName}
+                          onChange={(e) => setNewFeedName(e.target.value)}
+                          data-testid="input-new-feed-name"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium">RSS URL</label>
+                        <Input
+                          placeholder="https://example.com/rss/feed.xml"
+                          value={newFeedUrl}
+                          onChange={(e) => setNewFeedUrl(e.target.value)}
+                          data-testid="input-new-feed-url"
+                        />
+                      </div>
+                    </div>
+                    <DialogFooter>
+                      <Button variant="outline" onClick={() => setAddFeedOpen(false)}>
+                        Cancel
+                      </Button>
+                      <Button 
+                        onClick={handleAddFeed}
+                        disabled={!newFeedName.trim() || !newFeedUrl.trim()}
+                        data-testid="button-confirm-add-feed"
+                      >
+                        Add Feed
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+                <Button 
+                  size="sm" 
+                  variant="ghost" 
+                  className="text-destructive hover:text-destructive"
+                  onClick={onDeleteSource}
+                  data-testid={`button-delete-source-${source.id}`}
+                >
+                  <Trash2 className="h-3 w-3" />
+                </Button>
+              </div>
+            </div>
+            
+            {isLoadingFeeds ? (
+              <div className="space-y-2">
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-10 w-full" />
+              </div>
+            ) : rssFeeds.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-2">
+                No RSS feeds configured for this source.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {rssFeeds.map((feed) => (
+                  <div 
+                    key={feed.id}
+                    className="flex items-center justify-between gap-3 p-2 rounded-md bg-muted/50"
+                    data-testid={`feed-row-${feed.id}`}
+                  >
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <Rss className="h-3 w-3 text-muted-foreground shrink-0" />
+                      <span className="text-sm font-medium truncate">{feed.name}</span>
+                      <span className="text-xs text-muted-foreground truncate hidden sm:block">
+                        {feed.url}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <Switch
+                        checked={feed.active}
+                        onCheckedChange={(checked) => onToggleFeed(feed.id, checked)}
+                        data-testid={`switch-feed-${feed.id}`}
+                      />
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                        onClick={() => onDeleteFeed(feed.id)}
+                        data-testid={`button-delete-feed-${feed.id}`}
+                      >
+                        <X className="h-3 w-3" />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </CollapsibleContent>
+      </div>
+    </Collapsible>
+  );
+}
+
+function SourcesSection({ 
+  sources, 
+  isLoading,
+}: { 
+  sources: Source[];
+  isLoading: boolean;
+}) {
+  const { toast } = useToast();
+  const [newSourceName, setNewSourceName] = useState("");
+  const [newSourceDomain, setNewSourceDomain] = useState("");
+  const [newSourceTier, setNewSourceTier] = useState<SourceTier>("tier2");
+  const [addSourceOpen, setAddSourceOpen] = useState(false);
+  const [rssFeedsBySource, setRssFeedsBySource] = useState<Record<string, RssFeed[]>>({});
+  const [loadingFeeds, setLoadingFeeds] = useState<Set<string>>(new Set());
+
+  const fetchFeedsForSource = async (sourceId: string) => {
+    if (rssFeedsBySource[sourceId] !== undefined) return;
+    setLoadingFeeds(prev => new Set(prev).add(sourceId));
+    try {
+      const res = await fetch(`/api/sources/${sourceId}/rss-feeds`);
+      const feeds = await res.json();
+      setRssFeedsBySource(prev => ({ ...prev, [sourceId]: feeds }));
+    } catch (error) {
+      console.error("Error fetching feeds:", error);
+    } finally {
+      setLoadingFeeds(prev => {
+        const next = new Set(prev);
+        next.delete(sourceId);
+        return next;
+      });
+    }
+  };
+
+  useEffect(() => {
+    sources.forEach(source => {
+      fetchFeedsForSource(source.id);
+    });
+  }, [sources]);
+
+  const toggleSourceMutation = useMutation({
+    mutationFn: async ({ id, active }: { id: string; active: boolean }) => {
+      await apiRequest("PATCH", `/api/sources/${id}`, { active });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/sources"] });
+    },
+    onError: () => {
+      toast({
+        title: "Error updating source",
+        description: "There was a problem updating the source.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const createSourceMutation = useMutation({
+    mutationFn: async (data: { name: string; domain: string; tier: SourceTier }) => {
+      await apiRequest("POST", "/api/sources", { ...data, active: true });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/sources"] });
+      setNewSourceName("");
+      setNewSourceDomain("");
+      setNewSourceTier("tier2");
+      setAddSourceOpen(false);
+      toast({ title: "Source added", description: "New source has been added." });
+    },
+    onError: () => {
+      toast({
+        title: "Error creating source",
+        description: "There was a problem creating the source.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const deleteSourceMutation = useMutation({
+    mutationFn: async (id: string) => {
+      await apiRequest("DELETE", `/api/sources/${id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/sources"] });
+      toast({ title: "Source deleted", description: "Source has been removed." });
+    },
+    onError: () => {
+      toast({
+        title: "Error deleting source",
+        description: "There was a problem deleting the source.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const createFeedMutation = useMutation({
+    mutationFn: async (data: { sourceId: string; name: string; url: string }) => {
+      await apiRequest("POST", "/api/rss-feeds", { ...data, active: true });
+    },
+    onSuccess: (_, variables) => {
+      setRssFeedsBySource(prev => ({ ...prev, [variables.sourceId]: undefined as any }));
+      fetchFeedsForSource(variables.sourceId);
+      toast({ title: "Feed added", description: "RSS feed has been added." });
+    },
+    onError: () => {
+      toast({
+        title: "Error creating feed",
+        description: "There was a problem creating the feed.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const toggleFeedMutation = useMutation({
+    mutationFn: async ({ id, active, sourceId }: { id: string; active: boolean; sourceId: string }) => {
+      await apiRequest("PATCH", `/api/rss-feeds/${id}`, { active });
+      return { sourceId };
+    },
+    onSuccess: (_, variables) => {
+      setRssFeedsBySource(prev => ({ ...prev, [variables.sourceId]: undefined as any }));
+      fetchFeedsForSource(variables.sourceId);
+    },
+  });
+
+  const deleteFeedMutation = useMutation({
+    mutationFn: async ({ id, sourceId }: { id: string; sourceId: string }) => {
+      await apiRequest("DELETE", `/api/rss-feeds/${id}`);
+      return { sourceId };
+    },
+    onSuccess: (_, variables) => {
+      setRssFeedsBySource(prev => ({ ...prev, [variables.sourceId]: undefined as any }));
+      fetchFeedsForSource(variables.sourceId);
+      toast({ title: "Feed deleted", description: "RSS feed has been removed." });
+    },
+  });
+
+  const tierLabel = (tier: string) => {
+    switch (tier) {
+      case "tier1": return "Major";
+      case "tier2": return "Regional";
+      case "tier3": return "Niche";
+      default: return tier;
     }
   };
 
@@ -243,12 +652,79 @@ function SourcesSection({
   return (
     <Card>
       <CardHeader>
-        <div className="flex items-center gap-2">
-          <Newspaper className="h-5 w-5 text-primary" />
-          <CardTitle className="text-lg">News Sources</CardTitle>
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-2">
+            <Newspaper className="h-5 w-5 text-primary" />
+            <CardTitle className="text-lg">News Sources</CardTitle>
+          </div>
+          <Dialog open={addSourceOpen} onOpenChange={setAddSourceOpen}>
+            <DialogTrigger asChild>
+              <Button size="sm" data-testid="button-add-source">
+                <Plus className="h-4 w-4" />
+                Add Source
+              </Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Add News Source</DialogTitle>
+                <DialogDescription>
+                  Add a new website to monitor for news articles.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4 py-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Source Name</label>
+                  <Input
+                    placeholder="e.g., Business Times Singapore"
+                    value={newSourceName}
+                    onChange={(e) => setNewSourceName(e.target.value)}
+                    data-testid="input-new-source-name"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Domain</label>
+                  <Input
+                    placeholder="e.g., businesstimes.com.sg"
+                    value={newSourceDomain}
+                    onChange={(e) => setNewSourceDomain(e.target.value)}
+                    data-testid="input-new-source-domain"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Tier</label>
+                  <Select value={newSourceTier} onValueChange={(v) => setNewSourceTier(v as SourceTier)}>
+                    <SelectTrigger data-testid="select-new-source-tier">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="tier1">Major (Tier 1)</SelectItem>
+                      <SelectItem value="tier2">Regional (Tier 2)</SelectItem>
+                      <SelectItem value="tier3">Niche (Tier 3)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setAddSourceOpen(false)}>
+                  Cancel
+                </Button>
+                <Button 
+                  onClick={() => createSourceMutation.mutate({
+                    name: newSourceName,
+                    domain: newSourceDomain,
+                    tier: newSourceTier,
+                  })}
+                  disabled={!newSourceName.trim() || !newSourceDomain.trim() || createSourceMutation.isPending}
+                  data-testid="button-confirm-add-source"
+                >
+                  {createSourceMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Add Source"}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </div>
         <CardDescription>
-          Configure which news sources to scan for wealth-related events. Toggle sources on or off.
+          Configure which news sources to scan. Each source can have multiple RSS feeds.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -263,45 +739,17 @@ function SourcesSection({
               </h3>
               <div className="space-y-2">
                 {tierSources.map((source) => (
-                  <div 
-                    key={source.id} 
-                    className="flex items-center justify-between gap-4 p-3 rounded-md border bg-card"
-                    data-testid={`source-row-${source.id}`}
-                  >
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-medium truncate">{source.name}</span>
-                        <Badge variant="outline" className="text-xs">
-                          {source.region}
-                        </Badge>
-                        <Badge variant="secondary" className="text-xs">
-                          {typeLabel(source.type || "manual")}
-                        </Badge>
-                      </div>
-                      {source.description && (
-                        <p className="text-sm text-muted-foreground mt-1 truncate">
-                          {source.description}
-                        </p>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-3 shrink-0">
-                      <a 
-                        href={source.url} 
-                        target="_blank" 
-                        rel="noopener noreferrer"
-                        className="text-muted-foreground hover:text-foreground"
-                        data-testid={`link-source-${source.id}`}
-                      >
-                        <ExternalLink className="h-4 w-4" />
-                      </a>
-                      <Switch
-                        checked={source.enabled}
-                        onCheckedChange={(checked) => onToggle(source.id, checked)}
-                        disabled={isToggling}
-                        data-testid={`switch-source-${source.id}`}
-                      />
-                    </div>
-                  </div>
+                  <SourceCard
+                    key={source.id}
+                    source={source}
+                    rssFeeds={rssFeedsBySource[source.id] || []}
+                    isLoadingFeeds={loadingFeeds.has(source.id)}
+                    onToggle={(active) => toggleSourceMutation.mutate({ id: source.id, active })}
+                    onAddFeed={(feed) => createFeedMutation.mutate({ sourceId: source.id, ...feed })}
+                    onDeleteFeed={(feedId) => deleteFeedMutation.mutate({ id: feedId, sourceId: source.id })}
+                    onToggleFeed={(feedId, active) => toggleFeedMutation.mutate({ id: feedId, active, sourceId: source.id })}
+                    onDeleteSource={() => deleteSourceMutation.mutate(source.id)}
+                  />
                 ))}
               </div>
             </div>
@@ -309,12 +757,12 @@ function SourcesSection({
         })}
         {sources.length === 0 && (
           <p className="text-sm text-muted-foreground">
-            No news sources configured. Sources will be added automatically.
+            No news sources configured. Add sources to start scanning.
           </p>
         )}
         <div className="pt-2 text-sm text-muted-foreground">
-          <span className="font-medium">{sources.filter(s => s.enabled).length}</span> of{" "}
-          <span className="font-medium">{sources.length}</span> sources enabled
+          <span className="font-medium">{sources.filter(s => s.active).length}</span> of{" "}
+          <span className="font-medium">{sources.length}</span> sources active
         </div>
       </CardContent>
     </Card>
@@ -332,22 +780,6 @@ export default function SettingsPage() {
     queryKey: ["/api/sources"],
   });
 
-  const toggleSourceMutation = useMutation({
-    mutationFn: async ({ id, enabled }: { id: string; enabled: boolean }) => {
-      await apiRequest("PATCH", `/api/sources/${id}/toggle`, { enabled });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/sources"] });
-    },
-    onError: () => {
-      toast({
-        title: "Error updating source",
-        description: "There was a problem updating the source. Please try again.",
-        variant: "destructive",
-      });
-    },
-  });
-
   const form = useForm<SettingsFormData>({
     resolver: zodResolver(settingsSchema),
     defaultValues: {
@@ -358,7 +790,9 @@ export default function SettingsPage() {
       emailEnabled: true,
       alertEmail: "",
       logRetentionDays: 2,
-      useScrapingBee: false,
+      googleNewsEnabled: false,
+      rssEnabled: true,
+      scrapingBeeEnabled: false,
     },
   });
 
@@ -372,7 +806,9 @@ export default function SettingsPage() {
         emailEnabled: settings.emailEnabled,
         alertEmail: settings.alertEmail,
         logRetentionDays: settings.logRetentionDays ?? 2,
-        useScrapingBee: settings.useScrapingBee ?? false,
+        googleNewsEnabled: settings.googleNewsEnabled ?? false,
+        rssEnabled: settings.rssEnabled ?? true,
+        scrapingBeeEnabled: settings.scrapingBeeEnabled ?? false,
       });
     }
   }, [settings, form]);
@@ -435,6 +871,16 @@ export default function SettingsPage() {
     }
   };
 
+  const handleToggleMethod = (method: 'googleNews' | 'rss' | 'scrapingBee', value: boolean) => {
+    if (method === 'googleNews') {
+      form.setValue("googleNewsEnabled", value, { shouldDirty: true });
+    } else if (method === 'rss') {
+      form.setValue("rssEnabled", value, { shouldDirty: true });
+    } else if (method === 'scrapingBee') {
+      form.setValue("scrapingBeeEnabled", value, { shouldDirty: true });
+    }
+  };
+
   const onSubmit = (data: SettingsFormData) => {
     saveMutation.mutate(data);
   };
@@ -476,54 +922,17 @@ export default function SettingsPage() {
             onToggle={handleToggleRegion}
           />
 
+          <GlobalMethodToggles
+            googleNewsEnabled={form.watch("googleNewsEnabled")}
+            rssEnabled={form.watch("rssEnabled")}
+            scrapingBeeEnabled={form.watch("scrapingBeeEnabled")}
+            onToggle={handleToggleMethod}
+          />
+
           <SourcesSection
             sources={sources}
             isLoading={isLoadingSources}
-            onToggle={(id, enabled) => toggleSourceMutation.mutate({ id, enabled })}
-            isToggling={toggleSourceMutation.isPending}
           />
-
-          <Card>
-            <CardHeader>
-              <div className="flex items-center gap-2">
-                <Globe className="h-5 w-5 text-primary" />
-                <CardTitle className="text-lg">Data Collection</CardTitle>
-              </div>
-              <CardDescription>
-                Configure how news articles are fetched from sources.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <FormField
-                control={form.control}
-                name="useScrapingBee"
-                render={({ field }) => (
-                  <FormItem className="flex flex-row items-center justify-between">
-                    <div className="space-y-0.5">
-                      <FormLabel>Use ScrapingBee for enhanced scraping</FormLabel>
-                      <FormDescription>
-                        When enabled, uses ScrapingBee API as a fallback when RSS feeds return no results. 
-                        This incurs additional API costs. When disabled, only free RSS feeds are used.
-                      </FormDescription>
-                    </div>
-                    <FormControl>
-                      <Switch
-                        checked={field.value}
-                        onCheckedChange={field.onChange}
-                        data-testid="switch-use-scrapingbee"
-                      />
-                    </FormControl>
-                  </FormItem>
-                )}
-              />
-              <div className="text-sm text-muted-foreground bg-muted/50 p-3 rounded-md">
-                <strong>Current mode:</strong>{" "}
-                {form.watch("useScrapingBee") 
-                  ? "RSS feeds + ScrapingBee fallback (may incur API costs)" 
-                  : "RSS feeds only (free)"}
-              </div>
-            </CardContent>
-          </Card>
 
           <Card>
             <CardHeader>

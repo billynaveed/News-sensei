@@ -1,5 +1,5 @@
 import Parser from "rss-parser";
-import type { Source, SourceTier, ScrapingBeeDebugEntry } from "@shared/schema";
+import type { Source, SourceTier, RssFeed, ScrapingBeeDebugEntry } from "@shared/schema";
 
 const SCRAPINGBEE_API_KEY = process.env.SCRAPINGBEE_API_KEY;
 
@@ -19,10 +19,6 @@ export interface AdapterResult {
   debugEntry?: ScrapingBeeDebugEntry;
 }
 
-export interface SourceAdapter {
-  fetchArticles(source: Source, keywords: string[]): Promise<AdapterResult>;
-}
-
 const rssParser = new Parser({
   timeout: 15000,
   maxRedirects: 5,
@@ -35,227 +31,301 @@ const rssParser = new Parser({
   },
 });
 
-export class RSSAdapter implements SourceAdapter {
-  async fetchArticles(source: Source, keywords: string[]): Promise<AdapterResult> {
-    const articles: RawArticle[] = [];
-    const errors: string[] = [];
+export interface RssFeedWithMeta extends RssFeed {
+  sourceName: string;
+  sourceTier: string;
+}
 
-    if (!source.rssUrl) {
-      return { articles, errors: [`No RSS URL configured for ${source.name}`] };
-    }
+export async function fetchFromRssFeed(
+  feed: RssFeedWithMeta,
+  keywords: string[],
+  defaultRegion: string = "Singapore"
+): Promise<AdapterResult> {
+  const articles: RawArticle[] = [];
+  const errors: string[] = [];
+  const startTime = Date.now();
 
-    try {
-      const feed = await rssParser.parseURL(source.rssUrl);
+  const debugEntry: ScrapingBeeDebugEntry = {
+    sourceName: `${feed.sourceName} - ${feed.name}`,
+    sourceId: feed.sourceId,
+    timestamp: new Date().toISOString(),
+    method: "rss",
+    request: {
+      url: feed.url,
+      renderJs: false,
+      extractRules: "N/A - RSS Feed",
+    },
+    response: {
+      status: 0,
+      statusText: "",
+      latencyMs: 0,
+      rawResponseSnippet: "",
+      extractedCount: 0,
+      matchedCount: 0,
+    },
+  };
+
+  try {
+    const parsed = await rssParser.parseURL(feed.url);
+    
+    for (const item of parsed.items) {
+      if (!item.title || !item.link) continue;
+
+      const content = item.contentSnippet || item.content || item.summary || "";
+      const combinedText = `${item.title} ${content}`.toLowerCase();
       
-      for (const item of feed.items) {
-        if (!item.title || !item.link) continue;
+      const matchesKeyword = keywords.some(kw => 
+        combinedText.includes(kw.toLowerCase())
+      );
 
-        const content = item.contentSnippet || item.content || item.summary || "";
-        const combinedText = `${item.title} ${content}`.toLowerCase();
-        
-        const matchesKeyword = keywords.some(kw => 
-          combinedText.includes(kw.toLowerCase())
-        );
+      if (!matchesKeyword) continue;
 
-        if (!matchesKeyword) continue;
-
-        articles.push({
-          headline: item.title,
-          url: item.link,
-          source: source.name,
-          sourceTier: source.tier as SourceTier,
-          publishedAt: item.pubDate ? new Date(item.pubDate) : new Date(),
-          content: content.slice(0, 2000),
-          region: source.region || "Singapore",
-        });
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown error";
-      errors.push(`Failed to fetch RSS from ${source.name}: ${message}`);
+      articles.push({
+        headline: item.title,
+        url: item.link,
+        source: feed.sourceName,
+        sourceTier: feed.sourceTier as SourceTier,
+        publishedAt: item.pubDate ? new Date(item.pubDate) : new Date(),
+        content: content.slice(0, 2000),
+        region: defaultRegion,
+      });
     }
 
-    return { articles, errors };
+    debugEntry.response.status = 200;
+    debugEntry.response.statusText = "OK";
+    debugEntry.response.latencyMs = Date.now() - startTime;
+    debugEntry.response.extractedCount = parsed.items.length;
+    debugEntry.response.matchedCount = articles.length;
+    debugEntry.response.rawResponseSnippet = `Found ${parsed.items.length} items, ${articles.length} matched keywords`;
+
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    errors.push(`Failed to fetch RSS from ${feed.sourceName} - ${feed.name}: ${message}`);
+    debugEntry.error = message;
+    debugEntry.response.status = 500;
+    debugEntry.response.statusText = "Error";
+    debugEntry.response.latencyMs = Date.now() - startTime;
+    debugEntry.response.rawResponseSnippet = message;
   }
+
+  return { articles, errors, debugEntry };
 }
 
-export class ManualAdapter implements SourceAdapter {
-  async fetchArticles(_source: Source, _keywords: string[]): Promise<AdapterResult> {
-    return { articles: [], errors: [] };
+export async function fetchFromGoogleNews(
+  source: Source,
+  keywords: string[],
+  defaultRegion: string = "Singapore"
+): Promise<AdapterResult> {
+  const articles: RawArticle[] = [];
+  const errors: string[] = [];
+  const startTime = Date.now();
+
+  const debugEntry: ScrapingBeeDebugEntry = {
+    sourceName: `${source.name} (Google News)`,
+    sourceId: source.id,
+    timestamp: new Date().toISOString(),
+    method: "rss",
+    request: {
+      url: `Google News search: site:${source.domain}`,
+      renderJs: false,
+      extractRules: "N/A - Google News RSS",
+    },
+    response: {
+      status: 0,
+      statusText: "",
+      latencyMs: 0,
+      rawResponseSnippet: "",
+      extractedCount: 0,
+      matchedCount: 0,
+    },
+  };
+
+  try {
+    const searchQuery = encodeURIComponent(`site:${source.domain}`);
+    const googleNewsRssUrl = `https://news.google.com/rss/search?q=${searchQuery}&hl=en&gl=SG&ceid=SG:en`;
+    
+    const parsed = await rssParser.parseURL(googleNewsRssUrl);
+    
+    for (const item of parsed.items) {
+      if (!item.title || !item.link) continue;
+
+      const content = item.contentSnippet || item.content || item.summary || "";
+      const combinedText = `${item.title} ${content}`.toLowerCase();
+      
+      const matchesKeyword = keywords.some(kw => 
+        combinedText.includes(kw.toLowerCase())
+      );
+
+      if (!matchesKeyword) continue;
+
+      articles.push({
+        headline: item.title,
+        url: item.link,
+        source: source.name,
+        sourceTier: source.tier as SourceTier,
+        publishedAt: item.pubDate ? new Date(item.pubDate) : new Date(),
+        content: content.slice(0, 2000),
+        region: defaultRegion,
+      });
+    }
+
+    debugEntry.response.status = 200;
+    debugEntry.response.statusText = "OK";
+    debugEntry.response.latencyMs = Date.now() - startTime;
+    debugEntry.response.extractedCount = parsed.items.length;
+    debugEntry.response.matchedCount = articles.length;
+    debugEntry.response.rawResponseSnippet = `Found ${parsed.items.length} items, ${articles.length} matched keywords`;
+
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    errors.push(`Failed to fetch Google News for ${source.name}: ${message}`);
+    debugEntry.error = message;
+    debugEntry.response.status = 500;
+    debugEntry.response.statusText = "Error";
+    debugEntry.response.latencyMs = Date.now() - startTime;
   }
+
+  return { articles, errors, debugEntry };
 }
 
-export class ScrapingBeeAdapter implements SourceAdapter {
-  async fetchArticles(source: Source, keywords: string[]): Promise<AdapterResult> {
-    const articles: RawArticle[] = [];
-    const errors: string[] = [];
-    const startTime = Date.now();
+export async function fetchFromScrapingBee(
+  source: Source,
+  keywords: string[],
+  defaultRegion: string = "Singapore"
+): Promise<AdapterResult> {
+  const articles: RawArticle[] = [];
+  const errors: string[] = [];
+  const startTime = Date.now();
 
-    const extractRules = JSON.stringify({
-      articles: {
-        selector: "article, .article, .post, .story, .news-item, [class*='article'], [class*='story'], a[href*='/article'], a[href*='/news'], a[href*='/story']",
-        type: "list",
-        output: {
-          headline: "h1, h2, h3, .title, .headline, a",
-          link: { selector: "a", output: "@href" },
-          summary: "p, .summary, .excerpt, .description",
-          date: "time, .date, .timestamp, [datetime]"
-        }
+  const extractRules = JSON.stringify({
+    articles: {
+      selector: "article, .article, .post, .story, .news-item, [class*='article'], [class*='story'], a[href*='/article'], a[href*='/news'], a[href*='/story']",
+      type: "list",
+      output: {
+        headline: "h1, h2, h3, .title, .headline, a",
+        link: { selector: "a", output: "@href" },
+        summary: "p, .summary, .excerpt, .description",
+        date: "time, .date, .timestamp, [datetime]"
       }
+    }
+  });
+
+  const debugEntry: ScrapingBeeDebugEntry = {
+    sourceName: source.name,
+    sourceId: source.id,
+    timestamp: new Date().toISOString(),
+    method: "scrapingbee",
+    request: {
+      url: `https://${source.domain}`,
+      renderJs: false,
+      extractRules: extractRules,
+    },
+    response: {
+      status: 0,
+      statusText: "",
+      latencyMs: 0,
+      rawResponseSnippet: "",
+      extractedCount: 0,
+      matchedCount: 0,
+    },
+  };
+
+  if (!SCRAPINGBEE_API_KEY) {
+    debugEntry.error = "ScrapingBee API key not configured";
+    debugEntry.response.latencyMs = Date.now() - startTime;
+    return { articles, errors: ["ScrapingBee API key not configured"], debugEntry };
+  }
+
+  try {
+    const targetUrl = `https://${source.domain}`;
+    const params = new URLSearchParams({
+      api_key: SCRAPINGBEE_API_KEY,
+      url: targetUrl,
+      render_js: "false",
+      extract_rules: extractRules,
     });
 
-    const debugEntry: ScrapingBeeDebugEntry = {
-      sourceName: source.name,
-      sourceId: source.id,
-      timestamp: new Date().toISOString(),
-      method: "scrapingbee",
-      request: {
-        url: source.url,
-        renderJs: false,
-        extractRules: extractRules,
-      },
-      response: {
-        status: 0,
-        statusText: "",
-        latencyMs: 0,
-        rawResponseSnippet: "",
-        extractedCount: 0,
-        matchedCount: 0,
-      },
-    };
+    const response = await fetch(`https://app.scrapingbee.com/api/v1?${params.toString()}`, {
+      method: "GET",
+      headers: { "Accept": "application/json" },
+    });
 
-    if (!SCRAPINGBEE_API_KEY) {
-      debugEntry.error = "ScrapingBee API key not configured";
-      debugEntry.response.latencyMs = Date.now() - startTime;
-      return { articles, errors: ["ScrapingBee API key not configured"], debugEntry };
+    debugEntry.response.status = response.status;
+    debugEntry.response.statusText = response.statusText;
+    debugEntry.response.latencyMs = Date.now() - startTime;
+
+    const responseText = await response.text();
+    debugEntry.response.rawResponseSnippet = responseText.slice(0, 3000);
+
+    if (!response.ok) {
+      debugEntry.error = `HTTP ${response.status}: ${responseText.slice(0, 500)}`;
+      errors.push(`ScrapingBee error for ${source.name}: ${response.status} - ${responseText}`);
+      return { articles, errors, debugEntry };
     }
 
+    let data: any;
     try {
-      const params = new URLSearchParams({
-        api_key: SCRAPINGBEE_API_KEY,
-        url: source.url,
-        render_js: "false",
-        extract_rules: extractRules,
-      });
+      data = JSON.parse(responseText);
+    } catch (parseError) {
+      debugEntry.error = `JSON parse error: ${responseText.slice(0, 200)}`;
+      errors.push(`ScrapingBee JSON parse error for ${source.name}`);
+      return { articles, errors, debugEntry };
+    }
 
-      const response = await fetch(`https://app.scrapingbee.com/api/v1?${params.toString()}`, {
-        method: "GET",
-        headers: { "Accept": "application/json" },
-      });
+    const extractedArticles = data.articles || [];
+    debugEntry.response.extractedCount = extractedArticles.length;
 
-      debugEntry.response.status = response.status;
-      debugEntry.response.statusText = response.statusText;
-      debugEntry.response.latencyMs = Date.now() - startTime;
+    for (const item of extractedArticles) {
+      if (!item.headline || !item.link) continue;
 
-      const responseText = await response.text();
-      debugEntry.response.rawResponseSnippet = responseText.slice(0, 3000);
+      const headline = typeof item.headline === 'string' ? item.headline.trim() : '';
+      if (!headline) continue;
 
-      if (!response.ok) {
-        debugEntry.error = `HTTP ${response.status}: ${responseText.slice(0, 500)}`;
-        errors.push(`ScrapingBee error for ${source.name}: ${response.status} - ${responseText}`);
-        return { articles, errors, debugEntry };
-      }
-
-      let data: any;
-      try {
-        data = JSON.parse(responseText);
-      } catch (parseError) {
-        debugEntry.error = `JSON parse error: ${responseText.slice(0, 200)}`;
-        errors.push(`ScrapingBee JSON parse error for ${source.name}`);
-        return { articles, errors, debugEntry };
-      }
-
-      const extractedArticles = data.articles || [];
-      debugEntry.response.extractedCount = extractedArticles.length;
-
-      for (const item of extractedArticles) {
-        if (!item.headline || !item.link) continue;
-
-        const headline = typeof item.headline === 'string' ? item.headline.trim() : '';
-        if (!headline) continue;
-
-        let articleUrl = item.link;
-        if (articleUrl && !articleUrl.startsWith("http")) {
-          try {
-            const baseUrl = new URL(source.url);
-            articleUrl = new URL(articleUrl, baseUrl.origin).toString();
-          } catch {
-            continue;
-          }
+      let articleUrl = item.link;
+      if (articleUrl && !articleUrl.startsWith("http")) {
+        try {
+          articleUrl = new URL(articleUrl, `https://${source.domain}`).toString();
+        } catch {
+          continue;
         }
-
-        const summary = typeof item.summary === 'string' ? item.summary.trim() : '';
-        const combinedText = `${headline} ${summary}`.toLowerCase();
-        
-        const matchesKeyword = keywords.some(kw => 
-          combinedText.includes(kw.toLowerCase())
-        );
-
-        if (!matchesKeyword) continue;
-
-        articles.push({
-          headline,
-          url: articleUrl,
-          source: source.name,
-          sourceTier: source.tier as SourceTier,
-          publishedAt: item.date ? new Date(item.date) : new Date(),
-          content: summary.slice(0, 2000),
-          region: source.region || "Singapore",
-        });
       }
 
-      debugEntry.response.matchedCount = articles.length;
+      const summary = typeof item.summary === 'string' ? item.summary.trim() : '';
+      const combinedText = `${headline} ${summary}`.toLowerCase();
+      
+      const matchesKeyword = keywords.some(kw => 
+        combinedText.includes(kw.toLowerCase())
+      );
 
-      if (extractedArticles.length === 0) {
-        debugEntry.error = "No articles extracted - selectors may not match page structure";
-      } else if (articles.length === 0) {
-        debugEntry.error = `${extractedArticles.length} articles extracted but 0 matched keywords`;
-      }
+      if (!matchesKeyword) continue;
 
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown error";
-      debugEntry.error = message;
-      debugEntry.response.latencyMs = Date.now() - startTime;
-      errors.push(`ScrapingBee fetch failed for ${source.name}: ${message}`);
+      articles.push({
+        headline,
+        url: articleUrl,
+        source: source.name,
+        sourceTier: source.tier as SourceTier,
+        publishedAt: item.date ? new Date(item.date) : new Date(),
+        content: summary.slice(0, 2000),
+        region: defaultRegion,
+      });
     }
 
-    return { articles, errors, debugEntry };
-  }
-}
+    debugEntry.response.matchedCount = articles.length;
 
-export class ScrapeAdapter implements SourceAdapter {
-  private scrapingBeeAdapter = new ScrapingBeeAdapter();
-  private rssAdapter = new RSSAdapter();
-
-  async fetchArticles(source: Source, keywords: string[]): Promise<AdapterResult> {
-    const sbResult = await this.scrapingBeeAdapter.fetchArticles(source, keywords);
-    
-    if (sbResult.articles.length > 0) {
-      return sbResult;
+    if (extractedArticles.length === 0) {
+      debugEntry.error = "No articles extracted - selectors may not match page structure";
+    } else if (articles.length === 0) {
+      debugEntry.error = `${extractedArticles.length} articles extracted but 0 matched keywords`;
     }
 
-    if (source.rssUrl) {
-      const rssResult = await this.rssAdapter.fetchArticles(source, keywords);
-      return {
-        articles: rssResult.articles,
-        errors: [...sbResult.errors, ...rssResult.errors],
-      };
-    }
-
-    return sbResult;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    debugEntry.error = message;
+    debugEntry.response.latencyMs = Date.now() - startTime;
+    errors.push(`ScrapingBee fetch failed for ${source.name}: ${message}`);
   }
-}
 
-export function getAdapter(type: string): SourceAdapter {
-  switch (type) {
-    case "rss":
-      return new RSSAdapter();
-    case "scrape":
-      return new ScrapeAdapter();
-    case "api":
-    case "manual":
-    default:
-      return new ManualAdapter();
-  }
+  return { articles, errors, debugEntry };
 }
 
 export interface FetchAllArticlesResult {
@@ -265,106 +335,96 @@ export interface FetchAllArticlesResult {
   debugEntries: ScrapingBeeDebugEntry[];
 }
 
-export interface FetchOptions {
-  useScrapingBee: boolean;
+export interface ScanningOptions {
+  googleNewsEnabled: boolean;
+  rssEnabled: boolean;
+  scrapingBeeEnabled: boolean;
+  defaultRegion: string;
 }
 
 export async function fetchAllArticles(
-  sources: Source[], 
+  activeSources: Source[],
+  activeFeeds: RssFeedWithMeta[],
   keywords: string[],
-  options: FetchOptions = { useScrapingBee: false }
+  options: ScanningOptions
 ): Promise<FetchAllArticlesResult> {
   const allArticles: RawArticle[] = [];
   const allErrors: string[] = [];
   const sourcesSearched: { name: string; tier: SourceTier; articlesFound: number }[] = [];
   const debugEntries: ScrapingBeeDebugEntry[] = [];
+  
+  if (activeSources.length === 0) {
+    return { articles: [], sourcesSearched: [], errors: ["No active sources configured"], debugEntries: [] };
+  }
 
-  const scrapingBeeAdapter = new ScrapingBeeAdapter();
-  const rssAdapter = new RSSAdapter();
+  const sourceArticleCounts: Map<string, number> = new Map();
 
-  for (const source of sources) {
-    try {
-      let articles: RawArticle[] = [];
-      const sourceErrors: string[] = [];
-      const rssStartTime = Date.now();
-
-      if (source.rssUrl) {
-        const rssResult = await rssAdapter.fetchArticles(source, keywords);
-        articles = rssResult.articles;
-        sourceErrors.push(...rssResult.errors);
-
-        const rssDebugEntry: ScrapingBeeDebugEntry = {
-          sourceName: source.name,
-          sourceId: source.id,
-          timestamp: new Date().toISOString(),
-          method: "rss",
-          request: {
-            url: source.rssUrl,
-            renderJs: false,
-            extractRules: "N/A - RSS Feed",
-          },
-          response: {
-            status: rssResult.errors.length > 0 ? 500 : 200,
-            statusText: rssResult.errors.length > 0 ? "Error" : "OK",
-            latencyMs: Date.now() - rssStartTime,
-            rawResponseSnippet: rssResult.errors.length > 0 ? rssResult.errors.join("; ") : `Found ${articles.length} articles matching keywords`,
-            extractedCount: articles.length,
-            matchedCount: articles.length,
-          },
-          error: rssResult.errors.length > 0 ? rssResult.errors.join("; ") : undefined,
-        };
-        debugEntries.push(rssDebugEntry);
-      }
-
-      if (articles.length === 0 && options.useScrapingBee && SCRAPINGBEE_API_KEY) {
-        const sbResult = await scrapingBeeAdapter.fetchArticles(source, keywords);
-        articles = sbResult.articles;
-        sourceErrors.push(...sbResult.errors);
-        
-        if (sbResult.debugEntry) {
-          sbResult.debugEntry.fallbackReason = source.rssUrl ? "RSS returned 0 matching articles" : "No RSS URL configured";
-          debugEntries.push(sbResult.debugEntry);
+  if (options.rssEnabled) {
+    for (const feed of activeFeeds) {
+      try {
+        const result = await fetchFromRssFeed(feed, keywords, options.defaultRegion);
+        allArticles.push(...result.articles);
+        allErrors.push(...result.errors);
+        if (result.debugEntry) {
+          debugEntries.push(result.debugEntry);
         }
+        
+        const currentCount = sourceArticleCounts.get(feed.sourceName) || 0;
+        sourceArticleCounts.set(feed.sourceName, currentCount + result.articles.length);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        allErrors.push(`Error fetching RSS feed ${feed.name}: ${message}`);
       }
-
-      allArticles.push(...articles);
-      allErrors.push(...sourceErrors);
-      
-      sourcesSearched.push({
-        name: source.name,
-        tier: source.tier as SourceTier,
-        articlesFound: articles.length,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown error";
-      allErrors.push(`Error fetching from ${source.name}: ${message}`);
-      sourcesSearched.push({
-        name: source.name,
-        tier: source.tier as SourceTier,
-        articlesFound: 0,
-      });
-
-      debugEntries.push({
-        sourceName: source.name,
-        sourceId: source.id,
-        timestamp: new Date().toISOString(),
-        method: "rss",
-        request: {
-          url: source.rssUrl || source.url,
-          renderJs: false,
-          extractRules: "N/A - Exception thrown",
-        },
-        response: {
-          status: 0,
-          statusText: "Exception",
-          latencyMs: 0,
-          rawResponseSnippet: "",
-          extractedCount: 0,
-          matchedCount: 0,
-        },
-        error: message,
-      });
     }
+  }
+
+  if (options.googleNewsEnabled) {
+    for (const source of activeSources) {
+      try {
+        const result = await fetchFromGoogleNews(source, keywords, options.defaultRegion);
+        allArticles.push(...result.articles);
+        allErrors.push(...result.errors);
+        if (result.debugEntry) {
+          debugEntries.push(result.debugEntry);
+        }
+        
+        const currentCount = sourceArticleCounts.get(source.name) || 0;
+        sourceArticleCounts.set(source.name, currentCount + result.articles.length);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        allErrors.push(`Error fetching Google News for ${source.name}: ${message}`);
+      }
+    }
+  }
+
+  if (options.scrapingBeeEnabled && SCRAPINGBEE_API_KEY) {
+    for (const source of activeSources) {
+      const currentCount = sourceArticleCounts.get(source.name) || 0;
+      if (currentCount > 0) continue;
+      
+      try {
+        const result = await fetchFromScrapingBee(source, keywords, options.defaultRegion);
+        allArticles.push(...result.articles);
+        allErrors.push(...result.errors);
+        if (result.debugEntry) {
+          result.debugEntry.fallbackReason = "No articles from RSS/Google News";
+          debugEntries.push(result.debugEntry);
+        }
+        
+        sourceArticleCounts.set(source.name, currentCount + result.articles.length);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        allErrors.push(`Error with ScrapingBee for ${source.name}: ${message}`);
+      }
+    }
+  }
+
+  for (const source of activeSources) {
+    sourcesSearched.push({
+      name: source.name,
+      tier: source.tier as SourceTier,
+      articlesFound: sourceArticleCounts.get(source.name) || 0,
+    });
   }
 
   const normalizeUrl = (url: string): string => {

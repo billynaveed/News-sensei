@@ -1,11 +1,12 @@
 import { eq, desc, gte, and, ne, sql, lt } from "drizzle-orm";
 import { db } from "./db";
 import { 
-  users, leads, settings, sources, scanLogs,
+  users, leads, settings, sources, scanLogs, rssFeeds,
   type User, type InsertUser, 
   type Lead, type InsertLead, type LeadStatus,
   type Settings, type InsertSettings,
   type Source, type InsertSource,
+  type RssFeed, type InsertRssFeed,
   type ScanLog, type InsertScanLog
 } from "@shared/schema";
 
@@ -24,11 +25,21 @@ export interface IStorage {
   getSettings(): Promise<Settings | undefined>;
   upsertSettings(settings: Partial<InsertSettings>): Promise<Settings>;
 
+  // Sources (simplified - domain-based)
   getAllSources(): Promise<Source[]>;
-  getEnabledSources(): Promise<Source[]>;
+  getActiveSources(): Promise<Source[]>;
+  getSourceById(id: string): Promise<Source | undefined>;
   createSource(source: InsertSource): Promise<Source>;
-  updateSourceEnabled(id: string, enabled: boolean): Promise<Source | undefined>;
+  updateSource(id: string, updates: Partial<InsertSource>): Promise<Source | undefined>;
+  deleteSource(id: string): Promise<boolean>;
   seedDefaultSources(): Promise<void>;
+
+  // RSS Feeds (subcategories per source)
+  getRssFeedsBySourceId(sourceId: string): Promise<RssFeed[]>;
+  getAllActiveRssFeeds(): Promise<(RssFeed & { sourceName: string; sourceTier: string })[]>;
+  createRssFeed(feed: InsertRssFeed): Promise<RssFeed>;
+  updateRssFeed(id: string, updates: Partial<InsertRssFeed>): Promise<RssFeed | undefined>;
+  deleteRssFeed(id: string): Promise<boolean>;
 
   getAllScanLogs(): Promise<ScanLog[]>;
   getScanLogById(id: string): Promise<ScanLog | undefined>;
@@ -121,7 +132,9 @@ export class DatabaseStorage implements IStorage {
       emailEnabled: true,
       alertEmail: "billynaveed@gmail.com",
       logRetentionDays: 2,
-      useScrapingBee: false,
+      googleNewsEnabled: false,
+      rssEnabled: true,
+      scrapingBeeEnabled: false,
     }).returning();
     return newSettings;
   }
@@ -144,7 +157,9 @@ export class DatabaseStorage implements IStorage {
       emailEnabled: update.emailEnabled ?? true,
       alertEmail: update.alertEmail || "",
       logRetentionDays: update.logRetentionDays ?? 2,
-      useScrapingBee: update.useScrapingBee ?? false,
+      googleNewsEnabled: update.googleNewsEnabled ?? false,
+      rssEnabled: update.rssEnabled ?? true,
+      scrapingBeeEnabled: update.scrapingBeeEnabled ?? false,
     }).returning();
     return created;
   }
@@ -153,8 +168,13 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(sources);
   }
 
-  async getEnabledSources(): Promise<Source[]> {
-    return db.select().from(sources).where(eq(sources.enabled, true));
+  async getActiveSources(): Promise<Source[]> {
+    return db.select().from(sources).where(eq(sources.active, true));
+  }
+
+  async getSourceById(id: string): Promise<Source | undefined> {
+    const [source] = await db.select().from(sources).where(eq(sources.id, id));
+    return source || undefined;
   }
 
   async createSource(insertSource: InsertSource): Promise<Source> {
@@ -162,28 +182,118 @@ export class DatabaseStorage implements IStorage {
     return source;
   }
 
-  async updateSourceEnabled(id: string, enabled: boolean): Promise<Source | undefined> {
+  async updateSource(id: string, updates: Partial<InsertSource>): Promise<Source | undefined> {
     const [source] = await db.update(sources)
-      .set({ enabled })
+      .set(updates)
       .where(eq(sources.id, id))
       .returning();
     return source || undefined;
+  }
+
+  async deleteSource(id: string): Promise<boolean> {
+    const result = await db.delete(sources).where(eq(sources.id, id));
+    return true;
   }
 
   async seedDefaultSources(): Promise<void> {
     const existing = await db.select().from(sources);
     if (existing.length > 0) return;
 
-    const defaultSources: InsertSource[] = [
-      { name: "Straits Times Business", url: "https://www.straitstimes.com", rssUrl: "https://www.straitstimes.com/news/business/rss.xml", tier: "tier1", type: "rss", region: "Singapore", description: "Singapore's flagship newspaper business section" },
-      { name: "CNA Business", url: "https://www.channelnewsasia.com", rssUrl: "https://www.channelnewsasia.com/api/v1/rss-outbound-feed?_format=xml&category=6511", tier: "tier1", type: "rss", region: "Singapore", description: "Singapore's 24-hour news channel business feed" },
-      { name: "Reuters Business", url: "https://www.reuters.com", rssUrl: "https://www.reutersagency.com/feed/?best-topics=business-finance", tier: "tier2", type: "rss", region: "Singapore", description: "Global business and finance news" },
-      { name: "Tech in Asia", url: "https://www.techinasia.com", rssUrl: "https://www.techinasia.com/feed", tier: "tier3", type: "rss", region: "Singapore", description: "Southeast Asia's startup and tech news" },
-      { name: "DealStreetAsia", url: "https://www.dealstreetasia.com", rssUrl: "https://www.dealstreetasia.com/feed", tier: "tier3", type: "rss", region: "Singapore", description: "Private equity and venture capital news in Asia" },
-      { name: "e27", url: "https://e27.co", rssUrl: "https://e27.co/feed/", tier: "tier3", type: "rss", region: "Singapore", description: "Asia tech and startup ecosystem news" },
+    // Seed default sources
+    const defaultSourcesData: InsertSource[] = [
+      { name: "Straits Times", domain: "straitstimes.com", tier: "tier1", active: true },
+      { name: "Channel NewsAsia", domain: "channelnewsasia.com", tier: "tier1", active: true },
+      { name: "Business Times Singapore", domain: "businesstimes.com.sg", tier: "tier1", active: true },
+      { name: "Reuters", domain: "reuters.com", tier: "tier2", active: true },
+      { name: "Tech in Asia", domain: "techinasia.com", tier: "tier3", active: true },
+      { name: "DealStreetAsia", domain: "dealstreetasia.com", tier: "tier3", active: true },
+      { name: "e27", domain: "e27.co", tier: "tier3", active: true },
     ];
 
-    await db.insert(sources).values(defaultSources);
+    const insertedSources = await db.insert(sources).values(defaultSourcesData).returning();
+
+    // Seed default RSS feeds for each source
+    const defaultFeeds: InsertRssFeed[] = [];
+    
+    for (const source of insertedSources) {
+      if (source.domain === "straitstimes.com") {
+        defaultFeeds.push(
+          { sourceId: source.id, name: "Business", url: "https://www.straitstimes.com/news/business/rss.xml", active: true }
+        );
+      } else if (source.domain === "channelnewsasia.com") {
+        defaultFeeds.push(
+          { sourceId: source.id, name: "Business", url: "https://www.channelnewsasia.com/api/v1/rss-outbound-feed?_format=xml&category=6511", active: true }
+        );
+      } else if (source.domain === "businesstimes.com.sg") {
+        defaultFeeds.push(
+          { sourceId: source.id, name: "Companies & Markets", url: "https://www.businesstimes.com.sg/rss/companies-markets", active: true },
+          { sourceId: source.id, name: "Startups & Tech", url: "https://www.businesstimes.com.sg/rss/startups-tech", active: true }
+        );
+      } else if (source.domain === "reuters.com") {
+        defaultFeeds.push(
+          { sourceId: source.id, name: "Business", url: "https://www.reutersagency.com/feed/?best-topics=business-finance", active: true }
+        );
+      } else if (source.domain === "techinasia.com") {
+        defaultFeeds.push(
+          { sourceId: source.id, name: "Main Feed", url: "https://www.techinasia.com/feed", active: true }
+        );
+      } else if (source.domain === "dealstreetasia.com") {
+        defaultFeeds.push(
+          { sourceId: source.id, name: "Main Feed", url: "https://www.dealstreetasia.com/feed", active: true }
+        );
+      } else if (source.domain === "e27.co") {
+        defaultFeeds.push(
+          { sourceId: source.id, name: "Main Feed", url: "https://e27.co/feed/", active: true }
+        );
+      }
+    }
+
+    if (defaultFeeds.length > 0) {
+      await db.insert(rssFeeds).values(defaultFeeds);
+    }
+  }
+
+  // RSS Feeds methods
+  async getRssFeedsBySourceId(sourceId: string): Promise<RssFeed[]> {
+    return db.select().from(rssFeeds).where(eq(rssFeeds.sourceId, sourceId));
+  }
+
+  async getAllActiveRssFeeds(): Promise<(RssFeed & { sourceName: string; sourceTier: string })[]> {
+    const activeSources = await this.getActiveSources();
+    const activeSourceIds = activeSources.map(s => s.id);
+    
+    if (activeSourceIds.length === 0) return [];
+
+    const feeds = await db.select().from(rssFeeds).where(eq(rssFeeds.active, true));
+    
+    return feeds
+      .filter(feed => activeSourceIds.includes(feed.sourceId))
+      .map(feed => {
+        const source = activeSources.find(s => s.id === feed.sourceId);
+        return {
+          ...feed,
+          sourceName: source?.name || "Unknown",
+          sourceTier: source?.tier || "tier3",
+        };
+      });
+  }
+
+  async createRssFeed(insertFeed: InsertRssFeed): Promise<RssFeed> {
+    const [feed] = await db.insert(rssFeeds).values(insertFeed).returning();
+    return feed;
+  }
+
+  async updateRssFeed(id: string, updates: Partial<InsertRssFeed>): Promise<RssFeed | undefined> {
+    const [feed] = await db.update(rssFeeds)
+      .set(updates)
+      .where(eq(rssFeeds.id, id))
+      .returning();
+    return feed || undefined;
+  }
+
+  async deleteRssFeed(id: string): Promise<boolean> {
+    await db.delete(rssFeeds).where(eq(rssFeeds.id, id));
+    return true;
   }
 
   async getAllScanLogs(): Promise<ScanLog[]> {

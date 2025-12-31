@@ -19,10 +19,36 @@ const updateSettingsSchema = z.object({
   emailEnabled: z.boolean().optional(),
   alertEmail: z.string().email().optional(),
   logRetentionDays: z.number().min(1).max(30).optional(),
+  googleNewsEnabled: z.boolean().optional(),
+  rssEnabled: z.boolean().optional(),
+  scrapingBeeEnabled: z.boolean().optional(),
 });
 
-const toggleSourceSchema = z.object({
-  enabled: z.boolean(),
+const createSourceSchema = z.object({
+  name: z.string().min(1),
+  domain: z.string().min(1),
+  tier: z.enum(["tier1", "tier2", "tier3"]),
+  active: z.boolean().optional(),
+});
+
+const updateSourceSchema = z.object({
+  name: z.string().min(1).optional(),
+  domain: z.string().min(1).optional(),
+  tier: z.enum(["tier1", "tier2", "tier3"]).optional(),
+  active: z.boolean().optional(),
+});
+
+const createRssFeedSchema = z.object({
+  sourceId: z.string().min(1),
+  name: z.string().min(1),
+  url: z.string().url(),
+  active: z.boolean().optional(),
+});
+
+const updateRssFeedSchema = z.object({
+  name: z.string().min(1).optional(),
+  url: z.string().url().optional(),
+  active: z.boolean().optional(),
 });
 
 export async function registerRoutes(
@@ -200,20 +226,125 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/sources/:id/toggle", async (req, res) => {
+  app.get("/api/sources/:id", async (req, res) => {
     try {
-      const parsed = toggleSourceSchema.safeParse(req.body);
-      if (!parsed.success) {
-        return res.status(400).json({ error: "enabled must be a boolean" });
-      }
-      const source = await storage.updateSourceEnabled(req.params.id, parsed.data.enabled);
+      const source = await storage.getSourceById(req.params.id);
       if (!source) {
         return res.status(404).json({ error: "Source not found" });
       }
       res.json(source);
     } catch (error) {
-      console.error("Error toggling source:", error);
-      res.status(500).json({ error: "Failed to toggle source" });
+      console.error("Error fetching source:", error);
+      res.status(500).json({ error: "Failed to fetch source" });
+    }
+  });
+
+  app.post("/api/sources", async (req, res) => {
+    try {
+      const parsed = createSourceSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: "Invalid source data", details: parsed.error.errors });
+      }
+      const source = await storage.createSource(parsed.data);
+      res.status(201).json(source);
+    } catch (error) {
+      console.error("Error creating source:", error);
+      res.status(500).json({ error: "Failed to create source" });
+    }
+  });
+
+  app.patch("/api/sources/:id", async (req, res) => {
+    try {
+      const parsed = updateSourceSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: "Invalid source data", details: parsed.error.errors });
+      }
+      const source = await storage.updateSource(req.params.id, parsed.data);
+      if (!source) {
+        return res.status(404).json({ error: "Source not found" });
+      }
+      res.json(source);
+    } catch (error) {
+      console.error("Error updating source:", error);
+      res.status(500).json({ error: "Failed to update source" });
+    }
+  });
+
+  app.delete("/api/sources/:id", async (req, res) => {
+    try {
+      const deleted = await storage.deleteSource(req.params.id);
+      if (!deleted) {
+        return res.status(404).json({ error: "Source not found" });
+      }
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting source:", error);
+      res.status(500).json({ error: "Failed to delete source" });
+    }
+  });
+
+  // RSS Feeds endpoints
+  app.get("/api/sources/:sourceId/rss-feeds", async (req, res) => {
+    try {
+      const feeds = await storage.getRssFeedsBySourceId(req.params.sourceId);
+      res.json(feeds);
+    } catch (error) {
+      console.error("Error fetching RSS feeds:", error);
+      res.status(500).json({ error: "Failed to fetch RSS feeds" });
+    }
+  });
+
+  app.get("/api/rss-feeds", async (req, res) => {
+    try {
+      const feeds = await storage.getAllActiveRssFeeds();
+      res.json(feeds);
+    } catch (error) {
+      console.error("Error fetching all RSS feeds:", error);
+      res.status(500).json({ error: "Failed to fetch RSS feeds" });
+    }
+  });
+
+  app.post("/api/rss-feeds", async (req, res) => {
+    try {
+      const parsed = createRssFeedSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: "Invalid RSS feed data", details: parsed.error.errors });
+      }
+      const feed = await storage.createRssFeed(parsed.data);
+      res.status(201).json(feed);
+    } catch (error) {
+      console.error("Error creating RSS feed:", error);
+      res.status(500).json({ error: "Failed to create RSS feed" });
+    }
+  });
+
+  app.patch("/api/rss-feeds/:id", async (req, res) => {
+    try {
+      const parsed = updateRssFeedSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: "Invalid RSS feed data", details: parsed.error.errors });
+      }
+      const feed = await storage.updateRssFeed(req.params.id, parsed.data);
+      if (!feed) {
+        return res.status(404).json({ error: "RSS feed not found" });
+      }
+      res.json(feed);
+    } catch (error) {
+      console.error("Error updating RSS feed:", error);
+      res.status(500).json({ error: "Failed to update RSS feed" });
+    }
+  });
+
+  app.delete("/api/rss-feeds/:id", async (req, res) => {
+    try {
+      const deleted = await storage.deleteRssFeed(req.params.id);
+      if (!deleted) {
+        return res.status(404).json({ error: "RSS feed not found" });
+      }
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting RSS feed:", error);
+      res.status(500).json({ error: "Failed to delete RSS feed" });
     }
   });
 

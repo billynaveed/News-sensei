@@ -62,7 +62,10 @@ export const settings = pgTable("settings", {
   emailEnabled: boolean("email_enabled").notNull().default(true),
   alertEmail: text("alert_email").notNull(),
   logRetentionDays: integer("log_retention_days").notNull().default(2),
-  useScrapingBee: boolean("use_scraping_bee").notNull().default(false),
+  // Global scanning method toggles - apply to ALL active sources
+  googleNewsEnabled: boolean("google_news_enabled").notNull().default(false),
+  rssEnabled: boolean("rss_enabled").notNull().default(true),
+  scrapingBeeEnabled: boolean("scrapingbee_enabled").notNull().default(false),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
 
@@ -74,28 +77,41 @@ export const insertSettingsSchema = createInsertSchema(settings).omit({
 export type InsertSettings = z.infer<typeof insertSettingsSchema>;
 export type Settings = typeof settings.$inferSelect;
 
-// Source type for ingestion method
-export type SourceType = "rss" | "api" | "scrape" | "manual";
-
-// News sources configuration
+// News sources configuration (simplified - domain-based)
 export const sources = pgTable("sources", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   name: text("name").notNull(),
-  url: text("url").notNull(),
-  rssUrl: text("rss_url"),
+  domain: text("domain").notNull().unique(),
   tier: text("tier").notNull().$type<SourceTier>(),
-  type: text("type").notNull().$type<SourceType>().default("manual"),
-  region: text("region").notNull().default("Singapore"),
-  description: text("description"),
-  enabled: boolean("enabled").notNull().default(true),
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
 
 export const insertSourceSchema = createInsertSchema(sources).omit({
   id: true,
+  createdAt: true,
 });
 
 export type InsertSource = z.infer<typeof insertSourceSchema>;
 export type Source = typeof sources.$inferSelect;
+
+// RSS feeds table (subcategories per source)
+export const rssFeeds = pgTable("rss_feeds", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  sourceId: varchar("source_id").notNull().references(() => sources.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  url: text("url").notNull(),
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+export const insertRssFeedSchema = createInsertSchema(rssFeeds).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertRssFeed = z.infer<typeof insertRssFeedSchema>;
+export type RssFeed = typeof rssFeeds.$inferSelect;
 
 // Debug entry for ScrapingBee API calls
 export interface ScrapingBeeDebugEntry {

@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import { storage } from "./storage";
 import { sendLeadAlertEmail } from "./sendgrid";
-import { fetchAllArticles, type RawArticle } from "./adapters";
+import { fetchAllArticles, type RawArticle, type RssFeedWithMeta } from "./adapters";
 import type { InsertLead, PriorityLevel, SourceTier, SourceSearched, ArticleProcessed, ScrapingBeeDebugEntry } from "@shared/schema";
 
 const openai = new OpenAI({
@@ -78,7 +78,6 @@ export interface ScanProgress {
   message?: string;
 }
 
-// In-memory scan progress tracking
 const scanProgress: Map<string, ScanProgress> = new Map();
 
 export function getScanProgress(scanId: string): ScanProgress | undefined {
@@ -94,12 +93,10 @@ export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: 
   const settings = await storage.getSettings();
   if (!settings) {
     scanProgress.set(currentScanId, { status: "error", message: "Settings not configured" });
-    // Cleanup progress after delay even on error
     setTimeout(() => scanProgress.delete(currentScanId), 60000);
     throw new Error("Settings not configured");
   }
   
-  // Helper function to ensure cleanup always runs
   const runCleanup = async () => {
     try {
       await storage.cleanupOldScanLogs(settings.logRetentionDays ?? 2);
@@ -111,21 +108,27 @@ export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: 
   scanProgress.set(currentScanId, { status: "scanning", message: "Fetching news from enabled sources..." });
 
   try {
-    const enabledSources = await storage.getEnabledSources();
+    const activeSources = await storage.getActiveSources();
+    const activeFeeds = await storage.getAllActiveRssFeeds();
     
-    const filteredSources = enabledSources.filter(s => 
-      settings.regions.includes(s.region || "Singapore")
-    );
-    
-    if (filteredSources.length === 0) {
-      scanProgress.set(currentScanId, { status: "complete", message: "No enabled sources for selected regions" });
-      return { articlesScanned: 0, matchesFound: 0, newLeads: 0, duplicatesSkipped: 0, scanId: currentScanId };
-    }
+    const feedsWithMeta: RssFeedWithMeta[] = activeFeeds.map(feed => ({
+      ...feed,
+      sourceName: feed.sourceName,
+      sourceTier: feed.sourceTier,
+    }));
+
+    const defaultRegion = settings.regions[0] || "Singapore";
 
     const { articles, sourcesSearched, errors: fetchErrors, debugEntries } = await fetchAllArticles(
-      filteredSources,
+      activeSources,
+      feedsWithMeta,
       settings.keywords,
-      { useScrapingBee: settings.useScrapingBee ?? false }
+      {
+        googleNewsEnabled: settings.googleNewsEnabled ?? false,
+        rssEnabled: settings.rssEnabled ?? true,
+        scrapingBeeEnabled: settings.scrapingBeeEnabled ?? false,
+        defaultRegion,
+      }
     );
 
     scanProgress.set(currentScanId, { 
@@ -243,7 +246,6 @@ export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: 
       }
     }
 
-    // Clean up progress after a delay
     setTimeout(() => {
       scanProgress.delete(currentScanId);
     }, 60000);
@@ -256,7 +258,6 @@ export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: 
       scanId: currentScanId,
     };
   } finally {
-    // Always clean up old logs based on retention setting
     await runCleanup();
   }
 }
