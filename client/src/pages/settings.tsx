@@ -65,6 +65,7 @@ const settingsSchema = z.object({
   emailEnabled: z.boolean(),
   alertEmail: z.string().email("Please enter a valid email address"),
   logRetentionDays: z.number().min(1).max(30),
+  useScrapingBee: z.boolean(),
 });
 
 type SettingsFormData = z.infer<typeof settingsSchema>;
@@ -357,6 +358,7 @@ export default function SettingsPage() {
       emailEnabled: true,
       alertEmail: "",
       logRetentionDays: 2,
+      useScrapingBee: false,
     },
   });
 
@@ -370,6 +372,7 @@ export default function SettingsPage() {
         emailEnabled: settings.emailEnabled,
         alertEmail: settings.alertEmail,
         logRetentionDays: settings.logRetentionDays ?? 2,
+        useScrapingBee: settings.useScrapingBee ?? false,
       });
     }
   }, [settings, form]);
@@ -479,6 +482,48 @@ export default function SettingsPage() {
             onToggle={(id, enabled) => toggleSourceMutation.mutate({ id, enabled })}
             isToggling={toggleSourceMutation.isPending}
           />
+
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-2">
+                <Globe className="h-5 w-5 text-primary" />
+                <CardTitle className="text-lg">Data Collection</CardTitle>
+              </div>
+              <CardDescription>
+                Configure how news articles are fetched from sources.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <FormField
+                control={form.control}
+                name="useScrapingBee"
+                render={({ field }) => (
+                  <FormItem className="flex flex-row items-center justify-between">
+                    <div className="space-y-0.5">
+                      <FormLabel>Use ScrapingBee for enhanced scraping</FormLabel>
+                      <FormDescription>
+                        When enabled, uses ScrapingBee API as a fallback when RSS feeds return no results. 
+                        This incurs additional API costs. When disabled, only free RSS feeds are used.
+                      </FormDescription>
+                    </div>
+                    <FormControl>
+                      <Switch
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                        data-testid="switch-use-scrapingbee"
+                      />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+              <div className="text-sm text-muted-foreground bg-muted/50 p-3 rounded-md">
+                <strong>Current mode:</strong>{" "}
+                {form.watch("useScrapingBee") 
+                  ? "RSS feeds + ScrapingBee fallback (may incur API costs)" 
+                  : "RSS feeds only (free)"}
+              </div>
+            </CardContent>
+          </Card>
 
           <Card>
             <CardHeader>

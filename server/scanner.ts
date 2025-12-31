@@ -124,7 +124,8 @@ export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: 
 
     const { articles, sourcesSearched, errors: fetchErrors, debugEntries } = await fetchAllArticles(
       filteredSources,
-      settings.keywords
+      settings.keywords,
+      { useScrapingBee: settings.useScrapingBee ?? false }
     );
 
     scanProgress.set(currentScanId, { 

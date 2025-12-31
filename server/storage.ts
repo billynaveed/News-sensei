@@ -121,6 +121,7 @@ export class DatabaseStorage implements IStorage {
       emailEnabled: true,
       alertEmail: "billynaveed@gmail.com",
       logRetentionDays: 2,
+      useScrapingBee: false,
     }).returning();
     return newSettings;
   }
@@ -143,6 +144,7 @@ export class DatabaseStorage implements IStorage {
       emailEnabled: update.emailEnabled ?? true,
       alertEmail: update.alertEmail || "",
       logRetentionDays: update.logRetentionDays ?? 2,
+      useScrapingBee: update.useScrapingBee ?? false,
     }).returning();
     return created;
   }
@@ -173,18 +175,12 @@ export class DatabaseStorage implements IStorage {
     if (existing.length > 0) return;
 
     const defaultSources: InsertSource[] = [
-      { name: "The Business Times", url: "https://www.businesstimes.com.sg", rssUrl: "https://www.businesstimes.com.sg/rss/companies", tier: "tier1", type: "rss", region: "Singapore", description: "Singapore's leading business daily" },
-      { name: "South China Morning Post", url: "https://www.scmp.com", rssUrl: "https://www.scmp.com/rss/91/feed", tier: "tier1", type: "rss", region: "Hong Kong", description: "Hong Kong's premier English-language news source" },
-      { name: "Nikkei Asia", url: "https://asia.nikkei.com", tier: "tier1", type: "scrape", region: "Singapore", description: "Asian business and economic news from Nikkei" },
-      { name: "Tech in Asia", url: "https://www.techinasia.com", rssUrl: "https://www.techinasia.com/feed", tier: "tier2", type: "rss", region: "Singapore", description: "Southeast Asia's startup and tech news" },
-      { name: "DealStreetAsia", url: "https://www.dealstreetasia.com", tier: "tier2", type: "scrape", region: "Singapore", description: "Private equity and venture capital news in Asia" },
-      { name: "The Edge Markets", url: "https://www.theedgemarkets.com", tier: "tier1", type: "scrape", region: "Malaysia", description: "Malaysia's leading financial news portal" },
-      { name: "VnExpress International", url: "https://e.vnexpress.net", rssUrl: "https://e.vnexpress.net/rss/business.rss", tier: "tier2", type: "rss", region: "Vietnam", description: "Vietnam's most-read news source in English" },
-      { name: "Bangkok Post", url: "https://www.bangkokpost.com", rssUrl: "https://www.bangkokpost.com/rss/data/business.xml", tier: "tier2", type: "rss", region: "Thailand", description: "Thailand's largest English-language newspaper" },
-      { name: "Philippine Daily Inquirer", url: "https://business.inquirer.net", tier: "tier2", type: "scrape", region: "Philippines", description: "Philippines' leading business news" },
-      { name: "Taiwan News", url: "https://www.taiwannews.com.tw", tier: "tier2", type: "scrape", region: "Taiwan", description: "Taiwan's leading English news source" },
-      { name: "The Jakarta Post", url: "https://www.thejakartapost.com", tier: "tier2", type: "scrape", region: "Indonesia", description: "Indonesia's leading English-language daily" },
-      { name: "Channel NewsAsia", url: "https://www.channelnewsasia.com", rssUrl: "https://www.channelnewsasia.com/api/v1/rss-outbound-feed?_format=xml&category=6511", tier: "tier1", type: "rss", region: "Singapore", description: "Singapore's 24-hour news channel" },
+      { name: "Straits Times Business", url: "https://www.straitstimes.com", rssUrl: "https://www.straitstimes.com/news/business/rss.xml", tier: "tier1", type: "rss", region: "Singapore", description: "Singapore's flagship newspaper business section" },
+      { name: "CNA Business", url: "https://www.channelnewsasia.com", rssUrl: "https://www.channelnewsasia.com/api/v1/rss-outbound-feed?_format=xml&category=6511", tier: "tier1", type: "rss", region: "Singapore", description: "Singapore's 24-hour news channel business feed" },
+      { name: "Reuters Business", url: "https://www.reuters.com", rssUrl: "https://www.reutersagency.com/feed/?best-topics=business-finance", tier: "tier2", type: "rss", region: "Singapore", description: "Global business and finance news" },
+      { name: "Tech in Asia", url: "https://www.techinasia.com", rssUrl: "https://www.techinasia.com/feed", tier: "tier3", type: "rss", region: "Singapore", description: "Southeast Asia's startup and tech news" },
+      { name: "DealStreetAsia", url: "https://www.dealstreetasia.com", rssUrl: "https://www.dealstreetasia.com/feed", tier: "tier3", type: "rss", region: "Singapore", description: "Private equity and venture capital news in Asia" },
+      { name: "e27", url: "https://e27.co", rssUrl: "https://e27.co/feed/", tier: "tier3", type: "rss", region: "Singapore", description: "Asia tech and startup ecosystem news" },
     ];
 
     await db.insert(sources).values(defaultSources);

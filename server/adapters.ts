@@ -265,9 +265,14 @@ export interface FetchAllArticlesResult {
   debugEntries: ScrapingBeeDebugEntry[];
 }
 
+export interface FetchOptions {
+  useScrapingBee: boolean;
+}
+
 export async function fetchAllArticles(
   sources: Source[], 
-  keywords: string[]
+  keywords: string[],
+  options: FetchOptions = { useScrapingBee: false }
 ): Promise<FetchAllArticlesResult> {
   const allArticles: RawArticle[] = [];
   const allErrors: string[] = [];
@@ -281,21 +286,9 @@ export async function fetchAllArticles(
     try {
       let articles: RawArticle[] = [];
       const sourceErrors: string[] = [];
-      let usedFallback = false;
+      const rssStartTime = Date.now();
 
-      if (SCRAPINGBEE_API_KEY) {
-        const sbResult = await scrapingBeeAdapter.fetchArticles(source, keywords);
-        articles = sbResult.articles;
-        sourceErrors.push(...sbResult.errors);
-        
-        if (sbResult.debugEntry) {
-          debugEntries.push(sbResult.debugEntry);
-        }
-      }
-
-      if (articles.length === 0 && source.rssUrl) {
-        usedFallback = true;
-        const rssStartTime = Date.now();
+      if (source.rssUrl) {
         const rssResult = await rssAdapter.fetchArticles(source, keywords);
         articles = rssResult.articles;
         sourceErrors.push(...rssResult.errors);
@@ -304,9 +297,9 @@ export async function fetchAllArticles(
           sourceName: source.name,
           sourceId: source.id,
           timestamp: new Date().toISOString(),
-          method: "fallback_rss",
+          method: "rss",
           request: {
-            url: source.rssUrl || "",
+            url: source.rssUrl,
             renderJs: false,
             extractRules: "N/A - RSS Feed",
           },
@@ -318,10 +311,20 @@ export async function fetchAllArticles(
             extractedCount: articles.length,
             matchedCount: articles.length,
           },
-          fallbackReason: "ScrapingBee returned 0 articles",
           error: rssResult.errors.length > 0 ? rssResult.errors.join("; ") : undefined,
         };
         debugEntries.push(rssDebugEntry);
+      }
+
+      if (articles.length === 0 && options.useScrapingBee && SCRAPINGBEE_API_KEY) {
+        const sbResult = await scrapingBeeAdapter.fetchArticles(source, keywords);
+        articles = sbResult.articles;
+        sourceErrors.push(...sbResult.errors);
+        
+        if (sbResult.debugEntry) {
+          sbResult.debugEntry.fallbackReason = source.rssUrl ? "RSS returned 0 matching articles" : "No RSS URL configured";
+          debugEntries.push(sbResult.debugEntry);
+        }
       }
 
       allArticles.push(...articles);
@@ -345,9 +348,9 @@ export async function fetchAllArticles(
         sourceName: source.name,
         sourceId: source.id,
         timestamp: new Date().toISOString(),
-        method: "scrapingbee",
+        method: "rss",
         request: {
-          url: source.url,
+          url: source.rssUrl || source.url,
           renderJs: false,
           extractRules: "N/A - Exception thrown",
         },

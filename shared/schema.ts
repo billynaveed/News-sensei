@@ -62,6 +62,7 @@ export const settings = pgTable("settings", {
   emailEnabled: boolean("email_enabled").notNull().default(true),
   alertEmail: text("alert_email").notNull(),
   logRetentionDays: integer("log_retention_days").notNull().default(2),
+  useScrapingBee: boolean("use_scraping_bee").notNull().default(false),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
 
