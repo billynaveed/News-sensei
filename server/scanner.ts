@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import { storage } from "./storage";
 import { sendLeadAlertEmail } from "./sendgrid";
+import { fetchAllArticles, type RawArticle } from "./adapters";
 import type { InsertLead, PriorityLevel, SourceTier, SourceSearched, ArticleProcessed } from "@shared/schema";
 
 const openai = new OpenAI({
@@ -8,102 +9,7 @@ const openai = new OpenAI({
   baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
 });
 
-interface SimulatedArticle {
-  headline: string;
-  url: string;
-  source: string;
-  sourceTier: SourceTier;
-  publishedAt: Date;
-  content: string;
-  region: string;
-}
-
-function generateSimulatedArticles(keywords: string[], regions: string[]): SimulatedArticle[] {
-  const articles: SimulatedArticle[] = [
-    {
-      headline: "Singapore fintech startup Grab acquires stake in regional logistics firm for $450M",
-      url: "https://example.com/grab-acquisition-" + Date.now(),
-      source: "The Business Times",
-      sourceTier: "tier1",
-      publishedAt: new Date(Date.now() - Math.random() * 86400000 * 3),
-      content: "Singapore-based super app Grab has announced the acquisition of a 35% stake in a leading Southeast Asian logistics company for $450 million. The deal marks one of the largest M&A transactions in the region this year. Founder Anthony Tan said the investment aligns with their long-term growth strategy.",
-      region: "Singapore",
-    },
-    {
-      headline: "Hong Kong PE firm completes $2B exit from manufacturing giant",
-      url: "https://example.com/hk-pe-exit-" + Date.now(),
-      source: "South China Morning Post",
-      sourceTier: "tier1",
-      publishedAt: new Date(Date.now() - Math.random() * 86400000 * 2),
-      content: "A Hong Kong-based private equity firm has completed a landmark $2 billion exit from its investment in a major manufacturing conglomerate. The founders, including Li Wei Ming, are expected to realize significant personal gains from the transaction.",
-      region: "Hong Kong",
-    },
-    {
-      headline: "Vietnamese unicorn prepares for Nasdaq IPO valued at $3.5B",
-      url: "https://example.com/vietnam-ipo-" + Date.now(),
-      source: "VnExpress",
-      sourceTier: "tier2",
-      publishedAt: new Date(Date.now() - Math.random() * 86400000),
-      content: "VNG Corporation, Vietnam's first unicorn, is preparing for a Nasdaq listing that could value the company at $3.5 billion. Founder Le Hong Minh has built the tech giant over two decades. Major investors include Tencent and GIC.",
-      region: "Vietnam",
-    },
-    {
-      headline: "Taiwan semiconductor founders cash out $800M in secondary sale",
-      url: "https://example.com/taiwan-secondary-" + Date.now(),
-      source: "Taiwan News",
-      sourceTier: "tier2",
-      publishedAt: new Date(Date.now() - Math.random() * 86400000 * 4),
-      content: "The founding family of a leading Taiwan-based semiconductor supplier has sold an $800 million stake in a secondary transaction. The Chen family, led by patriarch Chen Ming-tao, retains a controlling interest in the company.",
-      region: "Taiwan",
-    },
-    {
-      headline: "Indonesian ride-hailing startup raises Series D at $1.2B valuation",
-      url: "https://example.com/indo-series-d-" + Date.now(),
-      source: "Tech in Asia",
-      sourceTier: "tier2",
-      publishedAt: new Date(Date.now() - Math.random() * 86400000 * 2),
-      content: "Jakarta-based mobility startup has closed a $150 million Series D funding round, reaching unicorn status with a $1.2 billion valuation. Co-founders Agus Prasetyo and Maria Wijaya are now among Indonesia's youngest tech billionaires.",
-      region: "Indonesia",
-    },
-    {
-      headline: "Malaysian palm oil magnate divests family holdings for $600M",
-      url: "https://example.com/malaysia-divestiture-" + Date.now(),
-      source: "The Edge Markets",
-      sourceTier: "tier1",
-      publishedAt: new Date(Date.now() - Math.random() * 86400000 * 5),
-      content: "Tycoon Tan Sri Robert Kuok's extended family has divested palm oil plantation holdings worth approximately $600 million. The asset sale is part of a broader family office restructuring.",
-      region: "Malaysia",
-    },
-    {
-      headline: "Thai real estate conglomerate announces $1.5B SPAC merger",
-      url: "https://example.com/thai-spac-" + Date.now(),
-      source: "Bangkok Post",
-      sourceTier: "tier2",
-      publishedAt: new Date(Date.now() - Math.random() * 86400000),
-      content: "Central Group's property arm is set to go public through a $1.5 billion SPAC merger. The Chirathivat family, which controls the retail empire, will see their real estate holdings listed on the NYSE.",
-      region: "Thailand",
-    },
-    {
-      headline: "Philippine fintech founder sells majority stake to Japanese bank",
-      url: "https://example.com/ph-fintech-sale-" + Date.now(),
-      source: "Philippine Daily Inquirer",
-      sourceTier: "tier3",
-      publishedAt: new Date(Date.now() - Math.random() * 86400000 * 3),
-      content: "The founder of a leading Philippine digital bank has sold a 51% stake to a major Japanese financial institution. Entrepreneur Carlos Santos is expected to realize over $200 million from the trade sale.",
-      region: "Philippines",
-    },
-  ];
-
-  return articles.filter(article => 
-    regions.includes(article.region) &&
-    keywords.some(kw => 
-      article.headline.toLowerCase().includes(kw.toLowerCase()) ||
-      article.content.toLowerCase().includes(kw.toLowerCase())
-    )
-  );
-}
-
-async function extractLeadInfo(article: SimulatedArticle, keywords: string[], summaryLength: string): Promise<Partial<InsertLead> | null> {
+async function extractLeadInfo(article: RawArticle, keywords: string[], summaryLength: string): Promise<Partial<InsertLead> | null> {
   const summaryPrompt = summaryLength === "brief" 
     ? "Write a 1-2 sentence summary."
     : summaryLength === "detailed"
@@ -202,27 +108,24 @@ export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: 
     }
   };
 
-  scanProgress.set(currentScanId, { status: "scanning", message: "Searching news sources..." });
+  scanProgress.set(currentScanId, { status: "scanning", message: "Fetching news from enabled sources..." });
 
   try {
-    const articles = generateSimulatedArticles(settings.keywords, settings.regions);
+    const enabledSources = await storage.getEnabledSources();
     
-    // Track sources searched
-    const sourceMap = new Map<string, { tier: SourceTier; count: number }>();
-    articles.forEach(a => {
-      const existing = sourceMap.get(a.source);
-      if (existing) {
-        existing.count++;
-      } else {
-        sourceMap.set(a.source, { tier: a.sourceTier, count: 1 });
-      }
-    });
+    const filteredSources = enabledSources.filter(s => 
+      settings.regions.includes(s.region || "Singapore")
+    );
     
-    const sourcesSearched: SourceSearched[] = Array.from(sourceMap.entries()).map(([name, data]) => ({
-      name,
-      tier: data.tier,
-      articlesFound: data.count,
-    }));
+    if (filteredSources.length === 0) {
+      scanProgress.set(currentScanId, { status: "complete", message: "No enabled sources for selected regions" });
+      return { articlesScanned: 0, matchesFound: 0, newLeads: 0, duplicatesSkipped: 0, scanId: currentScanId };
+    }
+
+    const { articles, sourcesSearched, errors: fetchErrors } = await fetchAllArticles(
+      filteredSources,
+      settings.keywords
+    );
 
     scanProgress.set(currentScanId, { 
       status: "processing", 
@@ -230,14 +133,14 @@ export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: 
       articlesFound: articles.length,
       articlesProcessed: 0,
       totalArticles: articles.length,
-      message: `Found ${articles.length} articles, processing...` 
+      message: `Found ${articles.length} matching articles, processing...` 
     });
 
     let newLeads = 0;
     let duplicatesSkipped = 0;
     const createdLeads: InsertLead[] = [];
     const articlesProcessed: ArticleProcessed[] = [];
-    const errors: string[] = [];
+    const errors: string[] = [...fetchErrors];
 
     for (let i = 0; i < articles.length; i++) {
       const article = articles[i];
