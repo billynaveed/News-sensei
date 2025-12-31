@@ -45,7 +45,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Lead, LeadStatus, PriorityLevel, SourceTier, FetchMethod } from "@shared/schema";
 
 type FilterState = {
-  dateRange: string;
+  publishedDays: string;
   region: string;
   sourceTier: string;
   priority: string;
@@ -319,14 +319,14 @@ export default function Dashboard() {
   const filterParam = searchParams.get("filter");
 
   const [filters, setFilters] = useState<FilterState>({
-    dateRange: "all",
+    publishedDays: "2",
     region: "all",
     sourceTier: "all",
     priority: "all",
     status: filterParam === "saved" ? "saved" : "active",
   });
 
-  const [statsExpanded, setStatsExpanded] = useState(true);
+  const [statsExpanded, setStatsExpanded] = useState(false);
 
   useEffect(() => {
     if (filterParam === "saved") {
@@ -366,21 +366,64 @@ export default function Dashboard() {
     updateStatusMutation.mutate({ id, status });
   };
 
-  const filteredLeads = leads?.filter((lead) => {
+  // First filter by basic criteria
+  const baseFilteredLeads = leads?.filter((lead) => {
+    // Status filter - saved articles are excluded from active feed
     if (filters.status === "active" && (lead.status === "dismissed" || lead.status === "saved")) return false;
     if (filters.status === "saved" && lead.status !== "saved") return false;
     if (filters.status === "contacted" && lead.status !== "contacted") return false;
     if (filters.status === "dismissed" && lead.status !== "dismissed") return false;
+    
+    // Published days filter - use exact time comparison (e.g., 2 days = 48 hours ago)
+    if (filters.publishedDays !== "all") {
+      const days = parseInt(filters.publishedDays);
+      const cutoffTime = Date.now() - days * 24 * 60 * 60 * 1000;
+      if (new Date(lead.publishedAt).getTime() < cutoffTime) return false;
+    }
+    
     if (filters.region !== "all" && lead.region !== filters.region) return false;
     if (filters.sourceTier !== "all" && lead.sourceTier !== filters.sourceTier) return false;
     if (filters.priority !== "all" && lead.priorityLevel !== filters.priority) return false;
     return true;
+  }) || [];
+
+  // Filter out duplicate companies - keep only highest tier source for each company
+  const tierPriority: Record<SourceTier, number> = { tier1: 1, tier2: 2, tier3: 3 };
+  const companyBestLead = new Map<string, Lead>();
+  
+  baseFilteredLeads.forEach((lead) => {
+    lead.companyNames.forEach((company) => {
+      const normalizedCompany = company.toLowerCase().trim();
+      const existing = companyBestLead.get(normalizedCompany);
+      if (!existing) {
+        companyBestLead.set(normalizedCompany, lead);
+      } else {
+        // Keep the one with higher tier (lower number = higher tier)
+        const existingTier = tierPriority[existing.sourceTier];
+        const currentTier = tierPriority[lead.sourceTier];
+        if (currentTier < existingTier) {
+          companyBestLead.set(normalizedCompany, lead);
+        } else if (currentTier === existingTier && lead.priorityScore > existing.priorityScore) {
+          // Same tier, keep higher priority score
+          companyBestLead.set(normalizedCompany, lead);
+        }
+      }
+    });
+  });
+
+  // Get unique lead IDs that should be shown (leads that are the "best" for at least one company)
+  const bestLeadIds = new Set(Array.from(companyBestLead.values()).map(l => l.id));
+  
+  // Also include leads with no company names
+  const filteredLeads = baseFilteredLeads.filter((lead) => {
+    if (lead.companyNames.length === 0) return true;
+    return bestLeadIds.has(lead.id);
   }).sort((a, b) => {
     if (a.priorityScore !== b.priorityScore) {
       return b.priorityScore - a.priorityScore;
     }
     return new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime();
-  }) || [];
+  });
 
   return (
     <div className="flex flex-col h-full">
@@ -389,21 +432,16 @@ export default function Dashboard() {
           {statsExpanded ? (
             <CollapsibleContent forceMount>
               <div className="p-6 pb-4">
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
                   <StatsCard 
-                    title="Today's Leads" 
+                    title="Generated Today" 
                     value={stats?.today ?? 0} 
                     icon={TrendingUp}
                   />
                   <StatsCard 
-                    title="This Week" 
-                    value={stats?.thisWeek ?? 0} 
+                    title="In Newsfeed" 
+                    value={filteredLeads.length} 
                     icon={Calendar}
-                  />
-                  <StatsCard 
-                    title="High Priority" 
-                    value={stats?.highPriority ?? 0} 
-                    icon={AlertCircle}
                   />
                 </div>
                 <div className="flex items-center justify-between gap-4 flex-wrap pt-4 border-t border-border">
@@ -459,11 +497,25 @@ export default function Dashboard() {
                         <SelectItem value="low">Low</SelectItem>
                       </SelectContent>
                     </Select>
-                    {(filters.region !== "all" || filters.sourceTier !== "all" || filters.priority !== "all" || filters.status !== "active") && (
+                    <Select value={filters.publishedDays} onValueChange={(v) => setFilters(f => ({ ...f, publishedDays: v }))}>
+                      <SelectTrigger className="w-[140px]" data-testid="filter-published">
+                        <SelectValue placeholder="Published" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="1">Last 1 Day</SelectItem>
+                        <SelectItem value="2">Last 2 Days</SelectItem>
+                        <SelectItem value="3">Last 3 Days</SelectItem>
+                        <SelectItem value="7">Last 7 Days</SelectItem>
+                        <SelectItem value="14">Last 14 Days</SelectItem>
+                        <SelectItem value="30">Last 30 Days</SelectItem>
+                        <SelectItem value="all">All Time</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {(filters.region !== "all" || filters.sourceTier !== "all" || filters.priority !== "all" || filters.status !== "active" || filters.publishedDays !== "2") && (
                       <Button 
                         variant="ghost" 
                         size="sm"
-                        onClick={() => setFilters({ dateRange: "all", region: "all", sourceTier: "all", priority: "all", status: "active" })}
+                        onClick={() => setFilters({ publishedDays: "2", region: "all", sourceTier: "all", priority: "all", status: "active" })}
                         data-testid="button-clear-filters"
                       >
                         Clear filters
@@ -494,18 +546,13 @@ export default function Dashboard() {
               <div className="flex items-center gap-6 text-sm flex-wrap">
                 <div className="flex items-center gap-2">
                   <TrendingUp className="h-4 w-4 text-primary" />
-                  <span className="text-muted-foreground">Today:</span>
+                  <span className="text-muted-foreground">Generated Today:</span>
                   <span className="font-bold tabular-nums">{stats?.today ?? 0}</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <Calendar className="h-4 w-4 text-primary" />
-                  <span className="text-muted-foreground">This Week:</span>
-                  <span className="font-bold tabular-nums">{stats?.thisWeek ?? 0}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <AlertCircle className="h-4 w-4 text-primary" />
-                  <span className="text-muted-foreground">High Priority:</span>
-                  <span className="font-bold tabular-nums">{stats?.highPriority ?? 0}</span>
+                  <span className="text-muted-foreground">In Newsfeed:</span>
+                  <span className="font-bold tabular-nums">{filteredLeads.length}</span>
                 </div>
               </div>
               <div className="flex items-center gap-2">
@@ -542,7 +589,7 @@ export default function Dashboard() {
             <Clock className="h-12 w-12 text-muted-foreground mb-4" />
             <h3 className="text-lg font-semibold mb-2">No leads found</h3>
             <p className="text-muted-foreground max-w-md">
-              {filters.status !== "active" || filters.region !== "all" || filters.sourceTier !== "all" || filters.priority !== "all"
+              {filters.status !== "active" || filters.region !== "all" || filters.sourceTier !== "all" || filters.priority !== "all" || filters.publishedDays !== "2"
                 ? "Try adjusting your filters or click 'Scan Now' to fetch new articles."
                 : "Click 'Scan Now' to start scanning for wealth-related news articles."}
             </p>
