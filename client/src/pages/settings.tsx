@@ -393,7 +393,7 @@ function SourceCard({
                       <div className="space-y-2">
                         <label className="text-sm font-medium">RSS URL</label>
                         <Input
-                          placeholder="https://example.com/rss/feed.xml"
+                          placeholder="https://www.straitstimes.com/news/business/rss.xml"
                           value={newFeedUrl}
                           onChange={(e) => setNewFeedUrl(e.target.value)}
                           data-testid="input-new-feed-url"
