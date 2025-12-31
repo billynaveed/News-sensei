@@ -1,4 +1,4 @@
-import { LayoutDashboard, Settings, Activity, TrendingUp, BookmarkCheck } from "lucide-react";
+import { LayoutDashboard, Settings, Activity, TrendingUp, BookmarkCheck, Bug } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -31,6 +31,11 @@ const menuItems = [
     title: "Scan Logs",
     url: "/logs",
     icon: Activity,
+  },
+  {
+    title: "Debug",
+    url: "/debug",
+    icon: Bug,
   },
 ];
 

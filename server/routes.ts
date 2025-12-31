@@ -217,5 +217,39 @@ export async function registerRoutes(
     }
   });
 
+  // Debug endpoints for ScrapingBee API visibility
+  app.get("/api/scan-debug/latest", async (req, res) => {
+    try {
+      const logs = await storage.getAllScanLogs();
+      if (logs.length === 0) {
+        return res.json({ scanLog: null, debugEntries: [] });
+      }
+      const latestLog = logs[0];
+      res.json({
+        scanLog: latestLog,
+        debugEntries: latestLog.scrapingBeeDebug || [],
+      });
+    } catch (error) {
+      console.error("Error fetching latest debug data:", error);
+      res.status(500).json({ error: "Failed to fetch debug data" });
+    }
+  });
+
+  app.get("/api/scan-debug/:scanId", async (req, res) => {
+    try {
+      const log = await storage.getScanLogById(req.params.scanId);
+      if (!log) {
+        return res.status(404).json({ error: "Scan log not found" });
+      }
+      res.json({
+        scanLog: log,
+        debugEntries: log.scrapingBeeDebug || [],
+      });
+    } catch (error) {
+      console.error("Error fetching debug data:", error);
+      res.status(500).json({ error: "Failed to fetch debug data" });
+    }
+  });
+
   return httpServer;
 }
