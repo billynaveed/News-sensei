@@ -86,6 +86,7 @@ export const sources = pgTable("sources", {
   domain: text("domain").notNull().unique(),
   tier: text("tier").notNull().$type<SourceTier>(),
   active: boolean("active").notNull().default(true),
+  useScrapingBeeForRss: boolean("use_scrapingbee_for_rss").notNull().default(false),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
 

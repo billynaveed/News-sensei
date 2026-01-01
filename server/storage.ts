@@ -36,7 +36,7 @@ export interface IStorage {
 
   // RSS Feeds (subcategories per source)
   getRssFeedsBySourceId(sourceId: string): Promise<RssFeed[]>;
-  getAllActiveRssFeeds(): Promise<(RssFeed & { sourceName: string; sourceTier: string })[]>;
+  getAllActiveRssFeeds(): Promise<(RssFeed & { sourceName: string; sourceTier: string; useScrapingBeeForRss: boolean })[]>;
   createRssFeed(feed: InsertRssFeed): Promise<RssFeed>;
   updateRssFeed(id: string, updates: Partial<InsertRssFeed>): Promise<RssFeed | undefined>;
   deleteRssFeed(id: string): Promise<boolean>;
@@ -258,7 +258,7 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(rssFeeds).where(eq(rssFeeds.sourceId, sourceId));
   }
 
-  async getAllActiveRssFeeds(): Promise<(RssFeed & { sourceName: string; sourceTier: string })[]> {
+  async getAllActiveRssFeeds(): Promise<(RssFeed & { sourceName: string; sourceTier: string; useScrapingBeeForRss: boolean })[]> {
     const activeSources = await this.getActiveSources();
     const activeSourceIds = activeSources.map(s => s.id);
     
@@ -274,6 +274,7 @@ export class DatabaseStorage implements IStorage {
           ...feed,
           sourceName: source?.name || "Unknown",
           sourceTier: source?.tier || "tier3",
+          useScrapingBeeForRss: source?.useScrapingBeeForRss || false,
         };
       });
   }

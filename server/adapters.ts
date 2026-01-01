@@ -35,6 +35,7 @@ const rssParser = new Parser({
 export interface RssFeedWithMeta extends RssFeed {
   sourceName: string;
   sourceTier: string;
+  useScrapingBeeForRss?: boolean;
 }
 
 export async function fetchFromRssFeed(
@@ -103,6 +104,109 @@ export async function fetchFromRssFeed(
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     errors.push(`Failed to fetch RSS from ${feed.sourceName} - ${feed.name}: ${message}`);
+    debugEntry.error = message;
+    debugEntry.response.status = 500;
+    debugEntry.response.statusText = "Error";
+    debugEntry.response.latencyMs = Date.now() - startTime;
+    debugEntry.response.rawResponseSnippet = message;
+  }
+
+  return { articles, errors, debugEntry };
+}
+
+export async function fetchRssViaScrapingBee(
+  feed: RssFeedWithMeta,
+  keywords: string[],
+  defaultRegion: string = "Singapore"
+): Promise<AdapterResult> {
+  const articles: RawArticle[] = [];
+  const errors: string[] = [];
+  const startTime = Date.now();
+
+  const debugEntry: ScrapingBeeDebugEntry = {
+    sourceName: `${feed.sourceName} - ${feed.name} (via ScrapingBee)`,
+    sourceId: feed.sourceId,
+    timestamp: new Date().toISOString(),
+    method: "rss",
+    request: {
+      url: feed.url,
+      renderJs: false,
+      extractRules: "N/A - RSS via ScrapingBee proxy",
+    },
+    response: {
+      status: 0,
+      statusText: "",
+      latencyMs: 0,
+      rawResponseSnippet: "",
+      extractedCount: 0,
+      matchedCount: 0,
+    },
+  };
+
+  if (!SCRAPINGBEE_API_KEY) {
+    debugEntry.error = "ScrapingBee API key not configured";
+    debugEntry.response.latencyMs = Date.now() - startTime;
+    return { articles, errors: ["ScrapingBee API key not configured"], debugEntry };
+  }
+
+  try {
+    const params = new URLSearchParams({
+      api_key: SCRAPINGBEE_API_KEY,
+      url: feed.url,
+      render_js: "false",
+    });
+
+    const response = await fetch(`https://app.scrapingbee.com/api/v1?${params.toString()}`, {
+      method: "GET",
+      headers: { "Accept": "application/xml, text/xml, */*" },
+    });
+
+    debugEntry.response.status = response.status;
+    debugEntry.response.statusText = response.statusText;
+    debugEntry.response.latencyMs = Date.now() - startTime;
+
+    const responseText = await response.text();
+    debugEntry.response.rawResponseSnippet = responseText.slice(0, 3000);
+
+    if (!response.ok) {
+      debugEntry.error = `HTTP ${response.status}: ${responseText.slice(0, 500)}`;
+      errors.push(`ScrapingBee RSS error for ${feed.sourceName}: ${response.status}`);
+      return { articles, errors, debugEntry };
+    }
+
+    const parsed = await rssParser.parseString(responseText);
+    
+    for (const item of parsed.items) {
+      if (!item.title || !item.link) continue;
+
+      const content = item.contentSnippet || item.content || item.summary || "";
+      const combinedText = `${item.title} ${content}`.toLowerCase();
+      
+      const matchesKeyword = keywords.some(kw => 
+        combinedText.includes(kw.toLowerCase())
+      );
+
+      if (!matchesKeyword) continue;
+
+      articles.push({
+        headline: item.title,
+        url: item.link,
+        source: feed.sourceName,
+        sourceTier: feed.sourceTier as SourceTier,
+        publishedAt: item.pubDate ? new Date(item.pubDate) : new Date(),
+        content: content.slice(0, 2000),
+        region: defaultRegion,
+        fetchMethod: "rss",
+      });
+    }
+
+    debugEntry.response.extractedCount = parsed.items.length;
+    debugEntry.response.matchedCount = articles.length;
+    debugEntry.response.rawResponseSnippet = `Found ${parsed.items.length} items, ${articles.length} matched keywords`;
+
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    errors.push(`Failed to fetch RSS via ScrapingBee from ${feed.sourceName} - ${feed.name}: ${message}`);
     debugEntry.error = message;
     debugEntry.response.status = 500;
     debugEntry.response.statusText = "Error";
@@ -366,7 +470,14 @@ export async function fetchAllArticles(
   if (options.rssEnabled) {
     for (const feed of activeFeeds) {
       try {
-        const result = await fetchFromRssFeed(feed, keywords, options.defaultRegion);
+        let result: AdapterResult;
+        
+        if (feed.useScrapingBeeForRss && SCRAPINGBEE_API_KEY) {
+          result = await fetchRssViaScrapingBee(feed, keywords, options.defaultRegion);
+        } else {
+          result = await fetchFromRssFeed(feed, keywords, options.defaultRegion);
+        }
+        
         allArticles.push(...result.articles);
         allErrors.push(...result.errors);
         if (result.debugEntry) {
