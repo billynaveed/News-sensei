@@ -199,15 +199,15 @@ export class DatabaseStorage implements IStorage {
     const existing = await db.select().from(sources);
     if (existing.length > 0) return;
 
-    // Seed default sources
-    const defaultSourcesData: InsertSource[] = [
-      { name: "Straits Times", domain: "straitstimes.com", tier: "tier1", active: true },
-      { name: "Channel NewsAsia", domain: "channelnewsasia.com", tier: "tier1", active: true },
-      { name: "Business Times Singapore", domain: "businesstimes.com.sg", tier: "tier1", active: true },
-      { name: "Reuters", domain: "reuters.com", tier: "tier2", active: true },
-      { name: "Tech in Asia", domain: "techinasia.com", tier: "tier3", active: true },
-      { name: "DealStreetAsia", domain: "dealstreetasia.com", tier: "tier3", active: true },
-      { name: "e27", domain: "e27.co", tier: "tier3", active: true },
+    // Seed default sources - cast tier values to SourceTier
+    const defaultSourcesData = [
+      { name: "Straits Times", domain: "straitstimes.com", tier: "tier1" as const, active: true },
+      { name: "Channel NewsAsia", domain: "channelnewsasia.com", tier: "tier1" as const, active: true },
+      { name: "Business Times Singapore", domain: "businesstimes.com.sg", tier: "tier1" as const, active: true },
+      { name: "Reuters", domain: "reuters.com", tier: "tier2" as const, active: true },
+      { name: "Tech in Asia", domain: "techinasia.com", tier: "tier3" as const, active: true },
+      { name: "DealStreetAsia", domain: "dealstreetasia.com", tier: "tier3" as const, active: true },
+      { name: "e27", domain: "e27.co", tier: "tier3" as const, active: true },
     ];
 
     const insertedSources = await db.insert(sources).values(defaultSourcesData).returning();
