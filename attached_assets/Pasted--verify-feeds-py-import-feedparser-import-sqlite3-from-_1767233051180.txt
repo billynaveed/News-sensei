@@ -1,0 +1,126 @@
+# verify_feeds.py
+import feedparser
+import sqlite3
+from datetime import datetime
+
+# List of feeds to verify
+FEEDS = [
+    # Business Times
+    ("Business Times - Companies & Markets", "https://www.businesstimes.com.sg/rss/feeds/companies-markets"),
+    ("Business Times - Singapore", "https://www.businesstimes.com.sg/rss/feeds/singapore"),
+    ("Business Times - Startups & Tech", "https://www.businesstimes.com.sg/rss/feeds/startups-tech"),
+    ("Business Times - Wealth", "https://www.businesstimes.com.sg/rss/feeds/wealth"),
+
+    # Straits Times
+    ("Straits Times - Business", "https://www.straitstimes.com/news/business/rss.xml"),
+    ("Straits Times - Singapore", "https://www.straitstimes.com/singapore/rss.xml"),
+
+    # CNA
+    ("CNA - Business", "https://www.channelnewsasia.com/api/v1/rss-outbound-feed?_format=xml&category=6511"),
+    ("CNA - Singapore", "https://www.channelnewsasia.com/api/v1/rss-outbound-feed?_format=xml&category=10416"),
+
+    # Reuters (placeholder - verify via Reuters site/tools)
+    ("Reuters - Business (verify on site)", "https://www.reuters.com/tools/rss"),
+
+    # SCMP
+    ("SCMP - Business", "https://www.scmp.com/rss/91/feed"),
+    ("SCMP - Asia", "https://www.scmp.com/rss/2/feed"),
+
+    # Nikkei Asia
+    ("Nikkei Asia - Asia", "https://asia.nikkei.com/rss/asia.xml"),
+
+    # FT Asia Pacific
+    ("Financial Times - Asia Pacific", "https://www.ft.com/world/asia-pacific?format=rss"),
+
+    # Tech in Asia
+    ("Tech in Asia - Main", "https://www.techinasia.com/feed"),
+
+    # DealStreetAsia
+    ("DealStreetAsia - Main", "https://www.dealstreetasia.com/feed"),
+
+    # e27
+    ("e27 - Main", "https://e27.co/feed/"),
+
+    # KrASIA
+    ("KrASIA - Main", "https://kr-asia.com/feed"),
+
+    # Extras
+    ("Alpha Southeast Asia", "https://alphasoutheastasia.com/feed"),
+    ("Investvine - Southeast Asia tag", "https://investvine.com/tag/southeast-asia/feed/"),
+]
+
+# Optional: path to your sqlite DB used by the app
+SQLITE_DB_PATH = "app.db"  # change to your DB path
+
+def test_feed(name, url):
+    print(f"Testing: {name}\n  {url}")
+    try:
+        feed = feedparser.parse(url)
+        status = feed.get('status', None)
+        entries = feed.get('entries', [])
+        if status and status != 200:
+            print(f"  HTTP status: {status} (non-200)")
+        if not entries:
+            print("  ❌ No entries found (empty feed).")
+            # show feed.bozo_exception if any
+            if feed.get('bozo', False):
+                print("  ⚠️ Feed parsing error:", feed.get('bozo_exception'))
+            return False, 0
+        # print sample entry
+        first = entries[0]
+        title = first.get('title', '<no title>')
+        link = first.get('link', '<no link>')
+        published = first.get('published', first.get('updated', ''))
+        print(f"  ✅ OK - {len(entries)} entries. Sample: {title} | {published} | {link}")
+        return True, len(entries)
+    except Exception as e:
+        print("  ❌ Exception while parsing:", e)
+        return False, 0
+
+def insert_feed_into_db(conn, source_name, feed_name, feed_url):
+    """
+    Inserts a source + rss_feed if not exists.
+    Assumes tables: sources(id, name, domain, tier, active) and rss_feeds(id, source_id, name, url, active)
+    This is a minimal example; adjust schema/names to match your app.
+    """
+    cursor = conn.cursor()
+    # check source row
+    cursor.execute("SELECT id FROM sources WHERE name = ?", (source_name,))
+    row = cursor.fetchone()
+    if row:
+        source_id = row[0]
+    else:
+        # create a generic source entry (domain/tier unknown here)
+        cursor.execute("INSERT INTO sources (name, domain, tier, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                       (source_name, '', 2, 1, datetime.utcnow(), datetime.utcnow()))
+        source_id = cursor.lastrowid
+    # check rss feed exists
+    cursor.execute("SELECT id FROM rss_feeds WHERE source_id = ? AND url = ?", (source_id, feed_url))
+    if cursor.fetchone():
+        print("  Already in DB.")
+        return
+    cursor.execute("INSERT INTO rss_feeds (source_id, name, url, active, created_at) VALUES (?, ?, ?, ?, ?)",
+                   (source_id, feed_name, feed_url, 1, datetime.utcnow()))
+    conn.commit()
+    print("  Inserted into DB.")
+
+if __name__ == "__main__":
+    results = []
+    for name, url in FEEDS:
+        ok, count = test_feed(name, url)
+        results.append((name, url, ok, count))
+
+    # Optional: insert successful feeds into DB
+    keep = input("\nInsert successful feeds into DB? (y/N): ").strip().lower()
+    if keep == 'y':
+        conn = sqlite3.connect(SQLITE_DB_PATH)
+        for name, url, ok, count in results:
+            if ok:
+                # split source name to find or create source
+                # For simplicity use the part before the hyphen if present
+                source_name = name.split(" - ")[0].strip()
+                insert_feed_into_db(conn, source_name, name, url)
+        conn.close()
+        print("Done.")
+    else:
+        print("No DB changes made. Review results above.")
