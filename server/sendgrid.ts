@@ -1,79 +1,56 @@
 import sgMail from '@sendgrid/mail';
 import type { Lead } from "@shared/schema";
 
-let connectionSettings: any;
-
-async function getCredentials() {
-  const hostname = process.env.REPLIT_CONNECTORS_HOSTNAME;
-  const xReplitToken = process.env.REPL_IDENTITY 
-    ? 'repl ' + process.env.REPL_IDENTITY 
-    : process.env.WEB_REPL_RENEWAL 
-    ? 'depl ' + process.env.WEB_REPL_RENEWAL 
-    : null;
-
-  if (!xReplitToken) {
-    throw new Error('X_REPLIT_TOKEN not found for repl/depl');
-  }
-
-  const response = await fetch(
-    'https://' + hostname + '/api/v2/connection?include_secrets=true&connector_names=sendgrid',
-    {
-      headers: {
-        'Accept': 'application/json',
-        'X_REPLIT_TOKEN': xReplitToken
-      }
-    }
-  );
-  const data = await response.json();
-  connectionSettings = data.items?.[0];
-  
-  console.log('SendGrid connection response:', JSON.stringify({
-    hasConnection: !!connectionSettings,
-    hasApiKey: !!connectionSettings?.settings?.api_key,
-    hasFromEmail: !!connectionSettings?.settings?.from_email,
-    fromEmail: connectionSettings?.settings?.from_email,
-  }));
-
-  if (!connectionSettings || (!connectionSettings.settings.api_key || !connectionSettings.settings.from_email)) {
-    throw new Error('SendGrid not connected - please configure the SendGrid connector with a valid API key');
-  }
-  return { apiKey: connectionSettings.settings.api_key, email: connectionSettings.settings.from_email };
-}
+const FROM_EMAIL = 'billynaveed@gmail.com';
 
 export async function getUncachableSendGridClient() {
-  const { apiKey, email } = await getCredentials();
+  const apiKey = process.env.SENDGRID_API_KEY;
+  
+  if (!apiKey) {
+    throw new Error('SENDGRID_API_KEY not configured');
+  }
+  
   sgMail.setApiKey(apiKey);
   return {
     client: sgMail,
-    fromEmail: email
+    fromEmail: FROM_EMAIL
   };
 }
 
 export async function sendTestEmail(toEmail: string): Promise<void> {
   const { client, fromEmail } = await getUncachableSendGridClient();
   
-  await client.send({
-    to: toEmail,
-    from: fromEmail,
-    subject: 'Lead Intelligence - Test Alert',
-    html: `
-      <div style="font-family: Inter, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-        <h1 style="color: #1a1a2e; margin-bottom: 20px;">Test Alert from Lead Intelligence</h1>
-        <p style="color: #666; font-size: 16px; line-height: 1.6;">
-          This is a test email to confirm your alert settings are configured correctly.
-        </p>
-        <p style="color: #666; font-size: 16px; line-height: 1.6;">
-          You will receive emails like this when new high-priority leads are found matching your configured keywords.
-        </p>
-        <div style="margin-top: 30px; padding: 20px; background: #f5f5f5; border-radius: 8px;">
-          <p style="margin: 0; color: #888; font-size: 14px;">
-            Lead Intelligence Tool - Private Banking SEA Coverage
+  try {
+    await client.send({
+      to: toEmail,
+      from: fromEmail,
+      subject: 'Lead Intelligence - Test Alert',
+      html: `
+        <div style="font-family: Inter, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <h1 style="color: #1a1a2e; margin-bottom: 20px;">Test Alert from Lead Intelligence</h1>
+          <p style="color: #666; font-size: 16px; line-height: 1.6;">
+            This is a test email to confirm your alert settings are configured correctly.
           </p>
+          <p style="color: #666; font-size: 16px; line-height: 1.6;">
+            You will receive emails like this when new high-priority leads are found matching your configured keywords.
+          </p>
+          <div style="margin-top: 30px; padding: 20px; background: #f5f5f5; border-radius: 8px;">
+            <p style="margin: 0; color: #888; font-size: 14px;">
+              Lead Intelligence Tool - Private Banking SEA Coverage
+            </p>
+          </div>
         </div>
-      </div>
-    `,
-    text: 'This is a test email to confirm your alert settings are configured correctly. You will receive emails like this when new high-priority leads are found matching your configured keywords.',
-  });
+      `,
+      text: 'This is a test email to confirm your alert settings are configured correctly. You will receive emails like this when new high-priority leads are found matching your configured keywords.',
+    });
+  } catch (error: any) {
+    console.error('SendGrid error details:', JSON.stringify({
+      message: error?.message,
+      code: error?.code,
+      errors: error?.response?.body?.errors,
+    }, null, 2));
+    throw error;
+  }
 }
 
 export async function sendLeadAlertEmail(toEmail: string, leads: Lead[]): Promise<void> {
