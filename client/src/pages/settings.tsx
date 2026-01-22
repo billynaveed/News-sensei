@@ -19,7 +19,8 @@ import {
   Search,
   Trash2,
   ChevronDown,
-  ChevronRight
+  ChevronRight,
+  Send
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -852,6 +853,25 @@ export default function SettingsPage() {
     },
   });
 
+  const testTelegramMutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest("POST", "/api/test-telegram");
+    },
+    onSuccess: () => {
+      toast({
+        title: "Test message sent",
+        description: "Check your Telegram for a test alert.",
+      });
+    },
+    onError: () => {
+      toast({
+        title: "Error sending Telegram message",
+        description: "There was a problem sending the test message.",
+        variant: "destructive",
+      });
+    },
+  });
+
   const handleAddKeyword = (keyword: string) => {
     const current = form.getValues("keywords");
     form.setValue("keywords", [...current, keyword], { shouldDirty: true });
@@ -1005,6 +1025,35 @@ export default function SettingsPage() {
                   </FormItem>
                 )}
               />
+
+              <Separator />
+
+              <div className="flex flex-row items-center justify-between">
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-2">
+                    <Send className="h-4 w-4 text-primary" />
+                    <span className="text-sm font-medium">Telegram Alerts</span>
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    Receive instant Telegram notifications for new leads.
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => testTelegramMutation.mutate()}
+                  disabled={testTelegramMutation.isPending}
+                  data-testid="button-test-telegram"
+                >
+                  {testTelegramMutation.isPending ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    "Test Telegram"
+                  )}
+                </Button>
+              </div>
+
+              <Separator />
 
               <div className="grid gap-4 sm:grid-cols-2">
                 <FormField
