@@ -7,7 +7,6 @@ import {
   Save, 
   Plus, 
   X, 
-  Mail, 
   Globe, 
   Tag,
   Bell,
@@ -77,9 +76,6 @@ const settingsSchema = z.object({
   keywords: z.array(z.string()).min(1, "At least one keyword is required"),
   regions: z.array(z.string()).min(1, "At least one region is required"),
   summaryLength: z.enum(["brief", "detailed", "actionable"]),
-  emailFrequency: z.enum(["hourly", "daily", "weekly"]),
-  emailEnabled: z.boolean(),
-  alertEmail: z.string().email("Please enter a valid email address"),
   logRetentionDays: z.number().min(1).max(30),
   googleNewsEnabled: z.boolean(),
   rssEnabled: z.boolean(),
@@ -787,9 +783,6 @@ export default function SettingsPage() {
       keywords: DEFAULT_KEYWORDS,
       regions: DEFAULT_REGIONS,
       summaryLength: "brief",
-      emailFrequency: "daily",
-      emailEnabled: true,
-      alertEmail: "",
       logRetentionDays: 2,
       googleNewsEnabled: false,
       rssEnabled: true,
@@ -803,9 +796,6 @@ export default function SettingsPage() {
         keywords: settings.keywords,
         regions: settings.regions,
         summaryLength: settings.summaryLength as "brief" | "detailed" | "actionable",
-        emailFrequency: settings.emailFrequency as "hourly" | "daily" | "weekly",
-        emailEnabled: settings.emailEnabled,
-        alertEmail: settings.alertEmail,
         logRetentionDays: settings.logRetentionDays ?? 2,
         googleNewsEnabled: settings.googleNewsEnabled ?? false,
         rssEnabled: settings.rssEnabled ?? true,
@@ -829,25 +819,6 @@ export default function SettingsPage() {
       toast({
         title: "Error saving settings",
         description: "There was a problem saving your settings. Please try again.",
-        variant: "destructive",
-      });
-    },
-  });
-
-  const testEmailMutation = useMutation({
-    mutationFn: async () => {
-      await apiRequest("POST", "/api/test-email");
-    },
-    onSuccess: () => {
-      toast({
-        title: "Test email sent",
-        description: "Check your inbox for a test alert email.",
-      });
-    },
-    onError: () => {
-      toast({
-        title: "Error sending test email",
-        description: "There was a problem sending the test email. Please check your settings.",
         variant: "destructive",
       });
     },
@@ -961,73 +932,10 @@ export default function SettingsPage() {
                 <CardTitle className="text-lg">Alert Preferences</CardTitle>
               </div>
               <CardDescription>
-                Configure how and when you receive email alerts about new leads.
+                Configure how you receive notifications about new leads.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
-              <FormField
-                control={form.control}
-                name="emailEnabled"
-                render={({ field }) => (
-                  <FormItem className="flex flex-row items-center justify-between">
-                    <div className="space-y-0.5">
-                      <FormLabel>Email Alerts</FormLabel>
-                      <FormDescription>
-                        Receive email notifications when new high-priority leads are found.
-                      </FormDescription>
-                    </div>
-                    <FormControl>
-                      <Switch
-                        checked={field.value}
-                        onCheckedChange={field.onChange}
-                        data-testid="switch-email-enabled"
-                      />
-                    </FormControl>
-                  </FormItem>
-                )}
-              />
-
-              <Separator />
-
-              <FormField
-                control={form.control}
-                name="alertEmail"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Alert Email Address</FormLabel>
-                    <FormControl>
-                      <div className="flex gap-2">
-                        <div className="relative flex-1">
-                          <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                          <Input 
-                            placeholder="your@email.com" 
-                            className="pl-10" 
-                            {...field} 
-                            data-testid="input-alert-email"
-                          />
-                        </div>
-                        <Button 
-                          type="button"
-                          variant="outline"
-                          onClick={() => testEmailMutation.mutate()}
-                          disabled={testEmailMutation.isPending || !field.value}
-                          data-testid="button-test-email"
-                        >
-                          {testEmailMutation.isPending ? (
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                          ) : (
-                            "Test"
-                          )}
-                        </Button>
-                      </div>
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-
-              <Separator />
-
               <div className="flex flex-row items-center justify-between">
                 <div className="space-y-0.5">
                   <div className="flex items-center gap-2">
@@ -1055,57 +963,30 @@ export default function SettingsPage() {
 
               <Separator />
 
-              <div className="grid gap-4 sm:grid-cols-2">
-                <FormField
-                  control={form.control}
-                  name="emailFrequency"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Alert Frequency</FormLabel>
-                      <Select onValueChange={field.onChange} value={field.value}>
-                        <FormControl>
-                          <SelectTrigger data-testid="select-email-frequency">
-                            <SelectValue placeholder="Select frequency" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          <SelectItem value="hourly">Hourly</SelectItem>
-                          <SelectItem value="daily">Daily Digest</SelectItem>
-                          <SelectItem value="weekly">Weekly Summary</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <FormDescription>
-                        How often to send alert emails.
-                      </FormDescription>
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name="summaryLength"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>AI Summary Length</FormLabel>
-                      <Select onValueChange={field.onChange} value={field.value}>
-                        <FormControl>
-                          <SelectTrigger data-testid="select-summary-length">
-                            <SelectValue placeholder="Select length" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          <SelectItem value="brief">Brief (1-2 sentences)</SelectItem>
-                          <SelectItem value="detailed">Detailed (1 paragraph)</SelectItem>
-                          <SelectItem value="actionable">Actionable (with recommendations)</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <FormDescription>
-                        Length of AI-generated summaries.
-                      </FormDescription>
-                    </FormItem>
-                  )}
-                />
-              </div>
+              <FormField
+                control={form.control}
+                name="summaryLength"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>AI Summary Length</FormLabel>
+                    <Select onValueChange={field.onChange} value={field.value}>
+                      <FormControl>
+                        <SelectTrigger data-testid="select-summary-length">
+                          <SelectValue placeholder="Select length" />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        <SelectItem value="brief">Brief (1-2 sentences)</SelectItem>
+                        <SelectItem value="detailed">Detailed (1 paragraph)</SelectItem>
+                        <SelectItem value="actionable">Actionable (with recommendations)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FormDescription>
+                      Length of AI-generated summaries.
+                    </FormDescription>
+                  </FormItem>
+                )}
+              />
 
               <Separator />
 
