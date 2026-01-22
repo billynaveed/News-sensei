@@ -63,6 +63,8 @@ export const settings = pgTable("settings", {
   emailFrequency: text("email_frequency").notNull().default("daily"),
   emailEnabled: boolean("email_enabled").notNull().default(true),
   alertEmail: text("alert_email").notNull(),
+  telegramEnabled: boolean("telegram_enabled").notNull().default(false),
+  telegramChatId: text("telegram_chat_id"),
   logRetentionDays: integer("log_retention_days").notNull().default(2),
   // Global scanning method toggles - apply to ALL active sources
   googleNewsEnabled: boolean("google_news_enabled").notNull().default(false),

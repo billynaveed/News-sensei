@@ -40,3 +40,8 @@ waitForPort = 5000
 
 [agent]
 integrations = ["javascript_openai_ai_integrations:2.0.0", "sendgrid:1.0.0", "javascript_database:1.0.0"]
+
+[userenv]
+
+[userenv.shared]
+TELEGRAM_BOT_TOKEN = "8026368730:AAFRUUtLkCsXhxZ6TUfyDjaIkReQaqx1jjI"

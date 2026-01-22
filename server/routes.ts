@@ -3,6 +3,7 @@ import { createServer, type Server } from "http";
 import { z } from "zod";
 import { storage } from "./storage";
 import { sendTestEmail, sendLeadAlertEmail } from "./sendgrid";
+import { sendTestTelegramMessage, getTelegramUpdates } from "./telegram";
 import { scanForLeads, getScanProgress } from "./scanner";
 import type { LeadStatus } from "@shared/schema";
 
@@ -18,6 +19,8 @@ const updateSettingsSchema = z.object({
   emailFrequency: z.enum(["hourly", "daily", "weekly"]).optional(),
   emailEnabled: z.boolean().optional(),
   alertEmail: z.string().email().optional(),
+  telegramEnabled: z.boolean().optional(),
+  telegramChatId: z.string().optional(),
   logRetentionDays: z.number().min(1).max(30).optional(),
   googleNewsEnabled: z.boolean().optional(),
   rssEnabled: z.boolean().optional(),
@@ -212,6 +215,39 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error sending test email:", error);
       res.status(500).json({ error: "Failed to send test email" });
+    }
+  });
+
+  // Test Telegram endpoint
+  app.post("/api/test-telegram", async (req, res) => {
+    try {
+      const settings = await storage.getSettings();
+      if (!settings?.telegramChatId) {
+        return res.status(400).json({ error: "No Telegram chat ID configured" });
+      }
+      await sendTestTelegramMessage(settings.telegramChatId);
+      res.json({ success: true, message: "Test Telegram message sent" });
+    } catch (error: any) {
+      console.error("Error sending test Telegram message:", error);
+      res.status(500).json({ error: error.message || "Failed to send Telegram message" });
+    }
+  });
+
+  // Get Telegram chat ID from recent messages
+  app.get("/api/telegram-chat-id", async (req, res) => {
+    try {
+      const updates = await getTelegramUpdates();
+      if (updates.length === 0) {
+        return res.json({ chatId: null, message: "No messages found. Please send a message to the bot first." });
+      }
+      // Get the most recent chat ID
+      const latestUpdate = updates[updates.length - 1];
+      const chatId = latestUpdate.message?.chat?.id?.toString() || 
+                     latestUpdate.channel_post?.chat?.id?.toString();
+      res.json({ chatId, updates: updates.slice(-3) });
+    } catch (error: any) {
+      console.error("Error getting Telegram updates:", error);
+      res.status(500).json({ error: error.message || "Failed to get Telegram updates" });
     }
   });
 
