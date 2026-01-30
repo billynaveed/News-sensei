@@ -1,10 +1,11 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { z } from "zod";
+import { randomUUID } from "crypto";
 import { storage } from "./storage";
 import { sendTestEmail, sendLeadAlertEmail } from "./sendgrid";
 import { sendTestTelegramMessage, getTelegramUpdates } from "./telegram";
-import { scanForLeads, getScanProgress } from "./scanner";
+import { scanForLeads, getScanProgress, getScanLogs } from "./scanner";
 import type { LeadStatus } from "@shared/schema";
 
 const updateLeadStatusSchema = z.object({
@@ -181,8 +182,16 @@ export async function registerRoutes(
   // Trigger scan endpoint
   app.post("/api/scan", async (req, res) => {
     try {
-      const result = await scanForLeads();
-      res.json(result);
+      // Generate scan ID immediately and return it
+      const scanId = randomUUID();
+
+      // Start scan in background (don't await)
+      scanForLeads(scanId).catch(error => {
+        console.error("Error during background scan:", error);
+      });
+
+      // Return scanId immediately so frontend can start streaming logs
+      res.json({ scanId });
     } catch (error) {
       console.error("Error triggering scan:", error);
       res.status(500).json({ error: "Failed to trigger scan" });
@@ -201,6 +210,54 @@ export async function registerRoutes(
       console.error("Error fetching scan progress:", error);
       res.status(500).json({ error: "Failed to fetch scan progress" });
     }
+  });
+
+  // SSE endpoint for real-time scan logs
+  app.get("/api/scan-logs/:scanId/stream", (req, res) => {
+    const { scanId } = req.params;
+
+    // Set headers for SSE
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+
+    // Send initial connection message
+    res.write(`data: ${JSON.stringify({ type: "connected" })}\n\n`);
+
+    let lastSentIndex = 0;
+
+    // Stream logs every 500ms
+    const interval = setInterval(() => {
+      const logs = getScanLogs(scanId);
+      const progress = getScanProgress(scanId);
+
+      // Send new logs
+      if (logs.length > lastSentIndex) {
+        const newLogs = logs.slice(lastSentIndex);
+        for (const log of newLogs) {
+          res.write(`data: ${JSON.stringify({ type: "log", log })}\n\n`);
+        }
+        lastSentIndex = logs.length;
+      }
+
+      // Send progress update
+      if (progress) {
+        res.write(`data: ${JSON.stringify({ type: "progress", progress })}\n\n`);
+      }
+
+      // Check if scan is complete or errored
+      if (progress?.status === "complete" || progress?.status === "error") {
+        res.write(`data: ${JSON.stringify({ type: "complete", progress })}\n\n`);
+        clearInterval(interval);
+        res.end();
+      }
+    }, 500);
+
+    // Cleanup on client disconnect
+    req.on("close", () => {
+      clearInterval(interval);
+      res.end();
+    });
   });
 
   // Test email endpoint

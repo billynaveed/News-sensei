@@ -44,6 +44,7 @@ import {
 } from "@/components/ui/collapsible";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Lead, LeadStatus, PriorityLevel, SourceTier, FetchMethod } from "@shared/schema";
+import { ScanLogsViewer } from "@/components/scan-logs-viewer";
 
 type FilterState = {
   publishedDays: string;
@@ -328,6 +329,7 @@ export default function Dashboard() {
   });
 
   const [statsExpanded, setStatsExpanded] = useState(false);
+  const [currentScanId, setCurrentScanId] = useState<string | null>(null);
 
   useEffect(() => {
     if (filterParam === "saved") {
@@ -375,9 +377,16 @@ export default function Dashboard() {
 
   const triggerScanMutation = useMutation({
     mutationFn: async () => {
-      await apiRequest("POST", "/api/scan");
+      const response = await apiRequest("POST", "/api/scan");
+      return response as unknown as { scanId: string };
     },
-    onSuccess: () => {
+    onMutate: () => {
+      // Clear previous scan logs
+      setCurrentScanId(null);
+    },
+    onSuccess: (data) => {
+      // Set the scan ID to start streaming logs
+      setCurrentScanId(data.scanId);
       queryClient.invalidateQueries({ queryKey: ["/api/leads"] });
       queryClient.invalidateQueries({ queryKey: ["/api/leads/stats"] });
     },
@@ -597,6 +606,20 @@ export default function Dashboard() {
           )}
         </div>
       </Collapsible>
+
+      {/* Scan Logs Viewer */}
+      {currentScanId && (
+        <div className="px-6">
+          <ScanLogsViewer
+            scanId={currentScanId}
+            onComplete={() => {
+              // Refresh leads when scan completes
+              queryClient.invalidateQueries({ queryKey: ["/api/leads"] });
+              queryClient.invalidateQueries({ queryKey: ["/api/leads/stats"] });
+            }}
+          />
+        </div>
+      )}
 
       <div className="flex-1 overflow-auto p-6">
         {leadsLoading ? (
