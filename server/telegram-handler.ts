@@ -161,9 +161,13 @@ async function handleLeadsCommand(chatId: string, status: string) {
   // Send first 5 leads
   for (const lead of filteredLeads.slice(0, 5)) {
     const priorityIcon = lead.priorityLevel === 'high' ? '🔴' : lead.priorityLevel === 'medium' ? '🟡' : '🟢';
+    const companyInfo = lead.companyDescription
+      ? `${lead.companyNames.join(', ')}\n<i>${lead.companyDescription}</i>`
+      : lead.companyNames.join(', ');
+
     const message = `${priorityIcon} <b>${lead.headline}</b>
 
-<i>Companies:</i> ${lead.companyNames.join(', ')}
+<i>Companies:</i> ${companyInfo}
 <i>People:</i> ${lead.founderNames.join(', ') || 'N/A'}
 <i>Region:</i> ${lead.region} | Score: ${lead.priorityScore}
 

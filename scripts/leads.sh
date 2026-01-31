@@ -40,6 +40,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo "$LEADS" | jq -r '.[] |
     "\n\u001b[1;36m" + .headline + "\u001b[0m" +
     "\n\u001b[0;35m│\u001b[0m Companies: " + (.companyNames | join(", ")) +
+    (if .companyDescription then "\n\u001b[0;35m│\u001b[0m   \u001b[0;90m" + .companyDescription + "\u001b[0m" else "" end) +
     "\n\u001b[0;35m│\u001b[0m People: " + (if .founderNames | length > 0 then (.founderNames | join(", ")) else "N/A" end) +
     "\n\u001b[0;35m│\u001b[0m Region: " + .region +
     "\n\u001b[0;35m│\u001b[0m Priority: " +
