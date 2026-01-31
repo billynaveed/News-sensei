@@ -6,7 +6,7 @@ import { storage } from "./storage";
 import { sendTestEmail, sendLeadAlertEmail } from "./sendgrid";
 import { sendTestTelegramMessage, getTelegramUpdates, sendLeadAlertTelegram } from "./telegram";
 import { startTelegramPolling } from "./telegram-handler";
-import { startDailyCostReportScheduler, startHourlyScanScheduler } from "./scheduler";
+import { startDailyCostReportScheduler, startHourlyScanScheduler, startIpoScanScheduler } from "./scheduler";
 import { scanForLeads, getScanProgress, getScanLogs } from "./scanner";
 import type { LeadStatus } from "@shared/schema";
 
@@ -82,6 +82,13 @@ export async function registerRoutes(
     startHourlyScanScheduler();
   } catch (error) {
     console.error("Error starting hourly scan scheduler:", error);
+  }
+
+  // Start IPO scan scheduler (runs every 6 hours)
+  try {
+    startIpoScanScheduler(storage);
+  } catch (error) {
+    console.error("Error starting IPO scan scheduler:", error);
   }
 
   // Seed default sources and run log cleanup on startup

@@ -35,6 +35,7 @@ export const leads = pgTable("leads", {
   companyNames: text("company_names").array().notNull(),
   companyDescription: text("company_description"),
   founderNames: text("founder_names").array().notNull(),
+  linkedinProfiles: text("linkedin_profiles").array(),
   investors: text("investors").array(),
   aiSummary: text("ai_summary").notNull(),
   matchedKeywords: text("matched_keywords").array().notNull(),
@@ -190,3 +191,39 @@ export const insertScanLogSchema = createInsertSchema(scanLogs).omit({
 
 export type InsertScanLog = z.infer<typeof insertScanLogSchema>;
 export type ScanLog = typeof scanLogs.$inferSelect;
+
+// IPO Filing status and exchange enum
+export type IpoFilingStatus = "new" | "reviewed" | "dismissed";
+export type StockExchange = "HKEX" | "SGX";
+
+// IPO Filings table - tracks IPO announcements from various exchanges
+export const ipoFilings = pgTable("ipo_filings", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  exchange: text("exchange").notNull().$type<StockExchange>(),
+  stockCode: text("stock_code"),
+  companyName: text("company_name").notNull(),
+  businessDescription: text("business_description"),
+  founders: text("founders").array(),
+  keyManagement: text("key_management").array(),
+  filingDate: timestamp("filing_date").notNull(),
+  listingDate: timestamp("listing_date"),
+  prospectusUrl: text("prospectus_url").notNull().unique(),
+  ipoSize: real("ipo_size"), // In millions USD
+  region: text("region").notNull(),
+  status: text("status").notNull().$type<IpoFilingStatus>().default("new"),
+  aiSummary: text("ai_summary"), // Optional AI-generated summary
+  matchedKeywords: text("matched_keywords").array(),
+  priorityScore: integer("priority_score"),
+  priorityLevel: text("priority_level").$type<PriorityLevel>(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+export const insertIpoFilingSchema = createInsertSchema(ipoFilings).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertIpoFiling = z.infer<typeof insertIpoFilingSchema>;
+export type IpoFiling = typeof ipoFilings.$inferSelect;

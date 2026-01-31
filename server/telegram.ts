@@ -1,4 +1,4 @@
-import type { Lead } from "@shared/schema";
+import type { Lead, IpoFiling } from "@shared/schema";
 
 const TELEGRAM_API = 'https://api.telegram.org/bot';
 
@@ -244,4 +244,56 @@ export async function sendDailyCostSummary(
 ${summary.totalCost >= summary.limit ? "🛑 Daily limit reached - scanning paused" : "✅ Within budget"}`;
 
   await sendTelegramMessage(chatId, message, "HTML");
+}
+
+export async function sendIpoFilingAlert(chatId: string, filing: IpoFiling): Promise<void> {
+  if (!chatId) return;
+
+  const exchangeIcon = filing.exchange === "HKEX" ? "🇭🇰" : "🇸🇬";
+  const filingDateStr = filing.filingDate.toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric'
+  });
+
+  let message = `${exchangeIcon} <b>New IPO Filing - ${filing.exchange}</b>
+
+<b>${filing.companyName}</b>`;
+
+  if (filing.stockCode) {
+    message += ` (${filing.stockCode})`;
+  }
+
+  if (filing.businessDescription) {
+    message += `\n\n<i>${filing.businessDescription}</i>`;
+  }
+
+  message += `\n\n📅 <b>Filing Date:</b> ${filingDateStr}`;
+
+  if (filing.founders && filing.founders.length > 0) {
+    message += `\n👤 <b>Founders:</b> ${filing.founders.slice(0, 3).join(', ')}${filing.founders.length > 3 ? '...' : ''}`;
+  }
+
+  if (filing.keyManagement && filing.keyManagement.length > 0) {
+    message += `\n👔 <b>Key Management:</b> ${filing.keyManagement.slice(0, 3).join(', ')}${filing.keyManagement.length > 3 ? '...' : ''}`;
+  }
+
+  if (filing.ipoSize) {
+    message += `\n💰 <b>IPO Size:</b> ~$${filing.ipoSize}M`;
+  }
+
+  message += `\n📍 <b>Region:</b> ${filing.region}`;
+  message += `\n\n<a href="${filing.prospectusUrl}">View Prospectus →</a>`;
+
+  // Create inline keyboard with action buttons
+  const keyboard: InlineKeyboard = {
+    inline_keyboard: [
+      [
+        { text: '💾 Save', callback_data: `ipo_save:${filing.id}` },
+        { text: '❌ Dismiss', callback_data: `ipo_dismiss:${filing.id}` },
+      ],
+    ],
+  };
+
+  await sendTelegramMessage(chatId, message, 'HTML', keyboard);
 }

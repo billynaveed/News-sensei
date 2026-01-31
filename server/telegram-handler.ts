@@ -1,7 +1,9 @@
 import { getTelegramUpdates, answerCallbackQuery, editMessageReplyMarkup, sendLeadAlertTelegram } from "./telegram";
 import { storage } from "./storage";
 import { scanForLeads } from "./scanner";
-import type { LeadStatus } from "@shared/schema";
+import { scanHkexIpos } from "./ipo-scanner";
+import { enrichLead } from "./lead-enrichment";
+import type { LeadStatus, IpoFilingStatus } from "@shared/schema";
 
 const TELEGRAM_API = 'https://api.telegram.org/bot';
 
@@ -104,6 +106,14 @@ async function handleTextMessage(message: any) {
           await handleScanCommand(chatId);
           break;
 
+        case '/ipos':
+          await handleIposCommand(chatId, 'new');
+          break;
+
+        case '/iposcan':
+          await handleIpoScanCommand(chatId);
+          break;
+
         default:
           await sendTelegramMessage(chatId, '❓ Unknown command. Send /help to see available commands.');
       }
@@ -124,6 +134,10 @@ Available commands:
 /new - View new leads requiring review
 /dismissed - View dismissed leads
 /all - View all leads
+
+<b>IPO Filings:</b>
+/ipos - View new IPO filings
+/iposcan - Scan for new IPO filings
 
 <b>Analytics:</b>
 /stats - Show lead statistics
@@ -165,15 +179,31 @@ async function handleLeadsCommand(chatId: string, status: string) {
       ? `${lead.companyNames.join(', ')}\n<i>${lead.companyDescription}</i>`
       : lead.companyNames.join(', ');
 
-    const message = `${priorityIcon} <b>${lead.headline}</b>
+    let message = `${priorityIcon} <b>${lead.headline}</b>
 
 <i>Companies:</i> ${companyInfo}
 <i>People:</i> ${lead.founderNames.join(', ') || 'N/A'}
 <i>Region:</i> ${lead.region} | Score: ${lead.priorityScore}
 
-${lead.aiSummary}
+${lead.aiSummary}`;
 
-<a href="${lead.sourceUrl}">Read more →</a>`;
+    // Add LinkedIn profiles if available
+    if (lead.linkedinProfiles && lead.linkedinProfiles.length > 0) {
+      message += `\n\n<b>🔗 LinkedIn:</b>\n`;
+      lead.linkedinProfiles.forEach(url => {
+        message += `• ${url}\n`;
+      });
+    }
+
+    // Add investors if available
+    if (lead.investors && lead.investors.length > 0) {
+      message += `\n<b>💰 Investors:</b>\n`;
+      lead.investors.forEach(inv => {
+        message += `• ${inv}\n`;
+      });
+    }
+
+    message += `\n\n<a href="${lead.sourceUrl}">Read more →</a>`;
 
     await sendTelegramMessage(chatId, message);
 
@@ -244,27 +274,180 @@ ${result.newLeads > 0 ? 'New leads will be sent to you shortly! 🎉' : 'No new 
   }
 }
 
+async function handleIposCommand(chatId: string, status: string) {
+  const filings = await storage.getAllIpoFilings();
+  let filteredFilings;
+
+  if (status === 'all') {
+    filteredFilings = filings;
+  } else {
+    filteredFilings = filings.filter(f => f.status === status);
+  }
+
+  if (filteredFilings.length === 0) {
+    await sendTelegramMessage(chatId, `📋 No ${status} IPO filings found.`);
+    return;
+  }
+
+  // Send header
+  const statusEmoji = '🏢';
+  await sendTelegramMessage(chatId, `${statusEmoji} <b>IPO FILINGS (${filteredFilings.length})</b>\n\nShowing top 5:`);
+
+  // Send first 5 filings
+  for (const filing of filteredFilings.slice(0, 5)) {
+    const exchangeIcon = filing.exchange === "HKEX" ? "🇭🇰" : "🇸🇬";
+    const filingDateStr = filing.filingDate.toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric'
+    });
+
+    let message = `${exchangeIcon} <b>${filing.companyName}</b>`;
+    if (filing.stockCode) {
+      message += ` (${filing.stockCode})`;
+    }
+
+    if (filing.businessDescription) {
+      message += `\n\n<i>${filing.businessDescription}</i>`;
+    }
+
+    message += `\n\n📅 ${filingDateStr} | 📍 ${filing.region}`;
+
+    if (filing.founders && filing.founders.length > 0) {
+      message += `\n👤 ${filing.founders.slice(0, 2).join(', ')}`;
+    }
+
+    message += `\n\n<a href="${filing.prospectusUrl}">View Prospectus →</a>`;
+
+    await sendTelegramMessage(chatId, message);
+
+    // Small delay between messages
+    await new Promise(resolve => setTimeout(resolve, 300));
+  }
+
+  if (filteredFilings.length > 5) {
+    await sendTelegramMessage(chatId, `... and ${filteredFilings.length - 5} more IPO filings.`);
+  }
+}
+
+async function handleIpoScanCommand(chatId: string) {
+  await sendTelegramMessage(chatId, '🏢 Starting IPO scan... This may take a minute.');
+
+  try {
+    const result = await scanHkexIpos({ parsePdfs: true, maxPdfsToProcess: 3 });
+
+    const resultText = `✅ <b>IPO Scan Complete!</b>
+
+• Listings scanned: ${result.scanned}
+• New filings found: ${result.newFilings}
+• Duplicates skipped: ${result.duplicatesSkipped}
+
+${result.newFilings > 0 ? 'New IPO filings will be sent to you shortly! 🎉' : 'No new IPO filings found this time.'}`;
+
+    await sendTelegramMessage(chatId, resultText);
+  } catch (error) {
+    await sendTelegramMessage(chatId, '❌ Error running IPO scan. Please try again later.');
+    console.error("Error in IPO scan command:", error);
+  }
+}
+
 async function handleCallbackQuery(callbackQuery: any) {
   const { id: callbackQueryId, data, message } = callbackQuery;
 
   if (!data) return;
 
   try {
-    // Parse callback data: "action:leadId"
-    const [action, leadId] = data.split(':');
+    // Parse callback data: "action:id" or "ipo_action:id"
+    const parts = data.split(':');
 
-    if (!leadId || !['save', 'dismiss'].includes(action)) {
+    if (parts.length !== 2) {
+      await answerCallbackQuery(callbackQueryId, 'Invalid action');
+      return;
+    }
+
+    const [action, id] = parts;
+
+    // Handle IPO filing actions
+    if (action === 'ipo_save' || action === 'ipo_dismiss') {
+      const ipoStatus: IpoFilingStatus = action === 'ipo_save' ? 'reviewed' : 'dismissed';
+      const updatedFiling = await storage.updateIpoFilingStatus(id, ipoStatus);
+
+      if (!updatedFiling) {
+        await answerCallbackQuery(callbackQueryId, 'IPO filing not found');
+        return;
+      }
+
+      // Remove buttons from the message
+      if (message?.chat?.id && message?.message_id) {
+        await editMessageReplyMarkup(
+          message.chat.id.toString(),
+          message.message_id
+        );
+      }
+
+      const actionText = action === 'ipo_save' ? '💾 Saved' : '❌ Dismissed';
+      await answerCallbackQuery(callbackQueryId, `${actionText} successfully!`);
+
+      console.log(`IPO filing ${id} marked as ${ipoStatus} via Telegram`);
+      return;
+    }
+
+    // Handle lead actions
+    if (!['save', 'dismiss'].includes(action)) {
       await answerCallbackQuery(callbackQueryId, 'Invalid action');
       return;
     }
 
     // Update lead status
     const status: LeadStatus = action === 'save' ? 'saved' : 'dismissed';
-    const updatedLead = await storage.updateLeadStatus(leadId, status);
+    const updatedLead = await storage.updateLeadStatus(id, status);
 
     if (!updatedLead) {
       await answerCallbackQuery(callbackQueryId, 'Lead not found');
       return;
+    }
+
+    // If saving the lead, enrich it with LinkedIn and investors
+    if (action === 'save') {
+      const chatId = message.chat.id.toString();
+      await sendTelegramMessage(chatId, '🔍 Researching LinkedIn profiles and investors...');
+
+      try {
+        const enrichmentData = await enrichLead({
+          companyNames: updatedLead.companyNames,
+          founderNames: updatedLead.founderNames,
+          region: updatedLead.region,
+          companyDescription: updatedLead.companyDescription,
+        });
+
+        await storage.enrichLead(id, enrichmentData.linkedinProfiles, enrichmentData.investors);
+
+        // Send enriched data to Telegram
+        let enrichmentMessage = `✅ <b>Lead Enriched!</b>\n\n`;
+
+        if (enrichmentData.linkedinProfiles.length > 0) {
+          enrichmentMessage += `<b>🔗 LinkedIn Profiles:</b>\n`;
+          enrichmentData.linkedinProfiles.forEach(url => {
+            enrichmentMessage += `• ${url}\n`;
+          });
+        } else {
+          enrichmentMessage += `<b>🔗 LinkedIn Profiles:</b> None found\n`;
+        }
+
+        if (enrichmentData.investors.length > 0) {
+          enrichmentMessage += `\n<b>💰 Investors:</b>\n`;
+          enrichmentData.investors.forEach(inv => {
+            enrichmentMessage += `• ${inv}\n`;
+          });
+        } else {
+          enrichmentMessage += `\n<b>💰 Investors:</b> None found`;
+        }
+
+        await sendTelegramMessage(chatId, enrichmentMessage);
+      } catch (error) {
+        console.error("Error enriching lead:", error);
+        await sendTelegramMessage(chatId, '⚠️ Could not complete enrichment. Lead has been saved without enrichment data.');
+      }
     }
 
     // Remove buttons from the message
@@ -279,7 +462,7 @@ async function handleCallbackQuery(callbackQuery: any) {
     const actionText = action === 'save' ? '💾 Saved' : '❌ Dismissed';
     await answerCallbackQuery(callbackQueryId, `${actionText} successfully!`);
 
-    console.log(`Lead ${leadId} marked as ${status} via Telegram`);
+    console.log(`Lead ${id} marked as ${status} via Telegram`);
   } catch (error) {
     console.error("Error handling callback query:", error);
     await answerCallbackQuery(callbackQueryId, 'Error processing action');

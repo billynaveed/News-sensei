@@ -1,13 +1,14 @@
 import { eq, desc, gte, and, ne, sql, lt } from "drizzle-orm";
 import { db } from "./db";
-import { 
-  users, leads, settings, sources, scanLogs, rssFeeds,
-  type User, type InsertUser, 
+import {
+  users, leads, settings, sources, scanLogs, rssFeeds, ipoFilings,
+  type User, type InsertUser,
   type Lead, type InsertLead, type LeadStatus,
   type Settings, type InsertSettings,
   type Source, type InsertSource,
   type RssFeed, type InsertRssFeed,
-  type ScanLog, type InsertScanLog
+  type ScanLog, type InsertScanLog,
+  type IpoFiling, type InsertIpoFiling, type IpoFilingStatus
 } from "@shared/schema";
 
 export interface IStorage {
@@ -20,6 +21,7 @@ export interface IStorage {
   getLeadByUrl(url: string): Promise<Lead | undefined>;
   createLead(lead: InsertLead): Promise<Lead>;
   updateLeadStatus(id: string, status: LeadStatus): Promise<Lead | undefined>;
+  enrichLead(id: string, linkedinProfiles: string[], investors: string[]): Promise<Lead | undefined>;
   getLeadsStats(): Promise<{ today: number; thisWeek: number; highPriority: number }>;
 
   getSettings(): Promise<Settings | undefined>;
@@ -46,6 +48,14 @@ export interface IStorage {
   createScanLog(log: InsertScanLog): Promise<ScanLog>;
   cleanupOldScanLogs(retentionDays: number): Promise<number>;
   getDailySpending(): Promise<number>;
+
+  // IPO Filings
+  getAllIpoFilings(): Promise<IpoFiling[]>;
+  getIpoFilingById(id: string): Promise<IpoFiling | undefined>;
+  getIpoFilingByUrl(prospectusUrl: string): Promise<IpoFiling | undefined>;
+  createIpoFiling(filing: InsertIpoFiling): Promise<IpoFiling>;
+  updateIpoFilingStatus(id: string, status: IpoFilingStatus): Promise<IpoFiling | undefined>;
+  getIpoFilingsStats(): Promise<{ today: number; thisWeek: number; total: number }>;
 }
 
 const DEFAULT_KEYWORDS = [
@@ -54,7 +64,11 @@ const DEFAULT_KEYWORDS = [
   "Founder exit", "Startup funding Series C", "Startup funding Series D",
   "Unicorn", "SPAC merger", "Secondary sale", "Family office",
   "High net worth", "Asset sale", "Divestiture", "Stake sale",
-  "Cashed out", "Sold stake", "Exit deal", "Buyout"
+  "Cashed out", "Sold stake", "Exit deal", "Buyout",
+  // SGX-specific keywords for IPO detection
+  "SGX IPO", "Singapore IPO", "Mainboard listing", "Catalist listing",
+  "SGX listing", "offer document", "prospectus filing", "SGX debut",
+  "Singapore bourse", "HKEX IPO", "Hong Kong IPO", "HK listing"
 ];
 
 const DEFAULT_REGIONS = [
@@ -100,6 +114,14 @@ export class DatabaseStorage implements IStorage {
   async updateLeadStatus(id: string, status: LeadStatus): Promise<Lead | undefined> {
     const [lead] = await db.update(leads)
       .set({ status })
+      .where(eq(leads.id, id))
+      .returning();
+    return lead || undefined;
+  }
+
+  async enrichLead(id: string, linkedinProfiles: string[], investors: string[]): Promise<Lead | undefined> {
+    const [lead] = await db.update(leads)
+      .set({ linkedinProfiles, investors })
       .where(eq(leads.id, id))
       .returning();
     return lead || undefined;
@@ -205,10 +227,13 @@ export class DatabaseStorage implements IStorage {
       { name: "Straits Times", domain: "straitstimes.com", tier: "tier1" as const, active: true },
       { name: "Channel NewsAsia", domain: "channelnewsasia.com", tier: "tier1" as const, active: true },
       { name: "Business Times Singapore", domain: "businesstimes.com.sg", tier: "tier1" as const, active: true },
+      { name: "The Edge Singapore", domain: "theedgesingapore.com", tier: "tier1" as const, active: true },
       { name: "Reuters", domain: "reuters.com", tier: "tier2" as const, active: true },
+      { name: "Bloomberg", domain: "bloomberg.com", tier: "tier2" as const, active: true },
       { name: "Tech in Asia", domain: "techinasia.com", tier: "tier3" as const, active: true },
       { name: "DealStreetAsia", domain: "dealstreetasia.com", tier: "tier3" as const, active: true },
       { name: "e27", domain: "e27.co", tier: "tier3" as const, active: true },
+      { name: "KrASIA", domain: "kr-asia.com", tier: "tier3" as const, active: true },
     ];
 
     const insertedSources = await db.insert(sources).values(defaultSourcesData).returning();
@@ -228,7 +253,17 @@ export class DatabaseStorage implements IStorage {
       } else if (source.domain === "businesstimes.com.sg") {
         defaultFeeds.push(
           { sourceId: source.id, name: "Companies & Markets", url: "https://www.businesstimes.com.sg/rss/companies-markets", active: true },
-          { sourceId: source.id, name: "Startups & Tech", url: "https://www.businesstimes.com.sg/rss/startups-tech", active: true }
+          { sourceId: source.id, name: "Startups & Tech", url: "https://www.businesstimes.com.sg/rss/startups-tech", active: true },
+          { sourceId: source.id, name: "Banking & Finance", url: "https://www.businesstimes.com.sg/rss/banking-finance", active: true }
+        );
+      } else if (source.domain === "theedgesingapore.com") {
+        defaultFeeds.push(
+          { sourceId: source.id, name: "Capital", url: "https://www.theedgesingapore.com/capital/rss", active: true },
+          { sourceId: source.id, name: "Singapore", url: "https://www.theedgesingapore.com/singapore/rss", active: true }
+        );
+      } else if (source.domain === "bloomberg.com") {
+        defaultFeeds.push(
+          { sourceId: source.id, name: "Markets", url: "https://feeds.bloomberg.com/markets/news.rss", active: true }
         );
       } else if (source.domain === "reuters.com") {
         defaultFeeds.push(
@@ -245,6 +280,10 @@ export class DatabaseStorage implements IStorage {
       } else if (source.domain === "e27.co") {
         defaultFeeds.push(
           { sourceId: source.id, name: "Main Feed", url: "https://e27.co/feed/", active: true }
+        );
+      } else if (source.domain === "kr-asia.com") {
+        defaultFeeds.push(
+          { sourceId: source.id, name: "Main Feed", url: "https://kr-asia.com/feed", active: true }
         );
       }
     }
@@ -336,6 +375,49 @@ export class DatabaseStorage implements IStorage {
       .where(gte(scanLogs.scannedAt, todayStart));
 
     return logs.reduce((sum, log) => sum + (log.totalCostUsd || 0), 0);
+  }
+
+  // IPO Filings methods
+  async getAllIpoFilings(): Promise<IpoFiling[]> {
+    return db.select().from(ipoFilings).orderBy(desc(ipoFilings.filingDate), desc(ipoFilings.createdAt));
+  }
+
+  async getIpoFilingById(id: string): Promise<IpoFiling | undefined> {
+    const [filing] = await db.select().from(ipoFilings).where(eq(ipoFilings.id, id));
+    return filing || undefined;
+  }
+
+  async getIpoFilingByUrl(prospectusUrl: string): Promise<IpoFiling | undefined> {
+    const [filing] = await db.select().from(ipoFilings).where(eq(ipoFilings.prospectusUrl, prospectusUrl));
+    return filing || undefined;
+  }
+
+  async createIpoFiling(insertFiling: InsertIpoFiling): Promise<IpoFiling> {
+    const [filing] = await db.insert(ipoFilings).values(insertFiling).returning();
+    return filing;
+  }
+
+  async updateIpoFilingStatus(id: string, status: IpoFilingStatus): Promise<IpoFiling | undefined> {
+    const [filing] = await db.update(ipoFilings)
+      .set({ status, updatedAt: new Date() })
+      .where(eq(ipoFilings.id, id))
+      .returning();
+    return filing || undefined;
+  }
+
+  async getIpoFilingsStats(): Promise<{ today: number; thisWeek: number; total: number }> {
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const weekStart = new Date(todayStart);
+    weekStart.setDate(weekStart.getDate() - 7);
+
+    const allFilings = await db.select().from(ipoFilings).where(ne(ipoFilings.status, "dismissed"));
+
+    return {
+      today: allFilings.filter(f => new Date(f.createdAt) >= todayStart).length,
+      thisWeek: allFilings.filter(f => new Date(f.createdAt) >= weekStart).length,
+      total: allFilings.length,
+    };
   }
 }
 
