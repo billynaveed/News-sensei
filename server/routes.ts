@@ -6,6 +6,7 @@ import { storage } from "./storage";
 import { sendTestEmail, sendLeadAlertEmail } from "./sendgrid";
 import { sendTestTelegramMessage, getTelegramUpdates, sendLeadAlertTelegram } from "./telegram";
 import { startTelegramPolling } from "./telegram-handler";
+import { startDailyCostReportScheduler, startHourlyScanScheduler } from "./scheduler";
 import { scanForLeads, getScanProgress, getScanLogs } from "./scanner";
 import type { LeadStatus } from "@shared/schema";
 
@@ -27,6 +28,8 @@ const updateSettingsSchema = z.object({
   googleNewsEnabled: z.boolean().optional(),
   rssEnabled: z.boolean().optional(),
   scrapingBeeEnabled: z.boolean().optional(),
+  dailyCostLimitUsd: z.number().min(0.01).max(1000).optional(),
+  confidenceThreshold: z.enum(["conservative", "balanced", "aggressive"]).optional(),
 });
 
 const createSourceSchema = z.object({
@@ -65,6 +68,20 @@ export async function registerRoutes(
     startTelegramPolling();
   } catch (error) {
     console.error("Error starting Telegram polling:", error);
+  }
+
+  // Start daily cost report scheduler
+  try {
+    startDailyCostReportScheduler(storage);
+  } catch (error) {
+    console.error("Error starting cost report scheduler:", error);
+  }
+
+  // Start hourly scan scheduler
+  try {
+    startHourlyScanScheduler();
+  } catch (error) {
+    console.error("Error starting hourly scan scheduler:", error);
   }
 
   // Seed default sources and run log cleanup on startup

@@ -1,4 +1,4 @@
-import { pgTable, text, varchar, integer, timestamp, boolean, json } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, real, timestamp, boolean, json } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { sql } from "drizzle-orm";
@@ -33,6 +33,7 @@ export const leads = pgTable("leads", {
   sourceTier: text("source_tier").notNull().$type<SourceTier>(),
   publishedAt: timestamp("published_at").notNull(),
   companyNames: text("company_names").array().notNull(),
+  companyDescription: text("company_description"),
   founderNames: text("founder_names").array().notNull(),
   investors: text("investors").array(),
   aiSummary: text("ai_summary").notNull(),
@@ -70,6 +71,9 @@ export const settings = pgTable("settings", {
   googleNewsEnabled: boolean("google_news_enabled").notNull().default(false),
   rssEnabled: boolean("rss_enabled").notNull().default(true),
   scrapingBeeEnabled: boolean("scrapingbee_enabled").notNull().default(false),
+  dailyCostLimitUsd: real("daily_cost_limit_usd").notNull().default(10.0),
+  confidenceThreshold: text("confidence_threshold").notNull().default("balanced").$type<"conservative" | "balanced" | "aggressive">(),
+  tier1Model: text("tier1_model").notNull().default("gpt-4o-mini").$type<"gpt-4o-mini" | "claude-haiku">(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
 
@@ -170,6 +174,13 @@ export const scanLogs = pgTable("scan_logs", {
   articlesProcessed: json("articles_processed").$type<ArticleProcessed[]>(),
   errors: text("errors").array(),
   scrapingBeeDebug: json("scraping_bee_debug").$type<ScrapingBeeDebugEntry[]>(),
+  tier1TokensUsed: json("tier1_tokens_used").$type<Record<string, number>>().default({}),
+  tier2TokensUsed: json("tier2_tokens_used").$type<Record<string, number>>().default({}),
+  tier1CostUsd: real("tier1_cost_usd").notNull().default(0.0),
+  tier2CostUsd: real("tier2_cost_usd").notNull().default(0.0),
+  totalCostUsd: real("total_cost_usd").notNull().default(0.0),
+  modelsFailed: text("models_failed").array().default([]),
+  tier1Filtered: integer("tier1_filtered").notNull().default(0),
 });
 
 export const insertScanLogSchema = createInsertSchema(scanLogs).omit({

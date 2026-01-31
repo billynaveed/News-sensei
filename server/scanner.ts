@@ -1,16 +1,112 @@
 import OpenAI from "openai";
+import Anthropic from "@anthropic-ai/sdk";
 import { storage } from "./storage";
 import { sendLeadAlertEmail } from "./sendgrid";
-import { sendLeadAlertTelegram } from "./telegram";
+import { sendLeadAlertTelegram, sendCostAlert } from "./telegram";
 import { fetchAllArticles, type RawArticle, type RssFeedWithMeta } from "./adapters";
 import type { InsertLead, PriorityLevel, SourceTier, SourceSearched, ArticleProcessed, ScrapingBeeDebugEntry } from "@shared/schema";
+import { CostTracker, type TokenUsage } from "./ai-cost-tracker";
 
 const openai = new OpenAI({
   apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
   baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
 });
 
-async function extractLeadInfo(article: RawArticle, keywords: string[], summaryLength: string): Promise<Partial<InsertLead> | null> {
+const anthropic = process.env.AI_INTEGRATIONS_ANTHROPIC_API_KEY
+  ? new Anthropic({ apiKey: process.env.AI_INTEGRATIONS_ANTHROPIC_API_KEY })
+  : null;
+
+/**
+ * Tier 1: Semantic relevance check to filter articles before expensive extraction
+ */
+async function semanticRelevanceCheck(
+  article: RawArticle,
+  keywords: string[]
+): Promise<{ relevant: boolean; confidence: string; reason: string; tokensUsed: TokenUsage; modelUsed: string } | null> {
+  const prompt = `Is this article relevant for private banking wealth leads?
+
+Article: ${article.headline}
+Content: ${article.content.slice(0, 500)}
+
+Target events: ${keywords.join(", ")}
+
+Return JSON:
+{
+  "relevant": true/false,
+  "confidence": "high" | "medium" | "low",
+  "reason": "brief 1-sentence explanation"
+}`;
+
+  // Try GPT-4o-mini first
+  try {
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: prompt }],
+      max_completion_tokens: 100,
+      response_format: { type: "json_object" },
+    });
+
+    const result = JSON.parse(response.choices[0].message.content || "{}");
+    return {
+      ...result,
+      tokensUsed: {
+        input: response.usage?.prompt_tokens || 0,
+        output: response.usage?.completion_tokens || 0,
+      },
+      modelUsed: "gpt-4o-mini",
+    };
+  } catch (error) {
+    console.log("GPT-4o-mini failed, trying Claude Haiku...", error);
+
+    // Fallback to Claude Haiku
+    if (anthropic) {
+      try {
+        const response = await anthropic.messages.create({
+          model: "claude-3-5-haiku-20241022",
+          max_tokens: 100,
+          messages: [{ role: "user", content: prompt }],
+        });
+
+        const content = response.content[0].type === "text" ? response.content[0].text : "{}";
+        const result = JSON.parse(content);
+        return {
+          ...result,
+          tokensUsed: {
+            input: response.usage.input_tokens,
+            output: response.usage.output_tokens,
+          },
+          modelUsed: "claude-haiku",
+        };
+      } catch (claudeError) {
+        console.error("Claude Haiku also failed", claudeError);
+      }
+    }
+
+    // Both failed
+    return null;
+  }
+}
+
+/**
+ * Determine if an article should proceed to Tier 2 based on confidence threshold
+ */
+function shouldProceedToTier2(
+  confidence: string,
+  threshold: "conservative" | "balanced" | "aggressive"
+): boolean {
+  switch (threshold) {
+    case "conservative":
+      return confidence === "high";
+    case "balanced":
+      return confidence === "high" || confidence === "medium";
+    case "aggressive":
+      return true;
+    default:
+      return confidence === "high" || confidence === "medium";
+  }
+}
+
+async function extractLeadInfo(article: RawArticle, keywords: string[], summaryLength: string): Promise<(Partial<InsertLead> & { tokensUsed: TokenUsage }) | null> {
   const summaryPrompt = summaryLength === "brief" 
     ? "Write a 1-2 sentence summary."
     : summaryLength === "detailed"
@@ -26,12 +122,13 @@ Content: ${article.content}
 
 Extract and return a JSON object with:
 1. "companyNames": array of company names mentioned
-2. "founderNames": array of founder/key person names mentioned  
-3. "investors": array of investors mentioned (if any)
-4. "summary": ${summaryPrompt}
-5. "matchedKeywords": array of these keywords that match: ${keywords.join(", ")}
-6. "priorityScore": number 1-100 based on wealth potential (consider deal size, founder liquidity, timing)
-7. "priorityLevel": "high" (score 70+), "medium" (score 40-69), or "low" (score below 40)
+2. "companyDescription": a single one-line description (max 100 chars) of the main company's business/industry. Format: "Company that does X" or "X company focused on Y"
+3. "founderNames": array of founder/key person names mentioned
+4. "investors": array of investors mentioned (if any)
+5. "summary": ${summaryPrompt}
+6. "matchedKeywords": array of these keywords that match: ${keywords.join(", ")}
+7. "priorityScore": number 1-100 based on wealth potential (consider deal size, founder liquidity, timing)
+8. "priorityLevel": "high" (score 70+), "medium" (score 40-69), or "low" (score below 40)
 
 Return only valid JSON, no markdown.`;
 
@@ -47,7 +144,7 @@ Return only valid JSON, no markdown.`;
     if (!content) return null;
 
     const extracted = JSON.parse(content);
-    
+
     return {
       headline: article.headline,
       sourceUrl: article.url,
@@ -55,6 +152,7 @@ Return only valid JSON, no markdown.`;
       sourceTier: article.sourceTier,
       publishedAt: article.publishedAt,
       companyNames: extracted.companyNames || [],
+      companyDescription: extracted.companyDescription || null,
       founderNames: extracted.founderNames || [],
       investors: extracted.investors || [],
       aiSummary: extracted.summary || "",
@@ -64,6 +162,10 @@ Return only valid JSON, no markdown.`;
       region: article.region,
       status: "new",
       fetchMethod: article.fetchMethod,
+      tokensUsed: {
+        input: response.usage?.prompt_tokens || 0,
+        output: response.usage?.completion_tokens || 0,
+      },
     };
   } catch (error) {
     console.error("Error extracting lead info:", error);
@@ -211,7 +313,30 @@ export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: 
       message: `Found ${articles.length} matching articles, processing...`
     });
 
-    addScanLog(currentScanId, "info", `🤖 Processing ${articles.length} articles with AI...`);
+    addScanLog(currentScanId, "info", `🤖 Processing ${articles.length} articles with two-tier AI pipeline...`);
+
+    // Initialize cost tracker
+    const costTracker = new CostTracker();
+    const modelsFailed: string[] = [];
+    let tier1Filtered = 0;
+
+    // Check daily cost limit before scan
+    const dailySpending = await storage.getDailySpending();
+    const costLimit = settings.dailyCostLimitUsd || 10.0;
+    if (dailySpending >= costLimit) {
+      const message = `❌ Daily cost limit exceeded: $${dailySpending.toFixed(2)} / $${costLimit.toFixed(2)}`;
+      if (settings.telegramEnabled && settings.telegramChatId) {
+        await sendCostAlert(settings.telegramChatId, "limit_exceeded", {
+          currentCost: dailySpending,
+          limit: costLimit,
+          message
+        });
+      }
+      addScanLog(currentScanId, "error", message);
+      throw new Error(message);
+    }
+
+    addScanLog(currentScanId, "info", `💰 Daily spending: $${dailySpending.toFixed(4)} / $${costLimit.toFixed(2)}`);
 
     let newLeads = 0;
     let duplicatesSkipped = 0;
@@ -237,6 +362,19 @@ export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: 
         url: article.url,
       });
 
+      // Check cost limit during scan (soft check at 80%)
+      const currentSpending = await storage.getDailySpending();
+      if (currentSpending >= costLimit * 0.8 && currentSpending < costLimit) {
+        if (settings.telegramEnabled && settings.telegramChatId) {
+          await sendCostAlert(settings.telegramChatId, "approaching_limit", {
+            currentCost: currentSpending,
+            limit: costLimit,
+            message: `⚠️ Approaching cost limit: $${currentSpending.toFixed(2)} / $${costLimit.toFixed(2)}`
+          });
+        }
+      }
+
+      // Duplicate check
       const existingLead = await storage.getLeadByUrl(article.url);
       if (existingLead) {
         duplicatesSkipped++;
@@ -253,24 +391,82 @@ export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: 
       }
 
       try {
+        // TIER 1: Semantic relevance check
+        const relevanceCheck = await semanticRelevanceCheck(article, settings.keywords);
+
+        if (!relevanceCheck) {
+          // Both AI models failed - use keyword fallback
+          const hasKeyword = settings.keywords.some(kw =>
+            article.headline.toLowerCase().includes(kw.toLowerCase()) ||
+            article.content.toLowerCase().includes(kw.toLowerCase())
+          );
+
+          if (!hasKeyword) {
+            // Log and skip
+            addScanLog(currentScanId, "warning", `⊘ AI filter failed, no keyword match: ${article.headline.substring(0, 60)}...`);
+            articlesProcessed.push({
+              headline: article.headline,
+              source: article.source,
+              region: article.region,
+              status: "skipped",
+              reason: "No keyword match (AI filter failed)",
+              fetchMethod: article.fetchMethod,
+            });
+
+            modelsFailed.push("tier1-both");
+            continue;
+          }
+
+          // Passed keyword fallback, send alert
+          if (settings.telegramEnabled && settings.telegramChatId) {
+            await sendCostAlert(settings.telegramChatId, "model_failure", {
+              message: `⚠️ AI filters failed for article: ${article.headline}. Using keyword fallback.`
+            });
+          }
+          addScanLog(currentScanId, "warning", `⚠️ AI models failed, using keyword fallback for: ${article.headline.substring(0, 60)}...`);
+        } else {
+          // Track Tier 1 tokens
+          costTracker.addTier1(relevanceCheck.tokensUsed, relevanceCheck.modelUsed);
+
+          // Check confidence threshold
+          if (!shouldProceedToTier2(relevanceCheck.confidence, settings.confidenceThreshold || "balanced")) {
+            addScanLog(currentScanId, "info", `⊘ Low confidence (${relevanceCheck.confidence}): ${article.headline.substring(0, 60)}...`);
+            articlesProcessed.push({
+              headline: article.headline,
+              source: article.source,
+              region: article.region,
+              status: "skipped",
+              reason: `Low confidence (${relevanceCheck.confidence}): ${relevanceCheck.reason}`,
+              fetchMethod: article.fetchMethod,
+            });
+            tier1Filtered++;
+            continue;
+          }
+
+          addScanLog(currentScanId, "success", `✓ Tier 1 passed (${relevanceCheck.confidence}): ${article.headline.substring(0, 60)}...`);
+        }
+
+        // TIER 2: Full extraction
         const leadInfo = await extractLeadInfo(article, settings.keywords, settings.summaryLength);
-        if (leadInfo && leadInfo.companyNames && leadInfo.companyNames.length > 0) {
-          await storage.createLead(leadInfo as InsertLead);
-          createdLeads.push(leadInfo as InsertLead);
-          newLeads++;
-          addScanLog(currentScanId, "success", `✨ New lead created: ${leadInfo.companyNames.join(", ")}`, {
-            headline: article.headline,
-            priorityLevel: leadInfo.priorityLevel,
-            priorityScore: leadInfo.priorityScore,
-          });
+
+        if (!leadInfo) {
+          addScanLog(currentScanId, "error", `❌ Tier 2 extraction failed: ${article.headline.substring(0, 60)}...`);
           articlesProcessed.push({
             headline: article.headline,
             source: article.source,
             region: article.region,
-            status: "success",
+            status: "error",
+            reason: "Extraction failed",
             fetchMethod: article.fetchMethod,
           });
-        } else {
+          continue;
+        }
+
+        // Track Tier 2 tokens
+        costTracker.addTier2(leadInfo.tokensUsed, "gpt-4o");
+
+        // Validate and create lead
+        if (!leadInfo.companyNames || leadInfo.companyNames.length === 0) {
           addScanLog(currentScanId, "info", `⊘ No companies found in: ${article.headline.substring(0, 60)}...`);
           articlesProcessed.push({
             headline: article.headline,
@@ -280,7 +476,26 @@ export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: 
             reason: "No company names extracted",
             fetchMethod: article.fetchMethod,
           });
+          continue;
         }
+
+        // Create lead
+        const { tokensUsed, ...leadData } = leadInfo;
+        await storage.createLead(leadData as InsertLead);
+        createdLeads.push(leadData as InsertLead);
+        newLeads++;
+        addScanLog(currentScanId, "success", `✨ New lead created: ${leadInfo.companyNames.join(", ")}`, {
+          headline: article.headline,
+          priorityLevel: leadInfo.priorityLevel,
+          priorityScore: leadInfo.priorityScore,
+        });
+        articlesProcessed.push({
+          headline: article.headline,
+          source: article.source,
+          region: article.region,
+          status: "success",
+          fetchMethod: article.fetchMethod,
+        });
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : "Unknown error";
         errors.push(`Error processing "${article.headline}": ${errorMessage}`);
@@ -302,6 +517,11 @@ export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: 
 
     addScanLog(currentScanId, "info", "💾 Saving scan results to database...");
 
+    // Get cost totals
+    const costTotals = costTracker.getTotals();
+
+    addScanLog(currentScanId, "info", `💰 Total cost: $${costTotals.totalCostUsd.toFixed(4)} (Tier 1: $${costTotals.tier1CostUsd.toFixed(4)}, Tier 2: $${costTotals.tier2CostUsd.toFixed(4)})`);
+
     await storage.createScanLog({
       articlesScanned: articles.length,
       matchesFound: articles.length,
@@ -312,6 +532,13 @@ export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: 
       articlesProcessed,
       errors: errors.length > 0 ? errors : null,
       scrapingBeeDebug: debugEntries.length > 0 ? debugEntries : null,
+      tier1TokensUsed: costTotals.tier1TokensUsed,
+      tier2TokensUsed: costTotals.tier2TokensUsed,
+      tier1CostUsd: costTotals.tier1CostUsd,
+      tier2CostUsd: costTotals.tier2CostUsd,
+      totalCostUsd: costTotals.totalCostUsd,
+      modelsFailed: modelsFailed.length > 0 ? modelsFailed : null,
+      tier1Filtered,
     });
 
     scanProgress.set(currentScanId, {

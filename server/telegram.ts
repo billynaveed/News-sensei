@@ -76,9 +76,13 @@ export async function sendLeadAlertTelegram(chatId: string, leads: Lead[]): Prom
   // Send each lead as a separate message with action buttons
   for (const lead of leads) {
     const priorityIcon = lead.priorityLevel === 'high' ? '🔴' : lead.priorityLevel === 'medium' ? '🟡' : '🟢';
+    const companyInfo = lead.companyDescription
+      ? `${lead.companyNames.join(', ')}\n<i>${lead.companyDescription}</i>`
+      : lead.companyNames.join(', ');
+
     const message = `${priorityIcon} <b>${lead.headline}</b>
 
-<i>Companies:</i> ${lead.companyNames.join(', ')}
+<i>Companies:</i> ${companyInfo}
 <i>People:</i> ${lead.founderNames.join(', ') || 'N/A'}
 <i>Region:</i> ${lead.region} | Score: ${lead.priorityScore}
 
@@ -178,4 +182,66 @@ export async function editMessageReplyMarkup(
   if (!result.ok) {
     console.error('Failed to edit message markup:', result);
   }
+}
+
+export async function sendCostAlert(
+  chatId: string,
+  type: "approaching_limit" | "limit_exceeded" | "model_failure",
+  data: { currentCost?: number; limit?: number; message: string }
+): Promise<void> {
+  if (!chatId) return;
+
+  const emoji = type === "limit_exceeded" ? "🛑" : "⚠️";
+  const title = type === "limit_exceeded"
+    ? "Cost Limit Exceeded"
+    : type === "approaching_limit"
+    ? "Cost Limit Warning"
+    : "AI Model Failure";
+
+  let message = `${emoji} <b>${title}</b>\n\n${data.message}`;
+
+  if (data.currentCost !== undefined && data.limit !== undefined) {
+    const percent = (data.currentCost / data.limit * 100).toFixed(0);
+    message += `\n\n📊 <b>Usage:</b> ${percent}% ($${data.currentCost.toFixed(4)} / $${data.limit.toFixed(2)})`;
+  }
+
+  await sendTelegramMessage(chatId, message, "HTML");
+}
+
+export async function sendDailyCostSummary(
+  chatId: string,
+  summary: {
+    date: string;
+    totalScans: number;
+    totalCost: number;
+    tier1Cost: number;
+    tier2Cost: number;
+    leadsFound: number;
+    limit: number;
+  }
+): Promise<void> {
+  if (!chatId) return;
+
+  const percent = (summary.totalCost / summary.limit * 100).toFixed(0);
+  const costPerLead = summary.leadsFound > 0
+    ? (summary.totalCost / summary.leadsFound).toFixed(4)
+    : "N/A";
+
+  const message = `📊 <b>Daily Cost Report</b>
+<i>${summary.date}</i>
+
+💰 <b>Total Cost:</b> $${summary.totalCost.toFixed(4)} / $${summary.limit.toFixed(2)} (${percent}%)
+
+📈 <b>Breakdown:</b>
+• Tier 1 (Filtering): $${summary.tier1Cost.toFixed(4)}
+• Tier 2 (Extraction): $${summary.tier2Cost.toFixed(4)}
+
+🔍 <b>Activity:</b>
+• Scans: ${summary.totalScans}
+• Leads: ${summary.leadsFound}
+• Cost per lead: $${costPerLead}
+
+${summary.totalCost >= summary.limit ? "🛑 Daily limit reached - scanning paused" : "✅ Within budget"}`;
+
+  await sendTelegramMessage(chatId, message, "HTML");
 }

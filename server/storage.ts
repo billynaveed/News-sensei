@@ -45,6 +45,7 @@ export interface IStorage {
   getScanLogById(id: string): Promise<ScanLog | undefined>;
   createScanLog(log: InsertScanLog): Promise<ScanLog>;
   cleanupOldScanLogs(retentionDays: number): Promise<number>;
+  getDailySpending(): Promise<number>;
 }
 
 const DEFAULT_KEYWORDS = [
@@ -314,16 +315,27 @@ export class DatabaseStorage implements IStorage {
   async cleanupOldScanLogs(retentionDays: number): Promise<number> {
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
-    
+
     const oldLogs = await db.select({ id: scanLogs.id })
       .from(scanLogs)
       .where(lt(scanLogs.scannedAt, cutoffDate));
-    
+
     if (oldLogs.length > 0) {
       await db.delete(scanLogs).where(lt(scanLogs.scannedAt, cutoffDate));
     }
-    
+
     return oldLogs.length;
+  }
+
+  async getDailySpending(): Promise<number> {
+    const todayStart = new Date();
+    todayStart.setUTCHours(0, 0, 0, 0);
+
+    const logs = await db.select()
+      .from(scanLogs)
+      .where(gte(scanLogs.scannedAt, todayStart));
+
+    return logs.reduce((sum, log) => sum + (log.totalCostUsd || 0), 0);
   }
 }
 
