@@ -4,7 +4,8 @@ import { z } from "zod";
 import { randomUUID } from "crypto";
 import { storage } from "./storage";
 import { sendTestEmail, sendLeadAlertEmail } from "./sendgrid";
-import { sendTestTelegramMessage, getTelegramUpdates } from "./telegram";
+import { sendTestTelegramMessage, getTelegramUpdates, sendLeadAlertTelegram } from "./telegram";
+import { startTelegramPolling } from "./telegram-handler";
 import { scanForLeads, getScanProgress, getScanLogs } from "./scanner";
 import type { LeadStatus } from "@shared/schema";
 
@@ -59,6 +60,13 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
+  // Start Telegram polling for button callbacks
+  try {
+    startTelegramPolling();
+  } catch (error) {
+    console.error("Error starting Telegram polling:", error);
+  }
+
   // Seed default sources and run log cleanup on startup
   try {
     await storage.seedDefaultSources();
@@ -286,6 +294,30 @@ export async function registerRoutes(
       res.json({ success: true, message: "Test Telegram message sent" });
     } catch (error: any) {
       console.error("Error sending test Telegram message:", error);
+      res.status(500).json({ error: error.message || "Failed to send Telegram message" });
+    }
+  });
+
+  // Test Telegram with buttons (send lead with Save/Dismiss buttons)
+  app.post("/api/test-telegram-buttons", async (req, res) => {
+    try {
+      const settings = await storage.getSettings();
+      if (!settings?.telegramChatId) {
+        return res.status(400).json({ error: "No Telegram chat ID configured" });
+      }
+
+      // Get a few "new" status leads to send
+      const leads = await storage.getAllLeads();
+      const newLeads = leads.filter(l => l.status === "new").slice(0, 3);
+
+      if (newLeads.length === 0) {
+        return res.json({ success: false, message: "No new leads to send. Change some leads to 'new' status first." });
+      }
+
+      await sendLeadAlertTelegram(settings.telegramChatId, newLeads);
+      res.json({ success: true, message: `Sent ${newLeads.length} lead(s) with Save/Dismiss buttons` });
+    } catch (error: any) {
+      console.error("Error sending test Telegram with buttons:", error);
       res.status(500).json({ error: error.message || "Failed to send Telegram message" });
     }
   });

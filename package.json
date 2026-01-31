@@ -8,7 +8,11 @@
     "build": "tsx script/build.ts",
     "start": "NODE_ENV=production node dist/index.cjs",
     "check": "tsc",
-    "db:push": "drizzle-kit push"
+    "db:push": "drizzle-kit push",
+    "cli": "./scripts/cli.sh",
+    "leads": "./scripts/cli.sh leads",
+    "stats": "./scripts/cli.sh stats",
+    "scan": "./scripts/cli.sh scan"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

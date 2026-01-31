@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import { storage } from "./storage";
 import { sendLeadAlertEmail } from "./sendgrid";
+import { sendLeadAlertTelegram } from "./telegram";
 import { fetchAllArticles, type RawArticle, type RssFeedWithMeta } from "./adapters";
 import type { InsertLead, PriorityLevel, SourceTier, SourceSearched, ArticleProcessed, ScrapingBeeDebugEntry } from "@shared/schema";
 
@@ -333,8 +334,8 @@ export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: 
       if (highPriorityLeads.length > 0) {
         try {
           const leads = await storage.getAllLeads();
-          const newHighPriorityLeads = leads.filter(l => 
-            l.status === "new" && 
+          const newHighPriorityLeads = leads.filter(l =>
+            l.status === "new" &&
             l.priorityLevel === "high" &&
             createdLeads.some(cl => cl.sourceUrl === l.sourceUrl)
           );
@@ -344,6 +345,24 @@ export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: 
         } catch (error) {
           console.error("Error sending lead alert email:", error);
         }
+      }
+    }
+
+    if (settings.telegramEnabled && settings.telegramChatId && createdLeads.length > 0) {
+      try {
+        const leads = await storage.getAllLeads();
+        const newLeadsWithIds = leads.filter(l =>
+          l.status === "new" &&
+          createdLeads.some(cl => cl.sourceUrl === l.sourceUrl)
+        );
+        if (newLeadsWithIds.length > 0) {
+          addScanLog(currentScanId, "info", `📱 Sending ${newLeadsWithIds.length} leads to Telegram...`);
+          await sendLeadAlertTelegram(settings.telegramChatId, newLeadsWithIds);
+          addScanLog(currentScanId, "success", `✓ Telegram notification sent`);
+        }
+      } catch (error) {
+        console.error("Error sending Telegram alert:", error);
+        addScanLog(currentScanId, "error", `Failed to send Telegram notification: ${error instanceof Error ? error.message : "Unknown error"}`);
       }
     }
 
