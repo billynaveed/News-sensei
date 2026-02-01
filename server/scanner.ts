@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
+import { createHash } from "crypto";
 import { storage } from "./storage";
 import { sendLeadAlertEmail } from "./sendgrid";
 import { sendLeadAlertTelegram, sendCostAlert } from "./telegram";
@@ -103,6 +104,68 @@ function shouldProceedToTier2(
       return true;
     default:
       return confidence === "high" || confidence === "medium";
+  }
+}
+
+/**
+ * Generate a hash for company + event type for deduplication
+ */
+function generateEventHash(primaryCompany: string, eventType: string): string {
+  const normalized = `${primaryCompany.toLowerCase().trim()}:${eventType.toLowerCase().trim()}`;
+  return createHash("sha256").update(normalized).digest("hex");
+}
+
+/**
+ * Classify the event type from article content using LLM
+ */
+async function classifyEventType(
+  article: RawArticle,
+  matchedKeywords: string[]
+): Promise<{ eventType: string; confidence: string; tokensUsed: TokenUsage } | null> {
+  const prompt = `Classify the main financial event type in this article.
+
+Article: ${article.headline}
+Content: ${article.content.slice(0, 800)}
+Matched Keywords: ${matchedKeywords.join(", ")}
+
+Event Types:
+- "IPO" - Initial public offering, stock market listing, going public
+- "Series A/B/C/D/E+" - Venture capital funding rounds (specify letter)
+- "M&A" - Merger or acquisition announced
+- "Acquisition" - Company being acquired (specify if M&A or separate acquisition)
+- "Exit" - Founder/investor exit, liquidity event, stake sale
+- "Secondary Sale" - Secondary market transaction, existing shares sold
+- "PE Investment" - Private equity investment or buyout
+- "SPAC" - SPAC merger or de-SPAC transaction
+- "Other" - If none of the above fit well
+
+Return JSON:
+{
+  "eventType": "IPO" | "Series A" | "Series B" | "Series C" | "Series D" | "Series E+" | "M&A" | "Acquisition" | "Exit" | "Secondary Sale" | "PE Investment" | "SPAC" | "Other",
+  "confidence": "high" | "medium" | "low",
+  "reasoning": "1 sentence explanation"
+}`;
+
+  try {
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: prompt }],
+      max_completion_tokens: 150,
+      response_format: { type: "json_object" },
+    });
+
+    const result = JSON.parse(response.choices[0].message.content || "{}");
+    return {
+      eventType: result.eventType || "Other",
+      confidence: result.confidence || "low",
+      tokensUsed: {
+        input: response.usage?.prompt_tokens || 0,
+        output: response.usage?.completion_tokens || 0,
+      },
+    };
+  } catch (error) {
+    console.error("Error classifying event type:", error);
+    return null;
   }
 }
 
@@ -374,17 +437,17 @@ export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: 
         }
       }
 
-      // Duplicate check
-      const existingLead = await storage.getLeadByUrl(article.url);
-      if (existingLead) {
+      // Quick URL duplicate check (same article URL)
+      const existingLeadByUrl = await storage.getLeadByUrl(article.url);
+      if (existingLeadByUrl) {
         duplicatesSkipped++;
-        addScanLog(currentScanId, "warning", `⏭️ Duplicate skipped: ${article.headline.substring(0, 60)}...`);
+        addScanLog(currentScanId, "warning", `⏭️ Duplicate URL skipped: ${article.headline.substring(0, 60)}...`);
         articlesProcessed.push({
           headline: article.headline,
           source: article.source,
           region: article.region,
           status: "skipped",
-          reason: "Duplicate - already in database",
+          reason: "Duplicate URL - already in database",
           fetchMethod: article.fetchMethod,
         });
         continue;

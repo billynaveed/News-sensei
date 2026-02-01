@@ -1,4 +1,4 @@
-import { pgTable, text, varchar, integer, real, timestamp, boolean, json } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, real, timestamp, boolean, json, index } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { sql } from "drizzle-orm";
@@ -23,6 +23,7 @@ export type LeadStatus = "new" | "reviewed" | "saved" | "contacted" | "dismissed
 export type PriorityLevel = "high" | "medium" | "low";
 export type SourceTier = "tier1" | "tier2" | "tier3";
 export type FetchMethod = "rss" | "google_news" | "scrapingbee";
+export type EventType = "IPO" | "Series A" | "Series B" | "Series C" | "Series D" | "Series E+" | "M&A" | "Acquisition" | "Exit" | "Secondary Sale" | "PE Investment" | "SPAC" | "Other";
 
 // Leads table - the main data model for news article matches
 export const leads = pgTable("leads", {
@@ -34,6 +35,9 @@ export const leads = pgTable("leads", {
   publishedAt: timestamp("published_at").notNull(),
   companyNames: text("company_names").array().notNull(),
   companyDescription: text("company_description"),
+  primaryCompany: text("primary_company"),
+  eventType: text("event_type"),
+  eventHash: text("event_hash"),
   founderNames: text("founder_names").array().notNull(),
   linkedinProfiles: text("linkedin_profiles").array(),
   investors: text("investors").array(),
@@ -45,7 +49,9 @@ export const leads = pgTable("leads", {
   status: text("status").notNull().$type<LeadStatus>().default("new"),
   fetchMethod: text("fetch_method").$type<FetchMethod>(),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
-});
+}, (table) => ({
+  eventHashIdx: index("event_hash_idx").on(table.eventHash),
+}));
 
 export const insertLeadSchema = createInsertSchema(leads).omit({
   id: true,
@@ -227,3 +233,32 @@ export const insertIpoFilingSchema = createInsertSchema(ipoFilings).omit({
 
 export type InsertIpoFiling = z.infer<typeof insertIpoFilingSchema>;
 export type IpoFiling = typeof ipoFilings.$inferSelect;
+
+// Founder Profiles table - detailed profiles for key individuals
+export const founderProfiles = pgTable("founder_profiles", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull().unique(),
+  linkedinUrl: text("linkedin_url"),
+  bio: text("bio"),
+  currentCompany: text("current_company"),
+  currentRole: text("current_role"),
+  previousCompanies: text("previous_companies").array(),
+  notableInvestments: text("notable_investments").array(),
+  notableExits: text("notable_exits").array(),
+  education: text("education").array(),
+  socialLinks: json("social_links").$type<{ twitter?: string; website?: string; github?: string }>(),
+  estimatedNetWorth: text("estimated_net_worth"),
+  keyAchievements: text("key_achievements").array(),
+  lastEnrichedAt: timestamp("last_enriched_at"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+export const insertFounderProfileSchema = createInsertSchema(founderProfiles).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertFounderProfile = z.infer<typeof insertFounderProfileSchema>;
+export type FounderProfile = typeof founderProfiles.$inferSelect;

@@ -18,7 +18,7 @@ import type { Lead } from "@shared/schema";
 
 const menuItems = [
   {
-    title: "Dashboard",
+    title: "News Feed",
     url: "/",
     icon: LayoutDashboard,
   },

@@ -115,7 +115,17 @@ async function handleTextMessage(message: any) {
           break;
 
         default:
-          await sendTelegramMessage(chatId, '❓ Unknown command. Send /help to see available commands.');
+          // Check if it's a /research command
+          if (command.startsWith('/research')) {
+            const founderName = text.replace('/research', '').trim();
+            if (founderName) {
+              await handleResearchCommand(chatId, founderName);
+            } else {
+              await sendTelegramMessage(chatId, '❓ Please provide a founder name. Example: /research Elon Musk');
+            }
+          } else {
+            await sendTelegramMessage(chatId, '❓ Unknown command. Send /help to see available commands.');
+          }
       }
     }
   } catch (error) {
@@ -144,6 +154,10 @@ Available commands:
 
 <b>Actions:</b>
 /scan - Start a new news scan
+
+<b>Research:</b>
+/research [name] - Look up founder profile
+Example: /research Elon Musk
 
 <b>Help:</b>
 /help - Show this help message
@@ -348,6 +362,73 @@ ${result.newFilings > 0 ? 'New IPO filings will be sent to you shortly! 🎉' : 
   } catch (error) {
     await sendTelegramMessage(chatId, '❌ Error running IPO scan. Please try again later.');
     console.error("Error in IPO scan command:", error);
+  }
+}
+
+async function handleResearchCommand(chatId: string, founderName: string) {
+  await sendTelegramMessage(chatId, `🔍 Researching <b>${founderName}</b>...`);
+
+  try {
+    const { storage } = await import("./storage");
+
+    // Search for existing profile
+    let profile = await storage.getFounderProfileByName(founderName);
+
+    if (!profile) {
+      // Try fuzzy search
+      const results = await storage.searchFounderProfiles(founderName);
+      if (results.length > 0) {
+        profile = results[0];
+      }
+    }
+
+    if (profile) {
+      // Format and send existing profile
+      let profileText = `👤 <b>${profile.name}</b>\n`;
+
+      if (profile.currentRole && profile.currentCompany) {
+        profileText += `\n🏢 ${profile.currentRole} at ${profile.currentCompany}`;
+      }
+
+      if (profile.bio) {
+        profileText += `\n\n📝 ${profile.bio}`;
+      }
+
+      if (profile.education && profile.education.length > 0) {
+        profileText += `\n\n🎓 <b>Education:</b>\n${profile.education.map(e => `  • ${e}`).join('\n')}`;
+      }
+
+      if (profile.previousCompanies && profile.previousCompanies.length > 0) {
+        profileText += `\n\n💼 <b>Previous:</b>\n${profile.previousCompanies.map(c => `  • ${c}`).join('\n')}`;
+      }
+
+      if (profile.notableInvestments && profile.notableInvestments.length > 0) {
+        profileText += `\n\n💰 <b>Investments:</b>\n${profile.notableInvestments.map(i => `  • ${i}`).join('\n')}`;
+      }
+
+      if (profile.notableExits && profile.notableExits.length > 0) {
+        profileText += `\n\n🚀 <b>Exits:</b>\n${profile.notableExits.map(e => `  • ${e}`).join('\n')}`;
+      }
+
+      if (profile.estimatedNetWorth) {
+        profileText += `\n\n💎 <b>Est. Net Worth:</b> ${profile.estimatedNetWorth}`;
+      }
+
+      if (profile.keyAchievements && profile.keyAchievements.length > 0) {
+        profileText += `\n\n🏆 <b>Achievements:</b>\n${profile.keyAchievements.map(a => `  • ${a}`).join('\n')}`;
+      }
+
+      if (profile.linkedinUrl) {
+        profileText += `\n\n🔗 <a href="${profile.linkedinUrl}">LinkedIn</a>`;
+      }
+
+      await sendTelegramMessage(chatId, profileText);
+    } else {
+      await sendTelegramMessage(chatId, `❌ No profile found for <b>${founderName}</b>.\n\n💡 Profiles are created when leads are enriched.`);
+    }
+  } catch (error) {
+    await sendTelegramMessage(chatId, '❌ Error fetching profile. Please try again.');
+    console.error("Error in research command:", error);
   }
 }
 

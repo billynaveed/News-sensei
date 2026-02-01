@@ -96,6 +96,34 @@ function LeadCard({ lead, onUpdateStatus }: { lead: Lead; onUpdateStatus: (id: s
   const priorityClass = priorityColors[lead.priorityLevel];
   const tierClass = tierColors[lead.sourceTier];
 
+  const [summaryExpanded, setSummaryExpanded] = useState(false);
+  const [foundersExpanded, setFoundersExpanded] = useState(false);
+
+  // Fetch founder profiles for people in this lead
+  const { data: founderProfiles } = useQuery({
+    queryKey: [`/api/founder-profiles/search`, lead.founderNames],
+    queryFn: async () => {
+      if (!lead.founderNames || lead.founderNames.length === 0) return [];
+      const profiles = await Promise.all(
+        lead.founderNames.map(async (name) => {
+          try {
+            const response = await fetch(`/api/founder-profiles/search?q=${encodeURIComponent(name)}`);
+            const results = await response.json();
+            return results.find((p: any) => p.name.toLowerCase() === name.toLowerCase());
+          } catch {
+            return null;
+          }
+        })
+      );
+      return profiles.filter(Boolean);
+    },
+    enabled: lead.founderNames && lead.founderNames.length > 0,
+  });
+
+  const getFounderProfile = (founderName: string) => {
+    return founderProfiles?.find((p: any) => p.name.toLowerCase() === founderName.toLowerCase());
+  };
+
   return (
     <Card className="group" data-testid={`lead-card-${lead.id}`}>
       <CardHeader className="flex flex-row items-start justify-between gap-4 pb-3">
@@ -126,9 +154,9 @@ function LeadCard({ lead, onUpdateStatus }: { lead: Lead; onUpdateStatus: (id: s
               </Badge>
             )}
           </div>
-          <a 
-            href={lead.sourceUrl} 
-            target="_blank" 
+          <a
+            href={lead.sourceUrl}
+            target="_blank"
             rel="noopener noreferrer"
             className="block font-semibold text-base leading-snug hover:text-primary transition-colors line-clamp-2"
             data-testid={`link-headline-${lead.id}`}
@@ -148,21 +176,52 @@ function LeadCard({ lead, onUpdateStatus }: { lead: Lead; onUpdateStatus: (id: s
           {lead.companyNames.length > 0 && (
             <div className="flex items-start gap-2">
               <Building2 className="h-4 w-4 text-muted-foreground mt-0.5 flex-shrink-0" />
-              <div>
+              <div className="flex-1">
                 <div className="text-xs text-muted-foreground uppercase tracking-wide font-medium mb-0.5">Companies</div>
                 <div className="text-sm font-medium">{lead.companyNames.join(", ")}</div>
+                {(lead as any).companyDescription && (
+                  <div className="text-xs text-muted-foreground mt-1">{(lead as any).companyDescription}</div>
+                )}
               </div>
             </div>
           )}
+
           {lead.founderNames.length > 0 && (
             <div className="flex items-start gap-2">
               <User className="h-4 w-4 text-muted-foreground mt-0.5 flex-shrink-0" />
-              <div>
-                <div className="text-xs text-muted-foreground uppercase tracking-wide font-medium mb-0.5">Key People</div>
-                <div className="text-sm font-medium">{lead.founderNames.join(", ")}</div>
+              <div className="flex-1">
+                <div className="flex items-center gap-2 mb-1">
+                  <div className="text-xs text-muted-foreground uppercase tracking-wide font-medium">Key People</div>
+                  {founderProfiles && founderProfiles.length > 0 && (
+                    <Badge variant="outline" className="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20" size="sm">
+                      {founderProfiles.length} profile{founderProfiles.length > 1 ? 's' : ''}
+                    </Badge>
+                  )}
+                </div>
+                <div className="space-y-1">
+                  {lead.founderNames.map((founder) => {
+                    const profile = getFounderProfile(founder);
+                    return (
+                      <div key={founder} className="flex items-center gap-1.5">
+                        <span className="text-sm font-medium">{founder}</span>
+                        {profile && (
+                          <Tooltip>
+                            <TooltipTrigger>
+                              <Badge variant="outline" className="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20 h-4 px-1">
+                                ✓
+                              </Badge>
+                            </TooltipTrigger>
+                            <TooltipContent>Profile available - click to expand</TooltipContent>
+                          </Tooltip>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             </div>
           )}
+
           {lead.investors && lead.investors.length > 0 && (
             <div className="flex items-start gap-2">
               <Briefcase className="h-4 w-4 text-muted-foreground mt-0.5 flex-shrink-0" />
@@ -181,10 +240,79 @@ function LeadCard({ lead, onUpdateStatus }: { lead: Lead; onUpdateStatus: (id: s
           </div>
         </div>
 
-        <div className="bg-muted/50 rounded-md p-3">
-          <div className="text-xs text-muted-foreground uppercase tracking-wide font-medium mb-1.5">AI Summary</div>
-          <p className="text-sm leading-relaxed">{lead.aiSummary}</p>
-        </div>
+        {/* Collapsible AI Summary */}
+        <Collapsible open={summaryExpanded} onOpenChange={setSummaryExpanded}>
+          <div className="bg-muted/50 rounded-md overflow-hidden">
+            <CollapsibleTrigger className="w-full p-3 flex items-center justify-between hover:bg-muted/70 transition-colors">
+              <div className="text-xs text-muted-foreground uppercase tracking-wide font-medium">AI Summary</div>
+              {summaryExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              <div className="px-3 pb-3">
+                <p className="text-sm leading-relaxed">{lead.aiSummary}</p>
+              </div>
+            </CollapsibleContent>
+          </div>
+        </Collapsible>
+
+        {/* Collapsible Founder Profiles */}
+        {founderProfiles && founderProfiles.length > 0 && (
+          <Collapsible open={foundersExpanded} onOpenChange={setFoundersExpanded}>
+            <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-md overflow-hidden">
+              <CollapsibleTrigger className="w-full p-3 flex items-center justify-between hover:bg-emerald-500/10 transition-colors">
+                <div className="flex items-center gap-2">
+                  <div className="text-xs text-emerald-600 dark:text-emerald-400 uppercase tracking-wide font-medium">
+                    👤 Founder Profiles ({founderProfiles.length})
+                  </div>
+                </div>
+                {foundersExpanded ? <ChevronUp className="h-4 w-4 text-emerald-600" /> : <ChevronDown className="h-4 w-4 text-emerald-600" />}
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <div className="px-3 pb-3 space-y-3">
+                  {founderProfiles.map((profile: any) => (
+                    <div key={profile.id} className="bg-background rounded-md p-3 space-y-2">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <div className="font-semibold text-sm">{profile.name}</div>
+                          {profile.currentRole && profile.currentCompany && (
+                            <div className="text-xs text-muted-foreground">
+                              {profile.currentRole} at {profile.currentCompany}
+                            </div>
+                          )}
+                        </div>
+                        {profile.linkedinUrl && (
+                          <a
+                            href={profile.linkedinUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300"
+                          >
+                            <ExternalLink className="h-3.5 w-3.5" />
+                          </a>
+                        )}
+                      </div>
+                      {profile.bio && (
+                        <p className="text-xs text-muted-foreground leading-relaxed">{profile.bio}</p>
+                      )}
+                      {profile.notableExits && profile.notableExits.length > 0 && (
+                        <div className="text-xs">
+                          <span className="font-medium text-emerald-600 dark:text-emerald-400">Exits:</span>
+                          <span className="text-muted-foreground ml-1">{profile.notableExits.join(", ")}</span>
+                        </div>
+                      )}
+                      {profile.estimatedNetWorth && (
+                        <div className="text-xs">
+                          <span className="font-medium">Net Worth:</span>
+                          <span className="text-muted-foreground ml-1">{profile.estimatedNetWorth}</span>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </CollapsibleContent>
+            </div>
+          </Collapsible>
+        )}
 
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-xs text-muted-foreground uppercase tracking-wide font-medium">Keywords:</span>
@@ -455,8 +583,27 @@ export default function Dashboard() {
     return new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime();
   });
 
+  const pageTitle = filters.status === "saved" ? "💾 Saved Leads" :
+                    filters.status === "contacted" ? "📞 Contacted Leads" :
+                    filters.status === "dismissed" ? "❌ Dismissed Leads" :
+                    "📰 News Feed";
+
   return (
     <div className="flex flex-col h-full">
+      {/* Page Header */}
+      <div className="px-6 pt-6 pb-3 border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+        <h1 className="text-2xl font-bold tracking-tight">{pageTitle}</h1>
+        <p className="text-sm text-muted-foreground mt-1">
+          {filters.status === "saved"
+            ? "Your bookmarked leads for follow-up"
+            : filters.status === "contacted"
+            ? "Leads you've already reached out to"
+            : filters.status === "dismissed"
+            ? "Leads you've dismissed"
+            : "Recent wealth-related news articles from Southeast Asia"}
+        </p>
+      </div>
+
       <Collapsible open={statsExpanded} onOpenChange={setStatsExpanded}>
         <div className="border-b border-border">
           {statsExpanded ? (

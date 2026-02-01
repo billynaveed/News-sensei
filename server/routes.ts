@@ -531,5 +531,66 @@ export async function registerRoutes(
     }
   });
 
+  // Founder Profile endpoints
+  app.get("/api/founder-profiles", async (req, res) => {
+    try {
+      const profiles = await storage.getAllFounderProfiles();
+      res.json(profiles);
+    } catch (error) {
+      console.error("Error fetching founder profiles:", error);
+      res.status(500).json({ error: "Failed to fetch founder profiles" });
+    }
+  });
+
+  app.get("/api/founder-profiles/search", async (req, res) => {
+    try {
+      const query = req.query.q as string;
+      if (!query) {
+        return res.status(400).json({ error: "Query parameter 'q' is required" });
+      }
+      const profiles = await storage.searchFounderProfiles(query);
+      res.json(profiles);
+    } catch (error) {
+      console.error("Error searching founder profiles:", error);
+      res.status(500).json({ error: "Failed to search founder profiles" });
+    }
+  });
+
+  app.get("/api/founder-profiles/:id", async (req, res) => {
+    try {
+      const profile = await storage.getFounderProfileById(req.params.id);
+      if (!profile) {
+        return res.status(404).json({ error: "Founder profile not found" });
+      }
+      res.json(profile);
+    } catch (error) {
+      console.error("Error fetching founder profile:", error);
+      res.status(500).json({ error: "Failed to fetch founder profile" });
+    }
+  });
+
+  app.post("/api/founder-profiles", async (req, res) => {
+    try {
+      const profile = await storage.createFounderProfile(req.body);
+      res.status(201).json(profile);
+    } catch (error) {
+      console.error("Error creating founder profile:", error);
+      res.status(500).json({ error: "Failed to create founder profile" });
+    }
+  });
+
+  app.put("/api/founder-profiles/:id", async (req, res) => {
+    try {
+      const profile = await storage.updateFounderProfile(req.params.id, req.body);
+      if (!profile) {
+        return res.status(404).json({ error: "Founder profile not found" });
+      }
+      res.json(profile);
+    } catch (error) {
+      console.error("Error updating founder profile:", error);
+      res.status(500).json({ error: "Failed to update founder profile" });
+    }
+  });
+
   return httpServer;
 }

@@ -1,14 +1,15 @@
 import { eq, desc, gte, and, ne, sql, lt } from "drizzle-orm";
 import { db } from "./db";
 import {
-  users, leads, settings, sources, scanLogs, rssFeeds, ipoFilings,
+  users, leads, settings, sources, scanLogs, rssFeeds, ipoFilings, founderProfiles,
   type User, type InsertUser,
   type Lead, type InsertLead, type LeadStatus,
   type Settings, type InsertSettings,
   type Source, type InsertSource,
   type RssFeed, type InsertRssFeed,
   type ScanLog, type InsertScanLog,
-  type IpoFiling, type InsertIpoFiling, type IpoFilingStatus
+  type IpoFiling, type InsertIpoFiling, type IpoFilingStatus,
+  type FounderProfile, type InsertFounderProfile
 } from "@shared/schema";
 
 export interface IStorage {
@@ -19,6 +20,7 @@ export interface IStorage {
   getAllLeads(): Promise<Lead[]>;
   getLeadById(id: string): Promise<Lead | undefined>;
   getLeadByUrl(url: string): Promise<Lead | undefined>;
+  getLeadByEventHash(eventHash: string): Promise<Lead | undefined>;
   createLead(lead: InsertLead): Promise<Lead>;
   updateLeadStatus(id: string, status: LeadStatus): Promise<Lead | undefined>;
   enrichLead(id: string, linkedinProfiles: string[], investors: string[]): Promise<Lead | undefined>;
@@ -56,6 +58,15 @@ export interface IStorage {
   createIpoFiling(filing: InsertIpoFiling): Promise<IpoFiling>;
   updateIpoFilingStatus(id: string, status: IpoFilingStatus): Promise<IpoFiling | undefined>;
   getIpoFilingsStats(): Promise<{ today: number; thisWeek: number; total: number }>;
+
+  // Founder Profiles
+  getAllFounderProfiles(): Promise<FounderProfile[]>;
+  getFounderProfileById(id: string): Promise<FounderProfile | undefined>;
+  getFounderProfileByName(name: string): Promise<FounderProfile | undefined>;
+  searchFounderProfiles(query: string): Promise<FounderProfile[]>;
+  createFounderProfile(profile: InsertFounderProfile): Promise<FounderProfile>;
+  updateFounderProfile(id: string, updates: Partial<InsertFounderProfile>): Promise<FounderProfile | undefined>;
+  upsertFounderProfile(name: string, profile: Partial<InsertFounderProfile>): Promise<FounderProfile>;
 }
 
 const DEFAULT_KEYWORDS = [
@@ -103,6 +114,11 @@ export class DatabaseStorage implements IStorage {
 
   async getLeadByUrl(url: string): Promise<Lead | undefined> {
     const [lead] = await db.select().from(leads).where(eq(leads.sourceUrl, url));
+    return lead || undefined;
+  }
+
+  async getLeadByEventHash(eventHash: string): Promise<Lead | undefined> {
+    const [lead] = await db.select().from(leads).where(eq(leads.eventHash, eventHash));
     return lead || undefined;
   }
 
@@ -418,6 +434,49 @@ export class DatabaseStorage implements IStorage {
       thisWeek: allFilings.filter(f => new Date(f.createdAt) >= weekStart).length,
       total: allFilings.length,
     };
+  }
+
+  // Founder Profile methods
+  async getAllFounderProfiles(): Promise<FounderProfile[]> {
+    return db.select().from(founderProfiles).orderBy(desc(founderProfiles.updatedAt));
+  }
+
+  async getFounderProfileById(id: string): Promise<FounderProfile | undefined> {
+    const [profile] = await db.select().from(founderProfiles).where(eq(founderProfiles.id, id));
+    return profile || undefined;
+  }
+
+  async getFounderProfileByName(name: string): Promise<FounderProfile | undefined> {
+    const [profile] = await db.select().from(founderProfiles).where(eq(founderProfiles.name, name));
+    return profile || undefined;
+  }
+
+  async searchFounderProfiles(query: string): Promise<FounderProfile[]> {
+    const profiles = await db.select().from(founderProfiles)
+      .where(sql`LOWER(${founderProfiles.name}) LIKE LOWER(${'%' + query + '%'})`);
+    return profiles;
+  }
+
+  async createFounderProfile(insertProfile: InsertFounderProfile): Promise<FounderProfile> {
+    const [profile] = await db.insert(founderProfiles).values(insertProfile).returning();
+    return profile;
+  }
+
+  async updateFounderProfile(id: string, updates: Partial<InsertFounderProfile>): Promise<FounderProfile | undefined> {
+    const [profile] = await db.update(founderProfiles)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(founderProfiles.id, id))
+      .returning();
+    return profile || undefined;
+  }
+
+  async upsertFounderProfile(name: string, profile: Partial<InsertFounderProfile>): Promise<FounderProfile> {
+    const existing = await this.getFounderProfileByName(name);
+    if (existing) {
+      return (await this.updateFounderProfile(existing.id, profile))!;
+    } else {
+      return this.createFounderProfile({ name, ...profile } as InsertFounderProfile);
+    }
   }
 }
 
