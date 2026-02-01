@@ -1,13 +1,14 @@
 import { eq, desc, gte, and, ne, sql, lt } from "drizzle-orm";
 import { db } from "./db";
-import { 
-  users, leads, settings, sources, scanLogs, rssFeeds,
-  type User, type InsertUser, 
+import {
+  users, leads, settings, sources, scanLogs, rssFeeds, savedLeads,
+  type User, type InsertUser,
   type Lead, type InsertLead, type LeadStatus,
   type Settings, type InsertSettings,
   type Source, type InsertSource,
   type RssFeed, type InsertRssFeed,
-  type ScanLog, type InsertScanLog
+  type ScanLog, type InsertScanLog,
+  type SavedLead, type InsertSavedLead
 } from "@shared/schema";
 
 export interface IStorage {
@@ -45,6 +46,14 @@ export interface IStorage {
   getScanLogById(id: string): Promise<ScanLog | undefined>;
   createScanLog(log: InsertScanLog): Promise<ScanLog>;
   cleanupOldScanLogs(retentionDays: number): Promise<number>;
+
+  // Saved Leads
+  getAllSavedLeads(): Promise<(SavedLead & { lead: Lead })[]>;
+  getSavedLeadById(id: string): Promise<(SavedLead & { lead: Lead }) | undefined>;
+  getSavedLeadByLeadId(leadId: string): Promise<SavedLead | undefined>;
+  createSavedLead(savedLead: InsertSavedLead): Promise<SavedLead>;
+  updateSavedLead(id: string, updates: Partial<InsertSavedLead>): Promise<SavedLead | undefined>;
+  deleteSavedLead(id: string): Promise<boolean>;
 }
 
 const DEFAULT_KEYWORDS = [
@@ -314,16 +323,73 @@ export class DatabaseStorage implements IStorage {
   async cleanupOldScanLogs(retentionDays: number): Promise<number> {
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
-    
+
     const oldLogs = await db.select({ id: scanLogs.id })
       .from(scanLogs)
       .where(lt(scanLogs.scannedAt, cutoffDate));
-    
+
     if (oldLogs.length > 0) {
       await db.delete(scanLogs).where(lt(scanLogs.scannedAt, cutoffDate));
     }
-    
+
     return oldLogs.length;
+  }
+
+  // Saved Leads methods
+  async getAllSavedLeads(): Promise<(SavedLead & { lead: Lead })[]> {
+    const savedLeadsData = await db.select().from(savedLeads).orderBy(desc(savedLeads.savedAt));
+
+    const result = [];
+    for (const saved of savedLeadsData) {
+      const lead = await this.getLeadById(saved.leadId);
+      if (lead) {
+        result.push({ ...saved, lead });
+      }
+    }
+
+    return result;
+  }
+
+  async getSavedLeadById(id: string): Promise<(SavedLead & { lead: Lead }) | undefined> {
+    const [saved] = await db.select().from(savedLeads).where(eq(savedLeads.id, id));
+    if (!saved) return undefined;
+
+    const lead = await this.getLeadById(saved.leadId);
+    if (!lead) return undefined;
+
+    return { ...saved, lead };
+  }
+
+  async getSavedLeadByLeadId(leadId: string): Promise<SavedLead | undefined> {
+    const [saved] = await db.select().from(savedLeads).where(eq(savedLeads.leadId, leadId));
+    return saved || undefined;
+  }
+
+  async createSavedLead(insertSavedLead: InsertSavedLead): Promise<SavedLead> {
+    // Also update the lead status to "saved" for backward compatibility
+    await this.updateLeadStatus(insertSavedLead.leadId, "saved");
+
+    const [saved] = await db.insert(savedLeads).values(insertSavedLead).returning();
+    return saved;
+  }
+
+  async updateSavedLead(id: string, updates: Partial<InsertSavedLead>): Promise<SavedLead | undefined> {
+    const [saved] = await db.update(savedLeads)
+      .set(updates)
+      .where(eq(savedLeads.id, id))
+      .returning();
+    return saved || undefined;
+  }
+
+  async deleteSavedLead(id: string): Promise<boolean> {
+    const saved = await db.select().from(savedLeads).where(eq(savedLeads.id, id));
+    if (saved.length === 0) return false;
+
+    // Update the lead status back to "new" or "reviewed"
+    await this.updateLeadStatus(saved[0].leadId, "reviewed");
+
+    await db.delete(savedLeads).where(eq(savedLeads.id, id));
+    return true;
   }
 }
 

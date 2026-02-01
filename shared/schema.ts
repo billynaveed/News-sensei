@@ -179,3 +179,23 @@ export const insertScanLogSchema = createInsertSchema(scanLogs).omit({
 
 export type InsertScanLog = z.infer<typeof insertScanLogSchema>;
 export type ScanLog = typeof scanLogs.$inferSelect;
+
+// Saved leads table - separate from leads table for enhanced metadata
+export const savedLeads = pgTable("saved_leads", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  leadId: varchar("lead_id").notNull().references(() => leads.id, { onDelete: "cascade" }),
+  savedAt: timestamp("saved_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  founderLinkedInUrl: text("founder_linkedin_url"),
+  founderBio: text("founder_bio"),
+  companyDescription: text("company_description"),
+  notes: text("notes"),
+  researchData: json("research_data").$type<Record<string, any>>(),
+});
+
+export const insertSavedLeadSchema = createInsertSchema(savedLeads).omit({
+  id: true,
+  savedAt: true,
+});
+
+export type InsertSavedLead = z.infer<typeof insertSavedLeadSchema>;
+export type SavedLead = typeof savedLeads.$inferSelect;

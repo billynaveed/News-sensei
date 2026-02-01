@@ -5,6 +5,8 @@ import { storage } from "./storage";
 import { sendTestEmail, sendLeadAlertEmail } from "./sendgrid";
 import { sendTestTelegramMessage, getTelegramUpdates } from "./telegram";
 import { scanForLeads, getScanProgress } from "./scanner";
+import { migrateSavedLeads } from "./migrate-saved-leads";
+import { ensureSavedLeadsTable } from "./ensure-saved-leads-table";
 import type { LeadStatus } from "@shared/schema";
 
 const updateLeadStatusSchema = z.object({
@@ -54,10 +56,37 @@ const updateRssFeedSchema = z.object({
   active: z.boolean().optional(),
 });
 
+const createSavedLeadSchema = z.object({
+  leadId: z.string().min(1),
+  founderLinkedInUrl: z.string().url().optional().or(z.literal("")),
+  founderBio: z.string().optional(),
+  companyDescription: z.string().optional(),
+  notes: z.string().optional(),
+  researchData: z.record(z.any()).optional(),
+});
+
+const updateSavedLeadSchema = z.object({
+  founderLinkedInUrl: z.string().url().optional().or(z.literal("")),
+  founderBio: z.string().optional(),
+  companyDescription: z.string().optional(),
+  notes: z.string().optional(),
+  researchData: z.record(z.any()).optional(),
+});
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
+  // Ensure saved_leads table exists
+  try {
+    const created = await ensureSavedLeadsTable();
+    if (created) {
+      console.log("saved_leads table was created");
+    }
+  } catch (error) {
+    console.error("Error ensuring saved_leads table:", error);
+  }
+
   // Seed default sources and run log cleanup on startup
   try {
     await storage.seedDefaultSources();
@@ -76,6 +105,16 @@ export async function registerRoutes(
     }
   } catch (error) {
     console.error("Error cleaning up scan logs on startup:", error);
+  }
+
+  // Migrate existing saved leads to new table on startup
+  try {
+    const migrationResult = await migrateSavedLeads();
+    if (migrationResult.migrated > 0) {
+      console.log(`Migrated ${migrationResult.migrated} saved leads to new table`);
+    }
+  } catch (error) {
+    console.error("Error migrating saved leads on startup:", error);
   }
 
   // Leads endpoints
@@ -381,6 +420,92 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error deleting RSS feed:", error);
       res.status(500).json({ error: "Failed to delete RSS feed" });
+    }
+  });
+
+  // Saved Leads endpoints
+  app.get("/api/saved-leads", async (req, res) => {
+    try {
+      const savedLeads = await storage.getAllSavedLeads();
+      res.json(savedLeads);
+    } catch (error) {
+      console.error("Error fetching saved leads:", error);
+      res.status(500).json({ error: "Failed to fetch saved leads" });
+    }
+  });
+
+  app.get("/api/saved-leads/:id", async (req, res) => {
+    try {
+      const savedLead = await storage.getSavedLeadById(req.params.id);
+      if (!savedLead) {
+        return res.status(404).json({ error: "Saved lead not found" });
+      }
+      res.json(savedLead);
+    } catch (error) {
+      console.error("Error fetching saved lead:", error);
+      res.status(500).json({ error: "Failed to fetch saved lead" });
+    }
+  });
+
+  app.post("/api/saved-leads", async (req, res) => {
+    try {
+      const parsed = createSavedLeadSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: "Invalid saved lead data", details: parsed.error.errors });
+      }
+
+      // Check if this lead is already saved
+      const existing = await storage.getSavedLeadByLeadId(parsed.data.leadId);
+      if (existing) {
+        return res.status(409).json({ error: "Lead is already saved" });
+      }
+
+      const savedLead = await storage.createSavedLead(parsed.data);
+      res.status(201).json(savedLead);
+    } catch (error) {
+      console.error("Error creating saved lead:", error);
+      res.status(500).json({ error: "Failed to save lead" });
+    }
+  });
+
+  app.patch("/api/saved-leads/:id", async (req, res) => {
+    try {
+      const parsed = updateSavedLeadSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: "Invalid saved lead data", details: parsed.error.errors });
+      }
+      const savedLead = await storage.updateSavedLead(req.params.id, parsed.data);
+      if (!savedLead) {
+        return res.status(404).json({ error: "Saved lead not found" });
+      }
+      res.json(savedLead);
+    } catch (error) {
+      console.error("Error updating saved lead:", error);
+      res.status(500).json({ error: "Failed to update saved lead" });
+    }
+  });
+
+  app.delete("/api/saved-leads/:id", async (req, res) => {
+    try {
+      const deleted = await storage.deleteSavedLead(req.params.id);
+      if (!deleted) {
+        return res.status(404).json({ error: "Saved lead not found" });
+      }
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting saved lead:", error);
+      res.status(500).json({ error: "Failed to delete saved lead" });
+    }
+  });
+
+  // Migration endpoint (manual trigger if needed)
+  app.post("/api/migrate-saved-leads", async (req, res) => {
+    try {
+      const result = await migrateSavedLeads();
+      res.json(result);
+    } catch (error) {
+      console.error("Error running migration:", error);
+      res.status(500).json({ error: "Failed to run migration" });
     }
   });
 

@@ -315,25 +315,15 @@ function StatsCard({ title, value, icon: Icon, trend }: { title: string; value: 
 }
 
 export default function Dashboard() {
-  const searchString = useSearch();
-  const searchParams = new URLSearchParams(searchString);
-  const filterParam = searchParams.get("filter");
-
   const [filters, setFilters] = useState<FilterState>({
     publishedDays: "2",
     region: "all",
     sourceTier: "all",
     priority: "all",
-    status: filterParam === "saved" ? "saved" : "active",
+    status: "active",
   });
 
   const [statsExpanded, setStatsExpanded] = useState(false);
-
-  useEffect(() => {
-    if (filterParam === "saved") {
-      setFilters(f => ({ ...f, status: "saved" }));
-    }
-  }, [filterParam]);
 
   const { data: leads, isLoading: leadsLoading } = useQuery<Lead[]>({
     queryKey: ["/api/leads"],
@@ -350,15 +340,15 @@ export default function Dashboard() {
     onMutate: async ({ id, status }) => {
       // Cancel any outgoing refetches
       await queryClient.cancelQueries({ queryKey: ["/api/leads"] });
-      
+
       // Snapshot the previous value
       const previousLeads = queryClient.getQueryData<Lead[]>(["/api/leads"]);
-      
+
       // Optimistically update to the new value
-      queryClient.setQueryData<Lead[]>(["/api/leads"], (old) => 
+      queryClient.setQueryData<Lead[]>(["/api/leads"], (old) =>
         old?.map(lead => lead.id === id ? { ...lead, status } : lead) || []
       );
-      
+
       return { previousLeads };
     },
     onError: (err, variables, context) => {
@@ -373,6 +363,16 @@ export default function Dashboard() {
     },
   });
 
+  const saveMutation = useMutation({
+    mutationFn: async (leadId: string) => {
+      await apiRequest("POST", "/api/saved-leads", { leadId });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/leads"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/saved-leads"] });
+    },
+  });
+
   const triggerScanMutation = useMutation({
     mutationFn: async () => {
       await apiRequest("POST", "/api/scan");
@@ -384,14 +384,18 @@ export default function Dashboard() {
   });
 
   const handleUpdateStatus = (id: string, status: LeadStatus) => {
-    updateStatusMutation.mutate({ id, status });
+    if (status === "saved") {
+      // Use the new saved leads API
+      saveMutation.mutate(id);
+    } else {
+      updateStatusMutation.mutate({ id, status });
+    }
   };
 
   // First filter by basic criteria
   const baseFilteredLeads = leads?.filter((lead) => {
-    // Status filter - saved articles are excluded from active feed
+    // Status filter - saved and dismissed articles are excluded from active feed
     if (filters.status === "active" && (lead.status === "dismissed" || lead.status === "saved")) return false;
-    if (filters.status === "saved" && lead.status !== "saved") return false;
     if (filters.status === "contacted" && lead.status !== "contacted") return false;
     if (filters.status === "dismissed" && lead.status !== "dismissed") return false;
     
@@ -474,7 +478,6 @@ export default function Dashboard() {
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="active">Active</SelectItem>
-                        <SelectItem value="saved">Saved</SelectItem>
                         <SelectItem value="contacted">Contacted</SelectItem>
                         <SelectItem value="dismissed">Dismissed</SelectItem>
                         <SelectItem value="all">All</SelectItem>
@@ -543,14 +546,19 @@ export default function Dashboard() {
                       </Button>
                     )}
                   </div>
-                  <Button
-                    onClick={() => triggerScanMutation.mutate()}
-                    disabled={triggerScanMutation.isPending}
-                    data-testid="button-scan-now"
-                  >
-                    <RefreshCw className={`h-4 w-4 ${triggerScanMutation.isPending ? "animate-spin" : ""}`} />
-                    {triggerScanMutation.isPending ? "Scanning..." : "Scan Now"}
-                  </Button>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        onClick={() => triggerScanMutation.mutate()}
+                        disabled={triggerScanMutation.isPending}
+                        data-testid="button-scan-now"
+                      >
+                        <RefreshCw className={`h-4 w-4 ${triggerScanMutation.isPending ? "animate-spin" : ""}`} />
+                        {triggerScanMutation.isPending ? "Scanning..." : "Scan Now"}
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Scans run automatically every hour. Use this for immediate scanning.</TooltipContent>
+                  </Tooltip>
                 </div>
               </div>
               <div className="flex justify-center pb-2">
@@ -577,15 +585,20 @@ export default function Dashboard() {
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  onClick={() => triggerScanMutation.mutate()}
-                  disabled={triggerScanMutation.isPending}
-                  data-testid="button-scan-now-collapsed"
-                >
-                  <RefreshCw className={`h-4 w-4 ${triggerScanMutation.isPending ? "animate-spin" : ""}`} />
-                  {triggerScanMutation.isPending ? "Scanning..." : "Scan"}
-                </Button>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      size="sm"
+                      onClick={() => triggerScanMutation.mutate()}
+                      disabled={triggerScanMutation.isPending}
+                      data-testid="button-scan-now-collapsed"
+                    >
+                      <RefreshCw className={`h-4 w-4 ${triggerScanMutation.isPending ? "animate-spin" : ""}`} />
+                      {triggerScanMutation.isPending ? "Scanning..." : "Scan"}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Scans run automatically every hour</TooltipContent>
+                </Tooltip>
                 <CollapsibleTrigger asChild>
                   <Button variant="ghost" size="sm" data-testid="button-expand-stats">
                     <ChevronDown className="h-4 w-4 mr-1" />

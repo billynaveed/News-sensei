@@ -1,5 +1,5 @@
 import { LayoutDashboard, Settings, Activity, TrendingUp, BookmarkCheck, Bug } from "lucide-react";
-import { Link, useLocation } from "wouter";
+import { Link, useLocation, useSearch } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
   Sidebar,
@@ -13,6 +13,7 @@ import {
   SidebarMenuBadge,
   SidebarHeader,
   SidebarFooter,
+  useSidebar,
 } from "@/components/ui/sidebar";
 import type { Lead } from "@shared/schema";
 
@@ -41,12 +42,21 @@ const menuItems = [
 
 export function AppSidebar() {
   const [location] = useLocation();
+  const searchString = useSearch();
+  const { setOpenMobile, isMobile } = useSidebar();
 
-  const { data: leads } = useQuery<Lead[]>({
-    queryKey: ["/api/leads"],
+  const { data: savedLeads } = useQuery<any[]>({
+    queryKey: ["/api/saved-leads"],
   });
 
-  const savedCount = leads?.filter(lead => lead.status === "saved").length ?? 0;
+  const savedCount = savedLeads?.length ?? 0;
+
+  // Close sidebar on mobile when navigation item is clicked
+  const handleNavClick = () => {
+    if (isMobile) {
+      setOpenMobile(false);
+    }
+  };
 
   return (
     <Sidebar>
@@ -73,7 +83,7 @@ export function AppSidebar() {
                     isActive={location === item.url}
                     data-testid={`nav-${item.title.toLowerCase().replace(" ", "-")}`}
                   >
-                    <Link href={item.url}>
+                    <Link href={item.url} onClick={handleNavClick}>
                       <item.icon className="h-4 w-4" />
                       <span>{item.title}</span>
                     </Link>
@@ -90,10 +100,10 @@ export function AppSidebar() {
               <SidebarMenuItem>
                 <SidebarMenuButton
                   asChild
-                  isActive={location === "/?filter=saved"}
+                  isActive={location === "/saved-leads"}
                   data-testid="nav-saved-leads"
                 >
-                  <Link href="/?filter=saved">
+                  <Link href="/saved-leads" onClick={handleNavClick}>
                     <BookmarkCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
                     <span>Saved Leads</span>
                   </Link>

@@ -10,12 +10,14 @@ import Dashboard from "@/pages/dashboard";
 import SettingsPage from "@/pages/settings";
 import LogsPage from "@/pages/logs";
 import DebugPage from "@/pages/debug";
+import SavedLeadsPage from "@/pages/saved-leads";
 import NotFound from "@/pages/not-found";
 
 function Router() {
   return (
     <Switch>
       <Route path="/" component={Dashboard} />
+      <Route path="/saved-leads" component={SavedLeadsPage} />
       <Route path="/settings" component={SettingsPage} />
       <Route path="/logs" component={LogsPage} />
       <Route path="/debug" component={DebugPage} />
