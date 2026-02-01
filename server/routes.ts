@@ -7,6 +7,7 @@ import { sendTestTelegramMessage, getTelegramUpdates } from "./telegram";
 import { scanForLeads, getScanProgress } from "./scanner";
 import { migrateSavedLeads } from "./migrate-saved-leads";
 import { ensureSavedLeadsTable } from "./ensure-saved-leads-table";
+import { enrichSavedLead, formatEnrichmentForSavedLead } from "./founder-enrichment";
 import type { LeadStatus } from "@shared/schema";
 
 const updateLeadStatusSchema = z.object({
@@ -495,6 +496,41 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error deleting saved lead:", error);
       res.status(500).json({ error: "Failed to delete saved lead" });
+    }
+  });
+
+  // Enrich saved lead with founder and company information
+  app.post("/api/saved-leads/:id/enrich", async (req, res) => {
+    try {
+      const savedLead = await storage.getSavedLeadById(req.params.id);
+      if (!savedLead) {
+        return res.status(404).json({ error: "Saved lead not found" });
+      }
+
+      const lead = savedLead.lead;
+
+      // Run enrichment
+      const enrichment = await enrichSavedLead({
+        companyNames: lead.companyNames,
+        founderNames: lead.founderNames,
+        region: lead.region,
+      });
+
+      // Format and update saved lead
+      const enrichedData = formatEnrichmentForSavedLead(enrichment);
+      const updated = await storage.updateSavedLead(req.params.id, enrichedData);
+
+      res.json({
+        success: true,
+        savedLead: updated,
+        enrichment: {
+          founderConfidence: enrichment.founders[0]?.confidence || "low",
+          companyConfidence: enrichment.companies[0]?.confidence || "low",
+        },
+      });
+    } catch (error) {
+      console.error("Error enriching saved lead:", error);
+      res.status(500).json({ error: "Failed to enrich saved lead" });
     }
   });
 
