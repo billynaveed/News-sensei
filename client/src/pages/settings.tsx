@@ -76,6 +76,7 @@ const settingsSchema = z.object({
   keywords: z.array(z.string()).min(1, "At least one keyword is required"),
   regions: z.array(z.string()).min(1, "At least one region is required"),
   summaryLength: z.enum(["brief", "detailed", "actionable"]),
+  scanFrequency: z.enum(["hourly", "daily", "weekly", "manual"]),
   logRetentionDays: z.number().min(1).max(30),
   googleNewsEnabled: z.boolean(),
   rssEnabled: z.boolean(),
@@ -783,6 +784,7 @@ export default function SettingsPage() {
       keywords: DEFAULT_KEYWORDS,
       regions: DEFAULT_REGIONS,
       summaryLength: "brief",
+      scanFrequency: "hourly",
       logRetentionDays: 2,
       googleNewsEnabled: false,
       rssEnabled: true,
@@ -796,6 +798,7 @@ export default function SettingsPage() {
         keywords: settings.keywords,
         regions: settings.regions,
         summaryLength: settings.summaryLength as "brief" | "detailed" | "actionable",
+        scanFrequency: (settings.scanFrequency as "hourly" | "daily" | "weekly" | "manual") ?? "hourly",
         logRetentionDays: settings.logRetentionDays ?? 2,
         googleNewsEnabled: settings.googleNewsEnabled ?? false,
         rssEnabled: settings.rssEnabled ?? true,
@@ -960,6 +963,34 @@ export default function SettingsPage() {
                   )}
                 </Button>
               </div>
+
+              <Separator />
+
+              <FormField
+                control={form.control}
+                name="scanFrequency"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Scan Frequency</FormLabel>
+                    <Select onValueChange={field.onChange} value={field.value}>
+                      <FormControl>
+                        <SelectTrigger data-testid="select-scan-frequency">
+                          <SelectValue placeholder="Select frequency" />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        <SelectItem value="hourly">Hourly - Scans every hour</SelectItem>
+                        <SelectItem value="daily">Daily - Scans once per day at 9:00 AM</SelectItem>
+                        <SelectItem value="weekly">Weekly - Scans every Monday at 9:00 AM</SelectItem>
+                        <SelectItem value="manual">Manual - Only scan when triggered</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FormDescription>
+                      How often to automatically scan news sources for new leads and send Telegram notifications.
+                    </FormDescription>
+                  </FormItem>
+                )}
+              />
 
               <Separator />
 

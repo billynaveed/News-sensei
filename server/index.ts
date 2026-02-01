@@ -3,6 +3,8 @@ import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
+import { startBot, stopBot } from "./telegram-bot";
+import { startScheduler, stopScheduler } from "./scheduler";
 
 const app = express();
 const httpServer = createServer(app);
@@ -94,6 +96,35 @@ app.use((req, res, next) => {
     },
     () => {
       log(`serving on port ${port}`);
+
+      // Start Telegram bot after server is running
+      if (process.env.TELEGRAM_BOT_TOKEN) {
+        startBot().catch(err => log(`Failed to start Telegram bot: ${err}`, "error"));
+      }
+
+      // Start scan scheduler
+      startScheduler().catch(err => log(`Failed to start scheduler: ${err}`, "error"));
     },
   );
+
+  // Graceful shutdown
+  process.on('SIGTERM', async () => {
+    log('SIGTERM received, shutting down gracefully...');
+    stopScheduler();
+    await stopBot();
+    httpServer.close(() => {
+      log('Server closed');
+      process.exit(0);
+    });
+  });
+
+  process.on('SIGINT', async () => {
+    log('SIGINT received, shutting down gracefully...');
+    stopScheduler();
+    await stopBot();
+    httpServer.close(() => {
+      log('Server closed');
+      process.exit(0);
+    });
+  });
 })();

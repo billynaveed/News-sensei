@@ -2,35 +2,46 @@ import type { Lead } from "@shared/schema";
 
 const TELEGRAM_API = 'https://api.telegram.org/bot';
 
-async function sendTelegramMessage(chatId: string, text: string, parseMode: 'HTML' | 'Markdown' = 'HTML'): Promise<boolean> {
+export async function sendTelegramMessage(
+  chatId: string,
+  text: string,
+  parseMode: 'HTML' | 'Markdown' = 'HTML',
+  replyMarkup?: any
+): Promise<boolean> {
   const token = process.env.TELEGRAM_BOT_TOKEN;
-  
+
   if (!token) {
     throw new Error('TELEGRAM_BOT_TOKEN not configured');
   }
-  
+
   if (!chatId) {
     throw new Error('Telegram chat ID not configured');
+  }
+
+  const body: any = {
+    chat_id: chatId,
+    text,
+    parse_mode: parseMode,
+    disable_web_page_preview: true,
+  };
+
+  if (replyMarkup) {
+    body.reply_markup = replyMarkup;
   }
 
   const response = await fetch(`${TELEGRAM_API}${token}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text,
-      parse_mode: parseMode,
-      disable_web_page_preview: true,
-    }),
+    body: JSON.stringify(body),
   });
 
   const result = await response.json();
-  
+
   if (!result.ok) {
     console.error('Telegram API error:', result);
     throw new Error(result.description || 'Failed to send Telegram message');
   }
-  
+
   return true;
 }
 
@@ -82,19 +93,47 @@ ${lead.aiSummary}
   }
 }
 
-export async function getTelegramUpdates(): Promise<any[]> {
+export async function getTelegramUpdates(offset?: number): Promise<any[]> {
   const token = process.env.TELEGRAM_BOT_TOKEN;
-  
+
   if (!token) {
     throw new Error('TELEGRAM_BOT_TOKEN not configured');
   }
 
-  const response = await fetch(`${TELEGRAM_API}${token}/getUpdates`);
+  const params = offset ? `?offset=${offset}` : '';
+  const response = await fetch(`${TELEGRAM_API}${token}/getUpdates${params}`);
   const result = await response.json();
-  
+
   if (!result.ok) {
     throw new Error(result.description || 'Failed to get Telegram updates');
   }
-  
+
   return result.result || [];
+}
+
+export async function answerCallbackQuery(callbackQueryId: string, text?: string): Promise<boolean> {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+
+  if (!token) {
+    throw new Error('TELEGRAM_BOT_TOKEN not configured');
+  }
+
+  const response = await fetch(`${TELEGRAM_API}${token}/answerCallbackQuery`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      callback_query_id: callbackQueryId,
+      text: text || 'Processing...',
+      show_alert: false,
+    }),
+  });
+
+  const result = await response.json();
+
+  if (!result.ok) {
+    console.error('Telegram API error:', result);
+    return false;
+  }
+
+  return true;
 }

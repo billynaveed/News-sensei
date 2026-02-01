@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import { storage } from "./storage";
 import { sendLeadAlertEmail } from "./sendgrid";
+import { sendLeadAlertTelegram } from "./telegram";
 import { fetchAllArticles, type RawArticle, type RssFeedWithMeta } from "./adapters";
 import type { InsertLead, PriorityLevel, SourceTier, SourceSearched, ArticleProcessed, ScrapingBeeDebugEntry } from "@shared/schema";
 
@@ -9,28 +10,38 @@ const openai = new OpenAI({
   baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
 });
 
-async function extractLeadInfo(article: RawArticle, keywords: string[], summaryLength: string): Promise<Partial<InsertLead> | null> {
-  const summaryPrompt = summaryLength === "brief" 
+async function extractLeadInfo(article: RawArticle, keywords: string[], summaryLength: string, targetRegions: string[]): Promise<Partial<InsertLead> | null> {
+  const summaryPrompt = summaryLength === "brief"
     ? "Write a 1-2 sentence summary."
     : summaryLength === "detailed"
     ? "Write a detailed paragraph summary."
     : "Write a summary with actionable recommendations for a private banker.";
 
+  const regionsStr = targetRegions.join(", ");
+
   const prompt = `Analyze this news article and extract wealth-related lead information for a private banker.
+
+IMPORTANT: Only extract leads if the article is relevant to these regions: ${regionsStr}
+- The article must be about companies, founders, or wealth events in ${regionsStr}
+- If the article is only about other regions (e.g., UK, US, Europe) with no connection to ${regionsStr}, return null
+- If a global company is mentioned but the article has no specific relevance to ${regionsStr}, return null
 
 Article:
 Headline: ${article.headline}
 Source: ${article.source}
 Content: ${article.content}
 
-Extract and return a JSON object with:
-1. "companyNames": array of company names mentioned
-2. "founderNames": array of founder/key person names mentioned  
-3. "investors": array of investors mentioned (if any)
-4. "summary": ${summaryPrompt}
-5. "matchedKeywords": array of these keywords that match: ${keywords.join(", ")}
-6. "priorityScore": number 1-100 based on wealth potential (consider deal size, founder liquidity, timing)
-7. "priorityLevel": "high" (score 70+), "medium" (score 40-69), or "low" (score below 40)
+If the article is NOT relevant to ${regionsStr}, return: {"relevant": false}
+
+If the article IS relevant to ${regionsStr}, extract and return a JSON object with:
+1. "relevant": true
+2. "companyNames": array of company names mentioned
+3. "founderNames": array of founder/key person names mentioned
+4. "investors": array of investors mentioned (if any)
+5. "summary": ${summaryPrompt}
+6. "matchedKeywords": array of these keywords that match: ${keywords.join(", ")}
+7. "priorityScore": number 1-100 based on wealth potential (consider deal size, founder liquidity, timing)
+8. "priorityLevel": "high" (score 70+), "medium" (score 40-69), or "low" (score below 40)
 
 Return only valid JSON, no markdown.`;
 
@@ -46,7 +57,12 @@ Return only valid JSON, no markdown.`;
     if (!content) return null;
 
     const extracted = JSON.parse(content);
-    
+
+    // Check if AI determined article is not relevant to target regions
+    if (extracted.relevant === false) {
+      return null;
+    }
+
     return {
       headline: article.headline,
       sourceUrl: article.url,
@@ -174,7 +190,7 @@ export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: 
       }
 
       try {
-        const leadInfo = await extractLeadInfo(article, settings.keywords, settings.summaryLength);
+        const leadInfo = await extractLeadInfo(article, settings.keywords, settings.summaryLength, settings.regions);
         if (leadInfo && leadInfo.companyNames && leadInfo.companyNames.length > 0) {
           await storage.createLead(leadInfo as InsertLead);
           createdLeads.push(leadInfo as InsertLead);
@@ -192,7 +208,7 @@ export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: 
             source: article.source,
             region: article.region,
             status: "skipped",
-            reason: "No company names extracted",
+            reason: "Not relevant to target regions or no company names extracted",
             fetchMethod: article.fetchMethod,
           });
         }
@@ -232,21 +248,41 @@ export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: 
       message: `Complete! ${newLeads} new leads found.` 
     });
 
-    if (settings.emailEnabled && settings.alertEmail && createdLeads.length > 0) {
+    // Send notifications for new high-priority leads
+    if (createdLeads.length > 0) {
       const highPriorityLeads = createdLeads.filter(l => l.priorityLevel === "high");
       if (highPriorityLeads.length > 0) {
         try {
           const leads = await storage.getAllLeads();
-          const newHighPriorityLeads = leads.filter(l => 
-            l.status === "new" && 
+          const newHighPriorityLeads = leads.filter(l =>
+            l.status === "new" &&
             l.priorityLevel === "high" &&
             createdLeads.some(cl => cl.sourceUrl === l.sourceUrl)
           );
+
           if (newHighPriorityLeads.length > 0) {
-            await sendLeadAlertEmail(settings.alertEmail, newHighPriorityLeads);
+            // Send Telegram alert if enabled
+            if (settings.telegramEnabled && settings.telegramChatId) {
+              try {
+                await sendLeadAlertTelegram(settings.telegramChatId, newHighPriorityLeads);
+                console.log(`Sent Telegram alert for ${newHighPriorityLeads.length} high-priority leads`);
+              } catch (error) {
+                console.error("Error sending lead alert via Telegram:", error);
+              }
+            }
+
+            // Send email alert if enabled (legacy)
+            if (settings.emailEnabled && settings.alertEmail) {
+              try {
+                await sendLeadAlertEmail(settings.alertEmail, newHighPriorityLeads);
+                console.log(`Sent email alert for ${newHighPriorityLeads.length} high-priority leads`);
+              } catch (error) {
+                console.error("Error sending lead alert email:", error);
+              }
+            }
           }
         } catch (error) {
-          console.error("Error sending lead alert email:", error);
+          console.error("Error sending lead alerts:", error);
         }
       }
     }

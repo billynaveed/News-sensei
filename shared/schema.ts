@@ -60,6 +60,7 @@ export const settings = pgTable("settings", {
   regions: text("regions").array().notNull(),
   sourceTiers: json("source_tiers").$type<Record<string, SourceTier>>().notNull(),
   summaryLength: text("summary_length").notNull().default("brief"),
+  scanFrequency: text("scan_frequency").notNull().default("hourly"), // hourly, daily, weekly, manual
   emailFrequency: text("email_frequency").notNull().default("daily"),
   emailEnabled: boolean("email_enabled").notNull().default(true),
   alertEmail: text("alert_email").notNull(),

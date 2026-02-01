@@ -162,6 +162,7 @@ export class DatabaseStorage implements IStorage {
       regions: update.regions || DEFAULT_REGIONS,
       sourceTiers: update.sourceTiers || {},
       summaryLength: update.summaryLength || "brief",
+      scanFrequency: update.scanFrequency || "hourly",
       emailFrequency: update.emailFrequency || "daily",
       emailEnabled: update.emailEnabled ?? true,
       alertEmail: update.alertEmail || "",

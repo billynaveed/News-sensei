@@ -8,6 +8,7 @@ import { scanForLeads, getScanProgress } from "./scanner";
 import { migrateSavedLeads } from "./migrate-saved-leads";
 import { ensureSavedLeadsTable } from "./ensure-saved-leads-table";
 import { enrichSavedLead, formatEnrichmentForSavedLead } from "./founder-enrichment";
+import { restartScheduler } from "./scheduler";
 import type { LeadStatus } from "@shared/schema";
 
 const updateLeadStatusSchema = z.object({
@@ -19,6 +20,7 @@ const updateSettingsSchema = z.object({
   regions: z.array(z.string()).min(1).optional(),
   sourceTiers: z.record(z.string()).optional(),
   summaryLength: z.enum(["brief", "detailed", "actionable"]).optional(),
+  scanFrequency: z.enum(["hourly", "daily", "weekly", "manual"]).optional(),
   emailFrequency: z.enum(["hourly", "daily", "weekly"]).optional(),
   emailEnabled: z.boolean().optional(),
   alertEmail: z.string().email().optional(),
@@ -187,6 +189,13 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Invalid settings", details: parsed.error.errors });
       }
       const settings = await storage.upsertSettings(parsed.data);
+
+      // Restart scheduler if scan frequency was changed
+      if (parsed.data.scanFrequency !== undefined) {
+        console.log(`Scan frequency changed to ${parsed.data.scanFrequency}, restarting scheduler...`);
+        await restartScheduler();
+      }
+
       res.json(settings);
     } catch (error) {
       console.error("Error updating settings:", error);
