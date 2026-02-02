@@ -60,36 +60,37 @@ You will receive messages like this when new high-priority leads are found match
 }
 
 export async function sendLeadAlertTelegram(chatId: string, leads: Lead[]): Promise<void> {
+  // Send header message
   const header = `<b>🔔 ${leads.length} New Lead${leads.length > 1 ? 's' : ''} Found</b>\n\n`;
-  
-  const leadMessages = leads.map(lead => {
-    const priorityIcon = lead.priorityLevel === 'high' ? '🔴' : lead.priorityLevel === 'medium' ? '🟡' : '🟢';
-    return `${priorityIcon} <b>${lead.headline}</b>
-<i>Companies:</i> ${lead.companyNames.join(', ')}
-<i>People:</i> ${lead.founderNames.join(', ') || 'N/A'}
-<i>Region:</i> ${lead.region} | Score: ${lead.priorityScore}
-${lead.aiSummary}
-<a href="${lead.sourceUrl}">Read more →</a>`;
-  }).join('\n\n---\n\n');
+  await sendTelegramMessage(chatId, header);
 
-  const message = header + leadMessages;
-  
-  // Telegram has a 4096 character limit, split if needed
-  if (message.length > 4000) {
-    // Send header + first lead, then remaining leads individually
-    await sendTelegramMessage(chatId, header + 'Multiple leads found. Sending details...');
-    for (const lead of leads) {
-      const priorityIcon = lead.priorityLevel === 'high' ? '🔴' : lead.priorityLevel === 'medium' ? '🟡' : '🟢';
-      const singleLead = `${priorityIcon} <b>${lead.headline}</b>
+  // Send each lead as a separate message with action buttons
+  for (const lead of leads) {
+    const priorityIcon = lead.priorityLevel === 'high' ? '🔴' : lead.priorityLevel === 'medium' ? '🟡' : '🟢';
+    const message = `${priorityIcon} <b>${lead.headline}</b>
+
 <i>Companies:</i> ${lead.companyNames.join(', ')}
 <i>People:</i> ${lead.founderNames.join(', ') || 'N/A'}
-<i>Region:</i> ${lead.region} | Score: ${lead.priorityScore}
+<i>Region:</i> ${lead.region} | <b>Score: ${lead.priorityScore}</b>
+
 ${lead.aiSummary}
-<a href="${lead.sourceUrl}">Read more →</a>`;
-      await sendTelegramMessage(chatId, singleLead);
-    }
-  } else {
-    await sendTelegramMessage(chatId, message);
+
+<a href="${lead.sourceUrl}">Read full article →</a>`;
+
+    // Add inline keyboard with action buttons
+    const keyboard = {
+      inline_keyboard: [
+        [
+          { text: "💾 Save", callback_data: `lead_save_${lead.id}` },
+          { text: "✅ Mark Reviewed", callback_data: `lead_reviewed_${lead.id}` }
+        ],
+        [
+          { text: "🗑️ Dismiss", callback_data: `lead_dismiss_${lead.id}` }
+        ]
+      ]
+    };
+
+    await sendTelegramMessage(chatId, message, 'HTML', keyboard);
   }
 }
 

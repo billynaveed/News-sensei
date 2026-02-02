@@ -1,4 +1,4 @@
-import { getTelegramUpdates, sendTelegramMessage } from './telegram';
+import { getTelegramUpdates, sendTelegramMessage, answerCallbackQuery } from './telegram';
 import { handleStartCommand, handleHelpCommand, handleResearchCommand, handleLeadsCommand, handleSaveCallback } from './telegram-commands';
 import { storage } from './storage';
 
@@ -74,10 +74,30 @@ async function handleUpdate(update: any): Promise<void> {
 
       console.log(`Received callback from chat ${chatId}: ${callbackData}`);
 
-      // Handle save callback
+      // Handle lead action callbacks
+      if (callbackData.startsWith('lead_save_')) {
+        const leadId = callbackData.substring(10); // Remove 'lead_save_' prefix
+        await handleLeadSaveCallback(leadId, chatId, callbackQueryId);
+        return;
+      }
+
+      if (callbackData.startsWith('lead_reviewed_')) {
+        const leadId = callbackData.substring(14); // Remove 'lead_reviewed_' prefix
+        await handleLeadReviewedCallback(leadId, chatId, callbackQueryId);
+        return;
+      }
+
+      if (callbackData.startsWith('lead_dismiss_')) {
+        const leadId = callbackData.substring(13); // Remove 'lead_dismiss_' prefix
+        await handleLeadDismissCallback(leadId, chatId, callbackQueryId);
+        return;
+      }
+
+      // Handle research save callback
       if (callbackData.startsWith('save_')) {
         const researchId = callbackData.substring(5); // Remove 'save_' prefix
         await handleSaveCallback(researchId, chatId, callbackQueryId);
+        return;
       }
 
       return;
@@ -128,6 +148,74 @@ async function pollUpdates(): Promise<void> {
     console.error('Error polling Telegram updates:', error);
   } finally {
     isPolling = false;
+  }
+}
+
+/**
+ * Handles save button click for a lead
+ */
+async function handleLeadSaveCallback(leadId: string, chatId: string, callbackQueryId: string): Promise<void> {
+  try {
+    const lead = await storage.getLeadById(leadId);
+    if (!lead) {
+      await answerCallbackQuery(callbackQueryId, "❌ Lead not found");
+      return;
+    }
+
+    // Update lead status to saved
+    await storage.updateLeadStatus(leadId, "saved");
+
+    // Create saved lead entry
+    await storage.createSavedLead({
+      leadId: leadId,
+      notes: "Saved from Telegram notification",
+    });
+
+    await answerCallbackQuery(callbackQueryId, "✅ Lead saved!");
+    await sendTelegramMessage(chatId, `💾 <b>Lead Saved!</b>\n\n"${lead.headline}"\n\nYou can view it in the dashboard or use /leads to see all saved leads.`);
+  } catch (error) {
+    console.error('Error saving lead:', error);
+    await answerCallbackQuery(callbackQueryId, "❌ Failed to save");
+  }
+}
+
+/**
+ * Handles reviewed button click for a lead
+ */
+async function handleLeadReviewedCallback(leadId: string, chatId: string, callbackQueryId: string): Promise<void> {
+  try {
+    const lead = await storage.getLeadById(leadId);
+    if (!lead) {
+      await answerCallbackQuery(callbackQueryId, "❌ Lead not found");
+      return;
+    }
+
+    await storage.updateLeadStatus(leadId, "reviewed");
+    await answerCallbackQuery(callbackQueryId, "✅ Marked as reviewed");
+    await sendTelegramMessage(chatId, `✅ "${lead.headline}" marked as reviewed.`);
+  } catch (error) {
+    console.error('Error marking lead as reviewed:', error);
+    await answerCallbackQuery(callbackQueryId, "❌ Failed to update");
+  }
+}
+
+/**
+ * Handles dismiss button click for a lead
+ */
+async function handleLeadDismissCallback(leadId: string, chatId: string, callbackQueryId: string): Promise<void> {
+  try {
+    const lead = await storage.getLeadById(leadId);
+    if (!lead) {
+      await answerCallbackQuery(callbackQueryId, "❌ Lead not found");
+      return;
+    }
+
+    await storage.updateLeadStatus(leadId, "dismissed");
+    await answerCallbackQuery(callbackQueryId, "🗑️ Lead dismissed");
+    await sendTelegramMessage(chatId, `🗑️ "${lead.headline}" dismissed.`);
+  } catch (error) {
+    console.error('Error dismissing lead:', error);
+    await answerCallbackQuery(callbackQueryId, "❌ Failed to dismiss");
   }
 }
 
