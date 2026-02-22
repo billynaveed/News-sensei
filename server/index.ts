@@ -1,12 +1,15 @@
 import "dotenv/config";
 import express, { type Request, Response, NextFunction } from "express";
+import cookieParser from "cookie-parser";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
-import { startBot, stopBot } from "./telegram-bot";
+import { startBot, stopBot, enableWebhookMode } from "./telegram-bot";
+import { setWebhook, deleteWebhook } from "./telegram";
 import { startScheduler, stopScheduler } from "./scheduler";
 
 const app = express();
+app.use(cookieParser());
 const httpServer = createServer(app);
 
 declare module "http" {
@@ -97,9 +100,32 @@ app.use((req, res, next) => {
     () => {
       log(`serving on port ${port}`);
 
-      // Start Telegram bot after server is running
+      // Start Telegram bot after server is running.
+      // If SERVER_URL is set, use webhook mode (Telegram pushes updates to us).
+      // Otherwise, fall back to polling mode (we pull updates from Telegram).
       if (process.env.TELEGRAM_BOT_TOKEN) {
-        startBot().catch(err => log(`Failed to start Telegram bot: ${err}`, "error"));
+        const serverUrl = process.env.SERVER_URL;
+        if (serverUrl) {
+          const webhookUrl = `${serverUrl.replace(/\/$/, '')}/api/telegram-webhook`;
+          setWebhook(webhookUrl)
+            .then(() => {
+              enableWebhookMode();
+              log(`Telegram webhook mode active at ${webhookUrl}`, "telegram");
+            })
+            .catch((err) => {
+              log(`Failed to set webhook, falling back to polling: ${err}`, "telegram");
+              // Delete any stale webhook so polling works
+              deleteWebhook().catch(() => {});
+              startBot().catch(innerErr => log(`Failed to start polling: ${innerErr}`, "telegram"));
+            });
+        } else {
+          // No SERVER_URL -- ensure no stale webhook is registered, then poll
+          deleteWebhook()
+            .catch(() => {}) // Ignore errors, webhook may not exist
+            .finally(() => {
+              startBot().catch(err => log(`Failed to start Telegram bot: ${err}`, "telegram"));
+            });
+        }
       }
 
       // Start scan scheduler

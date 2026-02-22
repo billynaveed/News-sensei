@@ -1,6 +1,7 @@
 import { sendTelegramMessage, answerCallbackQuery } from './telegram';
 import { enrichFounderInfo, enrichCompanyInfo, type FounderEnrichmentResult, type CompanyEnrichmentResult } from './founder-enrichment';
 import { formatFounderEnrichment, formatCompanyEnrichment, formatSavedLeadEnrichment, splitLongMessage } from './telegram-formatter';
+import { performResearch, formatResearchTelegram, checkRateLimit, recordRateLimit, type ResearchResult } from './research';
 import { storage } from './storage';
 import type { Settings } from '@shared/schema';
 import OpenAI from 'openai';
@@ -35,7 +36,7 @@ setInterval(() => {
  * Handles the /start command
  */
 export async function handleStartCommand(chatId: string): Promise<void> {
-  const message = `👋 <b>Welcome to News-sensei Research Bot!</b>
+  const message = `👋 <b>Welcome to Sensei Research Bot!</b>
 
 I can help you research founders and companies on-demand.
 
@@ -60,7 +61,7 @@ Send /help for more details!`;
  * Handles the /help command
  */
 export async function handleHelpCommand(chatId: string): Promise<void> {
-  const message = `📖 <b>News-sensei Research Bot - Help</b>
+  const message = `📖 <b>Sensei Research Bot - Help</b>
 
 <b>Commands:</b>
 
@@ -246,6 +247,9 @@ async function handleResearchSaved(leadIdStr: string, chatId: string, settings: 
 
 /**
  * Main handler for /research command
+ * 
+ * Enhanced version: searches saved leads → Brave web search → GPT-4o synthesis
+ * into a comprehensive UHNW private banking dossier.
  */
 export async function handleResearchCommand(args: string[], chatId: string, settings: Settings): Promise<void> {
   // Authorization check
@@ -264,99 +268,86 @@ export async function handleResearchCommand(args: string[], chatId: string, sett
   const query = args.join(" ").trim();
 
   if (!query) {
-    await sendTelegramMessage(chatId, `❌ Please provide a name to research.
+    // Import here to avoid circular dependency
+    const { awaitingResearchInput } = await import('./telegram-bot');
+    awaitingResearchInput.set(chatId, true);
+    await sendTelegramMessage(chatId, `🔍 <b>Who would you like me to research?</b>\n\nType a person's name or company:`);
+    return;
+  }
 
-<b>Usage:</b>
-/research &lt;name&gt; - Research founder or company
-/research saved &lt;id&gt; - Enrich saved lead
-/leads - Show saved leads
-
-<b>Examples:</b>
-/research Elon Musk
-/research Tesla
-/research saved 123`);
+  // Rate limit check
+  const rateCheck = checkRateLimit(chatId);
+  if (!rateCheck.allowed) {
+    await sendTelegramMessage(chatId, `⏳ Rate limit reached (${RATE_LIMIT_MSG} per hour). Try again in ~${rateCheck.resetIn} minutes.`);
     return;
   }
 
   try {
-    await sendTelegramMessage(chatId, "🔍 Researching...");
+    await sendTelegramMessage(chatId, `🔍 <b>Researching "${query}"...</b>\n\nSearching saved leads, web sources, and synthesizing dossier. This may take 15-30 seconds.`);
 
-    // Classify entity type
-    const entityType = await classifyEntity(query);
-    const region = settings.regions?.[0] || "Singapore";
+    // Record the rate limit usage
+    recordRateLimit(chatId);
 
-    console.log(`Researching ${query} as ${entityType}`);
+    // Run the comprehensive research pipeline
+    const result = await performResearch(query);
 
-    // Enrich based on type
-    if (entityType === "founder") {
-      const result = await enrichFounderInfo(query, "", region);
-
-      if (!result.biography && result.confidence === 'low') {
-        await sendTelegramMessage(chatId, "❌ No information found for this founder.");
-        return;
-      }
-
-      // Store research for saving
-      const researchId = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-      pendingResearch.set(researchId, {
-        type: 'founder',
-        founderResult: result,
-        timestamp: Date.now(),
-      });
-
-      const formatted = formatFounderEnrichment(result);
-      const parts = splitLongMessage(formatted);
-
-      // Send all parts except last without button
-      for (let i = 0; i < parts.length - 1; i++) {
-        await sendTelegramMessage(chatId, parts[i]);
-      }
-
-      // Send last part with save button
-      const saveButton = {
-        inline_keyboard: [
-          [{ text: "💾 Save to Leads", callback_data: `save_${researchId}` }]
-        ]
-      };
-      await sendTelegramMessage(chatId, parts[parts.length - 1], 'HTML', saveButton);
-    } else {
-      const result = await enrichCompanyInfo(query, region);
-
-      if (!result.description && result.confidence === 'low') {
-        await sendTelegramMessage(chatId, "❌ No information found for this company.");
-        return;
-      }
-
-      // Store research for saving
-      const researchId = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-      pendingResearch.set(researchId, {
-        type: 'company',
-        companyResult: result,
-        timestamp: Date.now(),
-      });
-
-      const formatted = formatCompanyEnrichment(result);
-      const parts = splitLongMessage(formatted);
-
-      // Send all parts except last without button
-      for (let i = 0; i < parts.length - 1; i++) {
-        await sendTelegramMessage(chatId, parts[i]);
-      }
-
-      // Send last part with save button
-      const saveButton = {
-        inline_keyboard: [
-          [{ text: "💾 Save to Leads", callback_data: `save_${researchId}` }]
-        ]
-      };
-      await sendTelegramMessage(chatId, parts[parts.length - 1], 'HTML', saveButton);
+    if (result.confidence === "low" && !result.currentRole && !result.wealthIndicators && result.recentNews.length === 0) {
+      await sendTelegramMessage(chatId, `❌ Limited information found for "<b>${query}</b>".\n\nTry:\n• Full name with company: <code>/research John Tan Grab</code>\n• Company name: <code>/research Grab Holdings</code>`);
+      return;
     }
+
+    // Store for save button
+    const researchId = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    pendingResearch.set(researchId, {
+      type: result.entityType === 'person' ? 'founder' : 'company',
+      founderResult: result.entityType === 'person' ? {
+        founderName: result.name,
+        companyName: result.company || "",
+        linkedInUrl: result.linkedInUrl,
+        biography: [result.currentRole, result.previousRoles, result.wealthIndicators].filter(Boolean).join("\n\n"),
+        professionalBackground: result.previousRoles,
+        education: result.education,
+        notableAchievements: result.wealthIndicators,
+        residenceCity: null,
+        residenceCountry: null,
+        confidence: result.confidence,
+        sources: result.sources,
+      } : undefined,
+      companyResult: result.entityType === 'company' ? {
+        companyName: result.name,
+        description: [result.currentRole, result.wealthIndicators].filter(Boolean).join("\n\n"),
+        industry: null,
+        founded: null,
+        headquarters: null,
+        businessModel: null,
+        confidence: result.confidence,
+      } : undefined,
+      timestamp: Date.now(),
+    });
+
+    // Format and send
+    const formatted = formatResearchTelegram(result);
+    const parts = splitLongMessage(formatted);
+
+    for (let i = 0; i < parts.length - 1; i++) {
+      await sendTelegramMessage(chatId, parts[i]);
+    }
+
+    // Last part with save button
+    const saveButton = {
+      inline_keyboard: [
+        [{ text: "💾 Save to Leads", callback_data: `save_${researchId}` }]
+      ]
+    };
+    await sendTelegramMessage(chatId, parts[parts.length - 1], 'HTML', saveButton);
 
   } catch (error) {
     console.error('Error in research command:', error);
     await sendTelegramMessage(chatId, "⚠️ Something went wrong. Please try again.");
   }
 }
+
+const RATE_LIMIT_MSG = "5";
 
 /**
  * Handles save callback from inline button
@@ -441,7 +432,7 @@ export async function handleSaveCallback(researchId: string, chatId: string, cal
     // Clean up the research data
     pendingResearch.delete(researchId);
 
-    await sendTelegramMessage(chatId, `✅ <b>Saved to Leads!</b>\n\nLead ID: ${savedLead.id}\n\nYou can view it in the News-sensei dashboard or use <code>/leads</code> to see all saved leads.`);
+    await sendTelegramMessage(chatId, `✅ <b>Saved to Leads!</b>\n\nLead ID: ${savedLead.id}\n\nYou can view it in the Sensei dashboard or use <code>/leads</code> to see all saved leads.`);
 
   } catch (error) {
     console.error('Error saving research:', error);

@@ -3,12 +3,12 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { 
-  Save, 
-  Plus, 
-  X, 
-  Globe, 
-  Tag,
+import {
+  Save,
+  Plus,
+  X,
+  Globe,
+  BrainCircuit,
   Bell,
   Loader2,
   Clock,
@@ -19,12 +19,15 @@ import {
   Trash2,
   ChevronDown,
   ChevronRight,
-  Send
+  Send,
+  Info,
+  RotateCcw
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
@@ -56,24 +59,20 @@ import {
 } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { DEFAULT_INTEREST_FILTER_PROMPT } from "@shared/schema";
 import type { Settings, SourceTier, Source, RssFeed } from "@shared/schema";
 
-const DEFAULT_KEYWORDS = [
-  "Liquidity event", "IPO", "Initial Public Offering", "Trade sale",
-  "Private equity exit", "PE acquisition", "Merger & acquisition", "M&A deal",
-  "Founder exit", "Startup funding Series C", "Startup funding Series D",
-  "Unicorn", "SPAC merger", "Secondary sale", "Family office",
-  "High net worth", "Asset sale", "Divestiture", "Stake sale",
-  "Cashed out", "Sold stake", "Exit deal", "Buyout"
-];
-
 const DEFAULT_REGIONS = [
-  "Singapore", "Hong Kong", "Taiwan", "Indonesia", 
+  "Singapore", "Hong Kong", "Taiwan", "Indonesia",
   "Vietnam", "Thailand", "Malaysia", "Philippines"
 ];
 
+const INTEREST_FILTER_PROMPT_MIN_LENGTH = 50;
+const INTEREST_FILTER_PROMPT_RECOMMENDED_MIN = 500;
+const INTEREST_FILTER_PROMPT_RECOMMENDED_MAX = 1000;
+
 const settingsSchema = z.object({
-  keywords: z.array(z.string()).min(1, "At least one keyword is required"),
+  interestFilterPrompt: z.string().min(INTEREST_FILTER_PROMPT_MIN_LENGTH, "Prompt must be at least 50 characters"),
   regions: z.array(z.string()).min(1, "At least one region is required"),
   summaryLength: z.enum(["brief", "detailed", "actionable"]),
   scanFrequency: z.enum(["hourly", "daily", "weekly", "manual"]),
@@ -85,70 +84,97 @@ const settingsSchema = z.object({
 
 type SettingsFormData = z.infer<typeof settingsSchema>;
 
-function KeywordsSection({ 
-  keywords, 
-  onAdd, 
-  onRemove 
-}: { 
-  keywords: string[]; 
-  onAdd: (keyword: string) => void; 
-  onRemove: (keyword: string) => void;
+function InterestFilterSection({
+  value,
+  onChange,
+  onReset,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  onReset: () => void;
 }) {
-  const [newKeyword, setNewKeyword] = useState("");
+  const charCount = value.length;
+  const isUnderRecommended = charCount < INTEREST_FILTER_PROMPT_RECOMMENDED_MIN;
+  const isOverRecommended = charCount > INTEREST_FILTER_PROMPT_RECOMMENDED_MAX;
+  const isInRange = !isUnderRecommended && !isOverRecommended;
 
-  const handleAdd = () => {
-    if (newKeyword.trim() && !keywords.includes(newKeyword.trim())) {
-      onAdd(newKeyword.trim());
-      setNewKeyword("");
-    }
+  const getCharCountColor = (): string => {
+    if (charCount < INTEREST_FILTER_PROMPT_MIN_LENGTH) return "text-destructive";
+    if (isInRange) return "text-green-600";
+    return "text-muted-foreground";
   };
 
   return (
     <Card>
       <CardHeader>
-        <div className="flex items-center gap-2">
-          <Tag className="h-5 w-5 text-primary" />
-          <CardTitle className="text-lg">Keywords</CardTitle>
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-2">
+            <BrainCircuit className="h-5 w-5 text-primary" />
+            <CardTitle className="text-lg">Lead Interest Filter (AI-Powered)</CardTitle>
+          </div>
+          <Badge variant="secondary" className="text-xs gap-1">
+            <Info className="h-3 w-3" />
+            Replaces keyword matching
+          </Badge>
         </div>
         <CardDescription>
-          Define the keywords to scan for in news articles. These identify wealth-related events.
+          This prompt controls how AI evaluates each article during Stage 1 of the lead pipeline.
+          Articles that don't match your criteria are filtered out before deeper analysis.
+          Write clear INCLUDE and EXCLUDE rules to fine-tune lead quality.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="flex gap-2">
-          <Input
-            placeholder="Add new keyword..."
-            value={newKeyword}
-            onChange={(e) => setNewKeyword(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), handleAdd())}
-            data-testid="input-new-keyword"
-          />
-          <Button onClick={handleAdd} disabled={!newKeyword.trim()} data-testid="button-add-keyword">
-            <Plus className="h-4 w-4" />
-            Add
+        <Textarea
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={DEFAULT_INTEREST_FILTER_PROMPT}
+          className="min-h-[300px] font-mono text-sm leading-relaxed resize-y"
+          data-testid="textarea-interest-filter-prompt"
+        />
+
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <span className={`text-sm tabular-nums ${getCharCountColor()}`}>
+              {charCount} characters
+            </span>
+            {isUnderRecommended && charCount >= INTEREST_FILTER_PROMPT_MIN_LENGTH && (
+              <span className="text-xs text-muted-foreground">
+                Recommended: {INTEREST_FILTER_PROMPT_RECOMMENDED_MIN}-{INTEREST_FILTER_PROMPT_RECOMMENDED_MAX} characters
+              </span>
+            )}
+            {isOverRecommended && (
+              <span className="text-xs text-amber-600">
+                Consider keeping under {INTEREST_FILTER_PROMPT_RECOMMENDED_MAX} characters for optimal performance
+              </span>
+            )}
+            {isInRange && (
+              <span className="text-xs text-green-600">
+                Good length
+              </span>
+            )}
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={onReset}
+            className="text-muted-foreground"
+            data-testid="button-reset-filter-prompt"
+          >
+            <RotateCcw className="h-3 w-3" />
+            Reset to default
           </Button>
         </div>
-        <div className="flex flex-wrap gap-2">
-          {keywords.map((keyword) => (
-            <Badge key={keyword} variant="secondary" className="pr-1">
-              {keyword}
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-4 w-4 ml-1 hover:bg-transparent"
-                onClick={() => onRemove(keyword)}
-                data-testid={`button-remove-keyword-${keyword}`}
-              >
-                <X className="h-3 w-3" />
-              </Button>
-            </Badge>
-          ))}
+
+        <div className="rounded-md bg-muted/50 p-3 text-sm text-muted-foreground space-y-1">
+          <p className="font-medium">Tips for effective filtering:</p>
+          <ul className="list-disc list-inside space-y-0.5 ml-1">
+            <li>Use clear INCLUDE/EXCLUDE sections for best results</li>
+            <li>Be specific about what wealth events matter to you</li>
+            <li>Mention target regions to focus the AI's analysis</li>
+            <li>The AI will return a confidence score -- articles below 60% confidence are filtered out</li>
+          </ul>
         </div>
-        {keywords.length === 0 && (
-          <p className="text-sm text-muted-foreground">
-            No keywords configured. Add keywords to start scanning.
-          </p>
-        )}
       </CardContent>
     </Card>
   );
@@ -781,7 +807,7 @@ export default function SettingsPage() {
   const form = useForm<SettingsFormData>({
     resolver: zodResolver(settingsSchema),
     defaultValues: {
-      keywords: DEFAULT_KEYWORDS,
+      interestFilterPrompt: DEFAULT_INTEREST_FILTER_PROMPT,
       regions: DEFAULT_REGIONS,
       summaryLength: "brief",
       scanFrequency: "hourly",
@@ -795,7 +821,7 @@ export default function SettingsPage() {
   useEffect(() => {
     if (settings) {
       form.reset({
-        keywords: settings.keywords,
+        interestFilterPrompt: settings.interestFilterPrompt ?? DEFAULT_INTEREST_FILTER_PROMPT,
         regions: settings.regions,
         summaryLength: settings.summaryLength as "brief" | "detailed" | "actionable",
         scanFrequency: (settings.scanFrequency as "hourly" | "daily" | "weekly" | "manual") ?? "hourly",
@@ -846,14 +872,12 @@ export default function SettingsPage() {
     },
   });
 
-  const handleAddKeyword = (keyword: string) => {
-    const current = form.getValues("keywords");
-    form.setValue("keywords", [...current, keyword], { shouldDirty: true });
+  const handleInterestFilterPromptChange = (value: string) => {
+    form.setValue("interestFilterPrompt", value, { shouldDirty: true });
   };
 
-  const handleRemoveKeyword = (keyword: string) => {
-    const current = form.getValues("keywords");
-    form.setValue("keywords", current.filter(k => k !== keyword), { shouldDirty: true });
+  const handleResetInterestFilterPrompt = () => {
+    form.setValue("interestFilterPrompt", DEFAULT_INTEREST_FILTER_PROMPT, { shouldDirty: true });
   };
 
   const handleToggleRegion = (region: string) => {
@@ -904,10 +928,10 @@ export default function SettingsPage() {
 
       <Form {...form}>
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
-          <KeywordsSection
-            keywords={form.watch("keywords")}
-            onAdd={handleAddKeyword}
-            onRemove={handleRemoveKeyword}
+          <InterestFilterSection
+            value={form.watch("interestFilterPrompt")}
+            onChange={handleInterestFilterPromptChange}
+            onReset={handleResetInterestFilterPrompt}
           />
 
           <RegionsSection

@@ -1,10 +1,16 @@
-import { getTelegramUpdates, sendTelegramMessage, answerCallbackQuery } from './telegram';
+import { getTelegramUpdates, sendTelegramMessage, answerCallbackQuery, editMessageWithStatus, type TelegramUpdate } from './telegram';
 import { handleStartCommand, handleHelpCommand, handleResearchCommand, handleLeadsCommand, handleSaveCallback } from './telegram-commands';
 import { storage } from './storage';
+
+/** Whether the bot is operating in webhook mode (true) or polling mode (false) */
+let webhookMode = false;
 
 let pollingInterval: NodeJS.Timeout | null = null;
 let updateOffset = 0;
 let isPolling = false;
+
+// Track users waiting for research input (chatId -> true)
+export const awaitingResearchInput = new Map<string, boolean>();
 
 /**
  * Parses a command from message text
@@ -61,35 +67,43 @@ async function routeCommand(command: string, args: string[], chatId: string): Pr
 }
 
 /**
- * Handles a single Telegram update (message or callback)
+ * Handles a single Telegram update (message or callback).
+ * Exported so the webhook endpoint can delegate to it directly.
  */
-async function handleUpdate(update: any): Promise<void> {
+export async function handleUpdate(update: TelegramUpdate): Promise<void> {
   try {
     // Handle callback queries (button clicks)
     if (update.callback_query) {
       const callbackQuery = update.callback_query;
-      const chatId = callbackQuery.message.chat.id.toString();
-      const callbackData = callbackQuery.callback_data;
+      const chatId = callbackQuery.message?.chat.id.toString() || '';
+      const callbackData = callbackQuery.data || '';
       const callbackQueryId = callbackQuery.id;
+      const messageId = callbackQuery.message?.message_id;
 
       console.log(`Received callback from chat ${chatId}: ${callbackData}`);
+
+      // Ignore noop callbacks (status indicator buttons)
+      if (callbackData === 'noop') {
+        await answerCallbackQuery(callbackQueryId);
+        return;
+      }
 
       // Handle lead action callbacks
       if (callbackData.startsWith('lead_save_')) {
         const leadId = callbackData.substring(10); // Remove 'lead_save_' prefix
-        await handleLeadSaveCallback(leadId, chatId, callbackQueryId);
+        await handleLeadSaveCallback(leadId, chatId, callbackQueryId, messageId);
         return;
       }
 
       if (callbackData.startsWith('lead_reviewed_')) {
         const leadId = callbackData.substring(14); // Remove 'lead_reviewed_' prefix
-        await handleLeadReviewedCallback(leadId, chatId, callbackQueryId);
+        await handleLeadReviewedCallback(leadId, chatId, callbackQueryId, messageId);
         return;
       }
 
       if (callbackData.startsWith('lead_dismiss_')) {
         const leadId = callbackData.substring(13); // Remove 'lead_dismiss_' prefix
-        await handleLeadDismissCallback(leadId, chatId, callbackQueryId);
+        await handleLeadDismissCallback(leadId, chatId, callbackQueryId, messageId);
         return;
       }
 
@@ -115,7 +129,20 @@ async function handleUpdate(update: any): Promise<void> {
 
     const parsed = parseCommand(text);
     if (!parsed) {
-      // Not a command, ignore
+      // Check if we're waiting for research input from this user
+      if (awaitingResearchInput.get(chatId)) {
+        awaitingResearchInput.delete(chatId);
+        const query = text.trim();
+        if (query) {
+          console.log(`Received research input from ${chatId}: ${query}`);
+          const settings = await storage.getSettings();
+          if (settings) {
+            await handleResearchCommand(query.split(/\s+/), chatId, settings);
+          }
+          return;
+        }
+      }
+      // Not a command and not awaiting input, ignore
       return;
     }
 
@@ -152,79 +179,161 @@ async function pollUpdates(): Promise<void> {
 }
 
 /**
- * Handles save button click for a lead
+ * Handles save button click for a lead.
+ * Creates a saved_leads entry, updates lead status, and edits the message buttons.
  */
-async function handleLeadSaveCallback(leadId: string, chatId: string, callbackQueryId: string): Promise<void> {
+async function handleLeadSaveCallback(
+  leadId: string,
+  chatId: string,
+  callbackQueryId: string,
+  messageId?: number
+): Promise<void> {
   try {
     const lead = await storage.getLeadById(leadId);
     if (!lead) {
-      await answerCallbackQuery(callbackQueryId, "❌ Lead not found");
+      await answerCallbackQuery(callbackQueryId, "❌ Lead no longer available");
+      if (messageId) {
+        await editMessageWithStatus(chatId, messageId, "❌ Lead not found");
+      }
       return;
     }
 
-    // Update lead status to saved
-    await storage.updateLeadStatus(leadId, "saved");
+    // Check if already saved
+    const existingSaved = await storage.getSavedLeadByLeadId(leadId);
+    if (existingSaved) {
+      await answerCallbackQuery(callbackQueryId, "✅ Already saved");
+      if (messageId) {
+        await editMessageWithStatus(chatId, messageId, "✅ Saved");
+      }
+      return;
+    }
 
-    // Create saved lead entry
+    // Create saved lead entry (this also sets lead status to "saved")
     await storage.createSavedLead({
       leadId: leadId,
       notes: "Saved from Telegram notification",
     });
 
     await answerCallbackQuery(callbackQueryId, "✅ Lead saved!");
-    await sendTelegramMessage(chatId, `💾 <b>Lead Saved!</b>\n\n"${lead.headline}"\n\nYou can view it in the dashboard or use /leads to see all saved leads.`);
+
+    // Replace buttons with status indicator
+    if (messageId) {
+      await editMessageWithStatus(chatId, messageId, "✅ Saved");
+    }
   } catch (error) {
     console.error('Error saving lead:', error);
-    await answerCallbackQuery(callbackQueryId, "❌ Failed to save");
+    await answerCallbackQuery(callbackQueryId, "⚠️ Error, please try again");
+    if (messageId) {
+      await editMessageWithStatus(chatId, messageId, "⚠️ Error - try again");
+    }
   }
 }
 
 /**
- * Handles reviewed button click for a lead
+ * Handles reviewed button click for a lead.
+ * Updates lead status and edits the message buttons.
  */
-async function handleLeadReviewedCallback(leadId: string, chatId: string, callbackQueryId: string): Promise<void> {
+async function handleLeadReviewedCallback(
+  leadId: string,
+  chatId: string,
+  callbackQueryId: string,
+  messageId?: number
+): Promise<void> {
   try {
     const lead = await storage.getLeadById(leadId);
     if (!lead) {
-      await answerCallbackQuery(callbackQueryId, "❌ Lead not found");
+      await answerCallbackQuery(callbackQueryId, "❌ Lead no longer available");
+      if (messageId) {
+        await editMessageWithStatus(chatId, messageId, "❌ Lead not found");
+      }
       return;
     }
 
     await storage.updateLeadStatus(leadId, "reviewed");
     await answerCallbackQuery(callbackQueryId, "✅ Marked as reviewed");
-    await sendTelegramMessage(chatId, `✅ "${lead.headline}" marked as reviewed.`);
+
+    // Replace buttons with status indicator
+    if (messageId) {
+      await editMessageWithStatus(chatId, messageId, "✅ Reviewed");
+    }
   } catch (error) {
     console.error('Error marking lead as reviewed:', error);
-    await answerCallbackQuery(callbackQueryId, "❌ Failed to update");
+    await answerCallbackQuery(callbackQueryId, "⚠️ Error, please try again");
+    if (messageId) {
+      await editMessageWithStatus(chatId, messageId, "⚠️ Error - try again");
+    }
   }
 }
 
 /**
- * Handles dismiss button click for a lead
+ * Handles dismiss button click for a lead.
+ * Updates lead status and edits the message buttons.
  */
-async function handleLeadDismissCallback(leadId: string, chatId: string, callbackQueryId: string): Promise<void> {
+async function handleLeadDismissCallback(
+  leadId: string,
+  chatId: string,
+  callbackQueryId: string,
+  messageId?: number
+): Promise<void> {
   try {
     const lead = await storage.getLeadById(leadId);
     if (!lead) {
-      await answerCallbackQuery(callbackQueryId, "❌ Lead not found");
+      await answerCallbackQuery(callbackQueryId, "❌ Lead no longer available");
+      if (messageId) {
+        await editMessageWithStatus(chatId, messageId, "❌ Lead not found");
+      }
       return;
     }
 
     await storage.updateLeadStatus(leadId, "dismissed");
     await answerCallbackQuery(callbackQueryId, "🗑️ Lead dismissed");
-    await sendTelegramMessage(chatId, `🗑️ "${lead.headline}" dismissed.`);
+
+    // Replace buttons with status indicator
+    if (messageId) {
+      await editMessageWithStatus(chatId, messageId, "🗑️ Dismissed");
+    }
   } catch (error) {
     console.error('Error dismissing lead:', error);
-    await answerCallbackQuery(callbackQueryId, "❌ Failed to dismiss");
+    await answerCallbackQuery(callbackQueryId, "⚠️ Error, please try again");
+    if (messageId) {
+      await editMessageWithStatus(chatId, messageId, "⚠️ Error - try again");
+    }
   }
 }
 
 /**
- * Starts the Telegram bot polling loop
+ * Enables webhook mode, disabling the polling loop.
+ * Call this when the webhook endpoint has been registered with Telegram.
+ */
+export function enableWebhookMode(): void {
+  webhookMode = true;
+  // Stop polling if it was already running
+  if (pollingInterval) {
+    console.log('Switching to webhook mode, stopping polling...');
+    clearInterval(pollingInterval);
+    pollingInterval = null;
+  }
+}
+
+/**
+ * Returns whether the bot is in webhook mode.
+ */
+export function isWebhookMode(): boolean {
+  return webhookMode;
+}
+
+/**
+ * Starts the Telegram bot polling loop.
+ * Skips polling if the bot is in webhook mode (updates arrive via HTTP POST instead).
  */
 export async function startBot(): Promise<void> {
   if (!process.env.TELEGRAM_BOT_TOKEN) {
     console.log('TELEGRAM_BOT_TOKEN not configured, skipping bot startup');
+    return;
+  }
+
+  if (webhookMode) {
+    console.log('Telegram bot in webhook mode, skipping polling startup');
     return;
   }
 
@@ -233,7 +342,7 @@ export async function startBot(): Promise<void> {
     return;
   }
 
-  console.log('Starting Telegram bot, polling for updates...');
+  console.log('Starting Telegram bot in polling mode...');
 
   // Start polling every 2 seconds
   pollingInterval = setInterval(() => {
@@ -253,7 +362,7 @@ export async function startBot(): Promise<void> {
  */
 export async function stopBot(): Promise<void> {
   if (pollingInterval) {
-    console.log('Stopping Telegram bot...');
+    console.log('Stopping Telegram bot polling...');
     clearInterval(pollingInterval);
     pollingInterval = null;
   }

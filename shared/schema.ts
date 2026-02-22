@@ -1,4 +1,4 @@
-import { pgTable, text, varchar, integer, timestamp, boolean, json } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, timestamp, boolean, json, jsonb } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { sql } from "drizzle-orm";
@@ -22,7 +22,14 @@ export type User = typeof users.$inferSelect;
 export type LeadStatus = "new" | "reviewed" | "saved" | "contacted" | "dismissed";
 export type PriorityLevel = "high" | "medium" | "low";
 export type SourceTier = "tier1" | "tier2" | "tier3";
-export type FetchMethod = "rss" | "google_news" | "scrapingbee";
+export type FetchMethod = "rss" | "google_news" | "scrapingbee" | "scrapingbee_premium";
+
+/** Financial metrics extracted during deep analysis (Stage 6 of the pipeline) */
+export interface KeyFinancials {
+  fundingAmount?: string | null;
+  valuation?: string | null;
+  dealValue?: string | null;
+}
 
 // Leads table - the main data model for news article matches
 export const leads = pgTable("leads", {
@@ -42,6 +49,16 @@ export const leads = pgTable("leads", {
   region: text("region").notNull(),
   status: text("status").notNull().$type<LeadStatus>().default("new"),
   fetchMethod: text("fetch_method").$type<FetchMethod>(),
+  // Intelligent pipeline fields
+  isUpdate: boolean("is_update").default(false),
+  relatedSavedLeadId: text("related_saved_lead_id"),
+  keyFinancials: jsonb("key_financials").$type<KeyFinancials>(),
+  wealthAngle: text("wealth_angle"),
+  founderLinkedInUrl: text("founder_linkedin_url"),
+  founderBio: text("founder_bio"),
+  companyDescription: text("company_description"),
+  enrichmentData: jsonb("enrichment_data").$type<Record<string, unknown>>(),
+  pipelineReasoning: text("pipeline_reasoning"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
 
@@ -53,10 +70,46 @@ export const insertLeadSchema = createInsertSchema(leads).omit({
 export type InsertLead = z.infer<typeof insertLeadSchema>;
 export type Lead = typeof leads.$inferSelect;
 
+// Default interest filter prompt for the intelligent pipeline (replaces keyword matching)
+export const DEFAULT_INTEREST_FILTER_PROMPT = `Analyze if this article indicates a WEALTH LIQUIDITY EVENT where a founder, entrepreneur, or business owner is likely to receive significant liquid wealth (cash/shares) that could be banked by a private banker.
+
+The key question: "Does this event create a newly wealthy individual or significantly increase someone's liquid net worth?"
+
+INCLUDE articles about:
+- Private companies raising Series C, D, E+ or late-stage/pre-IPO funding rounds (>$100M). Ignore Series A and B entirely — too early, founders not liquid yet.
+- Mergers & acquisitions where founders/shareholders are EXITING (receiving cash or liquid shares)
+- Companies preparing for IPO or listing (founders about to get liquid)
+- Significant exits or strategic sales of private companies
+- Founder liquidity events (secondary sales, founder shares sold)
+- Private company valuations reaching unicorn status ($1B+) with identified founders
+- PE/VC buyouts where existing shareholders are cashing out
+
+EXCLUDE articles about:
+- Companies already publicly listed (trading on exchanges)
+- Listed company earnings reports or stock movements
+- Government policy or regulatory changes
+- General industry trends without specific companies or founders
+- Partnerships, commercial deals, or joint ventures (no liquidity created)
+- Company operational news (new offices, new hires, product launches, expansions)
+- Service centre openings, branch expansions, or geographic expansion
+- Award ceremonies, conference appearances, or thought leadership
+- Customer wins, contract announcements, or revenue milestones (unless tied to an exit)
+- Hiring announcements or executive appointments
+- Companies raising debt/loans (no equity liquidity)
+
+BE STRICT: When in doubt, mark as NOT relevant. A private banker cannot act on general business news — they need a specific liquidity event with an identifiable wealthy individual.
+
+Target Regions: Singapore, Malaysia, Indonesia, Thailand, Vietnam, Philippines, Hong Kong, Taiwan
+
+Return JSON with:
+- relevant: true/false
+- reason: brief explanation of WHY this creates (or doesn't create) a bankable liquidity event
+- confidenceScore: 0-100 (how confident you are)`;
+
 // Settings table - stores user preferences
 export const settings = pgTable("settings", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  keywords: text("keywords").array().notNull(),
+  interestFilterPrompt: text("interest_filter_prompt").notNull().default(DEFAULT_INTEREST_FILTER_PROMPT),
   regions: text("regions").array().notNull(),
   sourceTiers: json("source_tiers").$type<Record<string, SourceTier>>().notNull(),
   summaryLength: text("summary_length").notNull().default("brief"),
@@ -90,6 +143,7 @@ export const sources = pgTable("sources", {
   tier: text("tier").notNull().$type<SourceTier>(),
   active: boolean("active").notNull().default(true),
   useScrapingBeeForRss: boolean("use_scrapingbee_for_rss").notNull().default(false),
+  usePremiumScraping: boolean("use_premium_scraping").notNull().default(false),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
 
@@ -124,7 +178,7 @@ export interface ScrapingBeeDebugEntry {
   sourceName: string;
   sourceId: string;
   timestamp: string;
-  method: "scrapingbee" | "rss" | "google_news" | "fallback_rss";
+  method: "scrapingbee" | "scrapingbee_premium" | "rss" | "google_news" | "fallback_rss";
   request: {
     url: string;
     renderJs: boolean;
@@ -191,6 +245,7 @@ export const savedLeads = pgTable("saved_leads", {
   companyDescription: text("company_description"),
   notes: text("notes"),
   researchData: json("research_data").$type<Record<string, any>>(),
+  articleSummary: text("article_summary"),
 });
 
 export const insertSavedLeadSchema = createInsertSchema(savedLeads).omit({
@@ -200,3 +255,71 @@ export const insertSavedLeadSchema = createInsertSchema(savedLeads).omit({
 
 export type InsertSavedLead = z.infer<typeof insertSavedLeadSchema>;
 export type SavedLead = typeof savedLeads.$inferSelect;
+
+// IPO exchange type
+export type IpoExchange = "hkex_main" | "hkex_gem" | "sgx" | "idx" | "pse";
+
+// IPO Filings table - tracks new IPO listings from HKEX and SGX
+export const ipoFilings = pgTable("ipo_filings", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  exchange: text("exchange").notNull().$type<IpoExchange>(),
+  stockCode: text("stock_code").notNull(),
+  companyName: text("company_name").notNull(),
+  industry: text("industry"),
+  proposedValuation: text("proposed_valuation"),
+  revenue: text("revenue"),
+  profit: text("profit"),
+  founders: text("founders"),
+  underwriters: text("underwriters"),
+  sponsors: text("sponsors"),
+  prospectusUrl: text("prospectus_url"),
+  listingDate: text("listing_date"),
+  filingDate: text("filing_date"),
+  lockupExpiration: text("lockup_expiration"),
+  rawData: jsonb("raw_data").$type<Record<string, unknown>>(),
+  alertSent: boolean("alert_sent").notNull().default(false),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+export const insertIpoFilingSchema = createInsertSchema(ipoFilings).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertIpoFiling = z.infer<typeof insertIpoFilingSchema>;
+export type IpoFiling = typeof ipoFilings.$inferSelect;
+
+// WebAuthn credentials table - stores passkey/biometric credentials
+export const webauthnCredentials = pgTable("webauthn_credentials", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  credentialId: text("credential_id").notNull().unique(),
+  publicKey: text("public_key").notNull(),
+  counter: integer("counter").notNull().default(0),
+  deviceName: text("device_name"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+export type WebAuthnCredential = typeof webauthnCredentials.$inferSelect;
+
+// Auth sessions table
+export const authSessions = pgTable("auth_sessions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  token: text("token").notNull().unique(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
+});
+
+export type AuthSession = typeof authSessions.$inferSelect;
+
+// Research cache table - stores research results for 24h deduplication
+export const researchCache = pgTable("research_cache", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  query: text("query").notNull(),
+  entityType: text("entity_type").notNull(),
+  result: jsonb("result").notNull(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+export type ResearchCacheEntry = typeof researchCache.$inferSelect;

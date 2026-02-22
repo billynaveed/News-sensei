@@ -1,10 +1,12 @@
 import cron, { type ScheduledTask } from 'node-cron';
 import { storage } from './storage';
 import { scanForLeads } from './scanner';
+import { scanForIpoFilings } from './ipo-scanner';
 
 let hourlyTask: ScheduledTask | null = null;
 let dailyTask: ScheduledTask | null = null;
 let weeklyTask: ScheduledTask | null = null;
+let ipoTask: ScheduledTask | null = null;
 
 /**
  * Starts the scan scheduler based on current settings
@@ -27,6 +29,18 @@ export async function startScheduler(): Promise<void> {
     console.log('Scan frequency set to manual, scheduler not started');
     return;
   }
+
+  // Always schedule IPO scan every 2 hours
+  ipoTask = cron.schedule('0 */2 * * *', async () => {
+    console.log('Running scheduled IPO scan...');
+    try {
+      const result = await scanForIpoFilings();
+      console.log(`IPO scan complete: ${result.newFilings} new filings found`);
+    } catch (error) {
+      console.error('Error in scheduled IPO scan:', error);
+    }
+  });
+  console.log('IPO scan scheduler started (runs every 2 hours)');
 
   console.log(`Configuring scheduler for ${frequency} scans`);
 
@@ -90,6 +104,10 @@ export function stopScheduler(): void {
   if (weeklyTask) {
     weeklyTask.stop();
     weeklyTask = null;
+  }
+  if (ipoTask) {
+    ipoTask.stop();
+    ipoTask = null;
   }
 }
 

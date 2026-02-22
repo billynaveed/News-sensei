@@ -76,11 +76,14 @@ export async function fetchFromRssFeed(
       const content = item.contentSnippet || item.content || item.summary || "";
       const combinedText = `${item.title} ${content}`.toLowerCase();
       
-      const matchesKeyword = keywords.some(kw => 
-        combinedText.includes(kw.toLowerCase())
-      );
-
-      if (!matchesKeyword) continue;
+      // When keywords array is empty, skip keyword filtering (AI pipeline handles relevance)
+      // When keywords array is empty, skip keyword filtering (AI pipeline handles relevance)
+      if (keywords.length > 0) {
+        const matchesKeyword = keywords.some(kw => 
+          combinedText.includes(kw.toLowerCase())
+        );
+        if (!matchesKeyword) continue;
+      }
 
       articles.push({
         headline: item.title,
@@ -182,11 +185,13 @@ export async function fetchRssViaScrapingBee(
       const content = item.contentSnippet || item.content || item.summary || "";
       const combinedText = `${item.title} ${content}`.toLowerCase();
       
-      const matchesKeyword = keywords.some(kw => 
+      if (keywords.length > 0) {
+        const matchesKeyword = keywords.some(kw => 
         combinedText.includes(kw.toLowerCase())
       );
 
-      if (!matchesKeyword) continue;
+        if (!matchesKeyword) continue;
+      }
 
       articles.push({
         headline: item.title,
@@ -258,11 +263,13 @@ export async function fetchFromGoogleNews(
       const content = item.contentSnippet || item.content || item.summary || "";
       const combinedText = `${item.title} ${content}`.toLowerCase();
       
-      const matchesKeyword = keywords.some(kw => 
+      if (keywords.length > 0) {
+        const matchesKeyword = keywords.some(kw => 
         combinedText.includes(kw.toLowerCase())
       );
 
-      if (!matchesKeyword) continue;
+        if (!matchesKeyword) continue;
+      }
 
       articles.push({
         headline: item.title,
@@ -400,11 +407,13 @@ export async function fetchFromScrapingBee(
       const summary = typeof item.summary === 'string' ? item.summary.trim() : '';
       const combinedText = `${headline} ${summary}`.toLowerCase();
       
-      const matchesKeyword = keywords.some(kw => 
+      if (keywords.length > 0) {
+        const matchesKeyword = keywords.some(kw => 
         combinedText.includes(kw.toLowerCase())
       );
 
-      if (!matchesKeyword) continue;
+        if (!matchesKeyword) continue;
+      }
 
       articles.push({
         headline,
@@ -436,6 +445,174 @@ export async function fetchFromScrapingBee(
   return { articles, errors, debugEntry };
 }
 
+/**
+ * Fetches articles using ScrapingBee with premium proxy and JS rendering.
+ * Used for Tier 1 sources (Bloomberg, FT, etc.) to maximize content quality
+ * from paywalled or JS-heavy sites.
+ *
+ * @param source - The news source to scrape
+ * @param keywords - Keywords for article filtering
+ * @param defaultRegion - Fallback region when article has no explicit region
+ * @param usePremium - When true, enables premium_proxy, render_js, and full resource loading
+ */
+export async function fetchFromScrapingBeePremium(
+  source: Source,
+  keywords: string[],
+  defaultRegion: string = "Singapore",
+  usePremium: boolean = true
+): Promise<AdapterResult> {
+  const articles: RawArticle[] = [];
+  const errors: string[] = [];
+  const startTime = Date.now();
+
+  const premiumExtractRules = JSON.stringify({
+    articles: {
+      selector: "article, .article, .post, .story, .news-item, [class*='article'], [class*='story'], a[href*='/article'], a[href*='/news'], a[href*='/story']",
+      type: "list",
+      output: {
+        headline: "h1, h2, h3, .title, .headline, a",
+        link: { selector: "a", output: "@href" },
+        summary: "p, .summary, .excerpt, .description",
+        date: "time, .date, .timestamp, [datetime]"
+      }
+    },
+    article_text: {
+      selector: "article, .article-body, .story-body, main",
+      type: "item",
+      output: "text"
+    }
+  });
+
+  const debugEntry: ScrapingBeeDebugEntry = {
+    sourceName: `${source.name} (Premium ScrapingBee)`,
+    sourceId: source.id,
+    timestamp: new Date().toISOString(),
+    method: "scrapingbee_premium",
+    request: {
+      url: `https://${source.domain}`,
+      renderJs: usePremium,
+      extractRules: premiumExtractRules,
+    },
+    response: {
+      status: 0,
+      statusText: "",
+      latencyMs: 0,
+      rawResponseSnippet: "",
+      extractedCount: 0,
+      matchedCount: 0,
+    },
+  };
+
+  if (!SCRAPINGBEE_API_KEY) {
+    debugEntry.error = "ScrapingBee API key not configured";
+    debugEntry.response.latencyMs = Date.now() - startTime;
+    return { articles, errors: ["ScrapingBee API key not configured"], debugEntry };
+  }
+
+  try {
+    const targetUrl = `https://${source.domain}`;
+    const params = new URLSearchParams({
+      api_key: SCRAPINGBEE_API_KEY,
+      url: targetUrl,
+      extract_rules: premiumExtractRules,
+    });
+
+    if (usePremium) {
+      params.set("premium_proxy", "true");
+      params.set("render_js", "true");
+      params.set("block_resources", "false");
+    } else {
+      params.set("render_js", "false");
+    }
+
+    const response = await fetch(`https://app.scrapingbee.com/api/v1?${params.toString()}`, {
+      method: "GET",
+      headers: { "Accept": "application/json" },
+    });
+
+    debugEntry.response.status = response.status;
+    debugEntry.response.statusText = response.statusText;
+    debugEntry.response.latencyMs = Date.now() - startTime;
+
+    const responseText = await response.text();
+    debugEntry.response.rawResponseSnippet = responseText.slice(0, 3000);
+
+    if (!response.ok) {
+      debugEntry.error = `HTTP ${response.status}: ${responseText.slice(0, 500)}`;
+      errors.push(`Premium ScrapingBee error for ${source.name}: ${response.status} - ${responseText.slice(0, 500)}`);
+      return { articles, errors, debugEntry };
+    }
+
+    let data: Record<string, unknown>;
+    try {
+      data = JSON.parse(responseText) as Record<string, unknown>;
+    } catch {
+      debugEntry.error = `JSON parse error: ${responseText.slice(0, 200)}`;
+      errors.push(`Premium ScrapingBee JSON parse error for ${source.name}`);
+      return { articles, errors, debugEntry };
+    }
+
+    const extractedArticles = (data.articles as Array<Record<string, unknown>>) || [];
+    const articleText = typeof data.article_text === "string" ? data.article_text : "";
+    debugEntry.response.extractedCount = extractedArticles.length;
+
+    for (const item of extractedArticles) {
+      if (!item.headline || !item.link) continue;
+
+      const headline = typeof item.headline === "string" ? item.headline.trim() : "";
+      if (!headline) continue;
+
+      let articleUrl = item.link as string;
+      if (articleUrl && !articleUrl.startsWith("http")) {
+        try {
+          articleUrl = new URL(articleUrl, `https://${source.domain}`).toString();
+        } catch {
+          continue;
+        }
+      }
+
+      const summary = typeof item.summary === "string" ? item.summary.trim() : "";
+      // Use extracted article_text as enhanced content when available
+      const enhancedContent = articleText || summary;
+      const combinedText = `${headline} ${summary} ${articleText}`.toLowerCase();
+
+      if (keywords.length > 0) {
+        const matchesKeyword = keywords.some(kw =>
+          combinedText.includes(kw.toLowerCase())
+        );
+        if (!matchesKeyword) continue;
+      }
+
+      articles.push({
+        headline,
+        url: articleUrl,
+        source: source.name,
+        sourceTier: source.tier as SourceTier,
+        publishedAt: item.date ? new Date(item.date as string) : new Date(),
+        content: enhancedContent.slice(0, 5000),
+        region: defaultRegion,
+        fetchMethod: "scrapingbee_premium",
+      });
+    }
+
+    debugEntry.response.matchedCount = articles.length;
+
+    if (extractedArticles.length === 0) {
+      debugEntry.error = "No articles extracted - premium selectors may not match page structure";
+    } else if (articles.length === 0) {
+      debugEntry.error = `${extractedArticles.length} articles extracted but 0 matched keywords`;
+    }
+
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    debugEntry.error = message;
+    debugEntry.response.latencyMs = Date.now() - startTime;
+    errors.push(`Premium ScrapingBee fetch failed for ${source.name}: ${message}`);
+  }
+
+  return { articles, errors, debugEntry };
+}
+
 export interface FetchAllArticlesResult {
   articles: RawArticle[];
   sourcesSearched: { name: string; tier: SourceTier; articlesFound: number }[];
@@ -450,6 +627,99 @@ export interface ScanningOptions {
   defaultRegion: string;
 }
 
+/**
+ * Normalizes a URL for deduplication by standardizing protocol, removing
+ * tracking parameters, and stripping hash fragments.
+ */
+function normalizeUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    parsed.protocol = "https:";
+    parsed.searchParams.delete("utm_source");
+    parsed.searchParams.delete("utm_medium");
+    parsed.searchParams.delete("utm_campaign");
+    parsed.searchParams.delete("ref");
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return url.toLowerCase().trim();
+  }
+}
+
+/**
+ * Deduplicates articles by normalized URL, keeping the first occurrence.
+ */
+function deduplicateArticles(articles: RawArticle[]): RawArticle[] {
+  const seen = new Set<string>();
+  return articles.filter(article => {
+    const normalized = normalizeUrl(article.url);
+    if (seen.has(normalized)) return false;
+    seen.add(normalized);
+    return true;
+  });
+}
+
+/**
+ * Collects articles, errors, and debug entries from an AdapterResult into
+ * the provided accumulator arrays. Returns the number of articles added.
+ */
+function collectAdapterResult(
+  result: AdapterResult,
+  articles: RawArticle[],
+  errors: string[],
+  debugEntries: ScrapingBeeDebugEntry[]
+): number {
+  articles.push(...result.articles);
+  errors.push(...result.errors);
+  if (result.debugEntry) {
+    debugEntries.push(result.debugEntry);
+  }
+  return result.articles.length;
+}
+
+/**
+ * Builds all fetch promises for a single Tier 1 source, running RSS
+ * and Google News in parallel. ScrapingBee is NOT used here for article
+ * discovery — it's reserved for Stage 5 (premium full-article paywall bypass)
+ * to conserve API credits.
+ */
+function buildTier1FetchPromises(
+  source: Source,
+  feeds: RssFeedWithMeta[],
+  keywords: string[],
+  options: ScanningOptions
+): Promise<AdapterResult>[] {
+  const promises: Promise<AdapterResult>[] = [];
+
+  if (options.rssEnabled) {
+    const sourceFeeds = feeds.filter(f => f.sourceName === source.name);
+    for (const feed of sourceFeeds) {
+      // Never use ScrapingBee for RSS fetching — standard RSS is free
+      promises.push(fetchFromRssFeed(feed, keywords, options.defaultRegion));
+    }
+  }
+
+  if (options.googleNewsEnabled) {
+    promises.push(fetchFromGoogleNews(source, keywords, options.defaultRegion));
+  }
+
+  // ScrapingBee intentionally NOT used for discovery.
+  // It's reserved for Stage 5 premium paywall bypass in scanner.ts.
+
+  return promises;
+}
+
+/**
+ * Fetches articles from all active sources using the configured scanning methods.
+ *
+ * Tier 1 sources run all enabled methods (RSS, Google News, ScrapingBee) in
+ * PARALLEL to maximize content quality from premium sources like Bloomberg and FT.
+ *
+ * Other tiers use fallback logic: ScrapingBee only activates when RSS and
+ * Google News return zero articles for a given source.
+ *
+ * All results are combined and deduplicated by normalized URL.
+ */
 export async function fetchAllArticles(
   activeSources: Source[],
   activeFeeds: RssFeedWithMeta[],
@@ -458,34 +728,54 @@ export async function fetchAllArticles(
 ): Promise<FetchAllArticlesResult> {
   const allArticles: RawArticle[] = [];
   const allErrors: string[] = [];
-  const sourcesSearched: { name: string; tier: SourceTier; articlesFound: number }[] = [];
   const debugEntries: ScrapingBeeDebugEntry[] = [];
-  
+
   if (activeSources.length === 0) {
     return { articles: [], sourcesSearched: [], errors: ["No active sources configured"], debugEntries: [] };
   }
 
-  const sourceArticleCounts: Map<string, number> = new Map();
+  const sourceArticleCounts = new Map<string, number>();
+  const tier1Sources = activeSources.filter(s => s.tier === "tier1");
+  const otherSources = activeSources.filter(s => s.tier !== "tier1");
+
+  // --- Tier 1: All enabled methods in parallel per source ---
+  if (tier1Sources.length > 0) {
+    const tier1SourcePromises = tier1Sources.map(async (source) => {
+      const promises = buildTier1FetchPromises(source, activeFeeds, keywords, options);
+      if (promises.length === 0) return;
+
+      const results = await Promise.allSettled(promises);
+      let sourceCount = 0;
+
+      for (const result of results) {
+        if (result.status === "fulfilled") {
+          sourceCount += collectAdapterResult(result.value, allArticles, allErrors, debugEntries);
+        } else {
+          const message = result.reason instanceof Error ? result.reason.message : "Unknown error";
+          allErrors.push(`Tier 1 parallel fetch failed for ${source.name}: ${message}`);
+        }
+      }
+
+      sourceArticleCounts.set(source.name, sourceCount);
+    });
+
+    await Promise.all(tier1SourcePromises);
+  }
+
+  // --- Other tiers: Sequential with ScrapingBee as fallback ---
+  const otherTierFeeds = activeFeeds.filter(
+    f => !tier1Sources.some(s => s.name === f.sourceName)
+  );
 
   if (options.rssEnabled) {
-    for (const feed of activeFeeds) {
+    for (const feed of otherTierFeeds) {
       try {
-        let result: AdapterResult;
-        
-        if (feed.useScrapingBeeForRss && SCRAPINGBEE_API_KEY) {
-          result = await fetchRssViaScrapingBee(feed, keywords, options.defaultRegion);
-        } else {
-          result = await fetchFromRssFeed(feed, keywords, options.defaultRegion);
-        }
-        
-        allArticles.push(...result.articles);
-        allErrors.push(...result.errors);
-        if (result.debugEntry) {
-          debugEntries.push(result.debugEntry);
-        }
-        
+        // Always use standard RSS — no ScrapingBee for discovery
+        const result = await fetchFromRssFeed(feed, keywords, options.defaultRegion);
+
+        const count = collectAdapterResult(result, allArticles, allErrors, debugEntries);
         const currentCount = sourceArticleCounts.get(feed.sourceName) || 0;
-        sourceArticleCounts.set(feed.sourceName, currentCount + result.articles.length);
+        sourceArticleCounts.set(feed.sourceName, currentCount + count);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown error";
         allErrors.push(`Error fetching RSS feed ${feed.name}: ${message}`);
@@ -494,17 +784,12 @@ export async function fetchAllArticles(
   }
 
   if (options.googleNewsEnabled) {
-    for (const source of activeSources) {
+    for (const source of otherSources) {
       try {
         const result = await fetchFromGoogleNews(source, keywords, options.defaultRegion);
-        allArticles.push(...result.articles);
-        allErrors.push(...result.errors);
-        if (result.debugEntry) {
-          debugEntries.push(result.debugEntry);
-        }
-        
+        const count = collectAdapterResult(result, allArticles, allErrors, debugEntries);
         const currentCount = sourceArticleCounts.get(source.name) || 0;
-        sourceArticleCounts.set(source.name, currentCount + result.articles.length);
+        sourceArticleCounts.set(source.name, currentCount + count);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown error";
         allErrors.push(`Error fetching Google News for ${source.name}: ${message}`);
@@ -512,58 +797,17 @@ export async function fetchAllArticles(
     }
   }
 
-  if (options.scrapingBeeEnabled && SCRAPINGBEE_API_KEY) {
-    for (const source of activeSources) {
-      const currentCount = sourceArticleCounts.get(source.name) || 0;
-      if (currentCount > 0) continue;
-      
-      try {
-        const result = await fetchFromScrapingBee(source, keywords, options.defaultRegion);
-        allArticles.push(...result.articles);
-        allErrors.push(...result.errors);
-        if (result.debugEntry) {
-          result.debugEntry.fallbackReason = "No articles from RSS/Google News";
-          debugEntries.push(result.debugEntry);
-        }
-        
-        sourceArticleCounts.set(source.name, currentCount + result.articles.length);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Unknown error";
-        allErrors.push(`Error with ScrapingBee for ${source.name}: ${message}`);
-      }
-    }
-  }
+  // ScrapingBee NOT used for article discovery (conserves API credits).
+  // It's only used in Stage 5 (scanner.ts) for premium paywall bypass on Tier 1 articles.
 
-  for (const source of activeSources) {
-    sourcesSearched.push({
-      name: source.name,
-      tier: source.tier as SourceTier,
-      articlesFound: sourceArticleCounts.get(source.name) || 0,
-    });
-  }
+  // Build sources searched summary
+  const sourcesSearched = activeSources.map(source => ({
+    name: source.name,
+    tier: source.tier as SourceTier,
+    articlesFound: sourceArticleCounts.get(source.name) || 0,
+  }));
 
-  const normalizeUrl = (url: string): string => {
-    try {
-      const parsed = new URL(url);
-      parsed.protocol = "https:";
-      parsed.searchParams.delete("utm_source");
-      parsed.searchParams.delete("utm_medium");
-      parsed.searchParams.delete("utm_campaign");
-      parsed.searchParams.delete("ref");
-      parsed.hash = "";
-      return parsed.toString();
-    } catch {
-      return url.toLowerCase().trim();
-    }
-  };
-
-  const seen = new Set<string>();
-  const dedupedArticles = allArticles.filter(article => {
-    const normalizedUrl = normalizeUrl(article.url);
-    if (seen.has(normalizedUrl)) return false;
-    seen.add(normalizedUrl);
-    return true;
-  });
+  const dedupedArticles = deduplicateArticles(allArticles);
 
   return { articles: dedupedArticles, sourcesSearched, errors: allErrors, debugEntries };
 }

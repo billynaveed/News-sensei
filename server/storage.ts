@@ -2,6 +2,7 @@ import { eq, desc, gte, and, ne, sql, lt } from "drizzle-orm";
 import { db } from "./db";
 import {
   users, leads, settings, sources, scanLogs, rssFeeds, savedLeads,
+  DEFAULT_INTEREST_FILTER_PROMPT,
   type User, type InsertUser,
   type Lead, type InsertLead, type LeadStatus,
   type Settings, type InsertSettings,
@@ -19,6 +20,7 @@ export interface IStorage {
   getAllLeads(): Promise<Lead[]>;
   getLeadById(id: string): Promise<Lead | undefined>;
   getLeadByUrl(url: string): Promise<Lead | undefined>;
+  getRecentLeadsByCompany(companyName: string, days: number): Promise<Lead[]>;
   createLead(lead: InsertLead): Promise<Lead>;
   updateLeadStatus(id: string, status: LeadStatus): Promise<Lead | undefined>;
   getLeadsStats(): Promise<{ today: number; thisWeek: number; highPriority: number }>;
@@ -51,19 +53,11 @@ export interface IStorage {
   getAllSavedLeads(): Promise<(SavedLead & { lead: Lead })[]>;
   getSavedLeadById(id: string): Promise<(SavedLead & { lead: Lead }) | undefined>;
   getSavedLeadByLeadId(leadId: string): Promise<SavedLead | undefined>;
+  getSavedLeadByCompanyName(companyName: string): Promise<(SavedLead & { lead: Lead }) | undefined>;
   createSavedLead(savedLead: InsertSavedLead): Promise<SavedLead>;
   updateSavedLead(id: string, updates: Partial<InsertSavedLead>): Promise<SavedLead | undefined>;
   deleteSavedLead(id: string): Promise<boolean>;
 }
-
-const DEFAULT_KEYWORDS = [
-  "Liquidity event", "IPO", "Initial Public Offering", "Trade sale",
-  "Private equity exit", "PE acquisition", "Merger & acquisition", "M&A deal",
-  "Founder exit", "Startup funding Series C", "Startup funding Series D",
-  "Unicorn", "SPAC merger", "Secondary sale", "Family office",
-  "High net worth", "Asset sale", "Divestiture", "Stake sale",
-  "Cashed out", "Sold stake", "Exit deal", "Buyout"
-];
 
 const DEFAULT_REGIONS = [
   "Singapore", "Hong Kong", "Taiwan", "Indonesia", 
@@ -100,6 +94,18 @@ export class DatabaseStorage implements IStorage {
     return lead || undefined;
   }
 
+  async getRecentLeadsByCompany(companyName: string, days: number): Promise<Lead[]> {
+    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    // Case-insensitive search using ILIKE on company names array
+    const results = await db.select().from(leads).where(
+      and(
+        gte(leads.createdAt, cutoff),
+        sql`EXISTS (SELECT 1 FROM unnest(${leads.companyNames}) AS c WHERE c ILIKE ${`%${companyName}%`})`
+      )
+    );
+    return results;
+  }
+
   async createLead(insertLead: InsertLead): Promise<Lead> {
     const [lead] = await db.insert(leads).values(insertLead).returning();
     return lead;
@@ -133,7 +139,7 @@ export class DatabaseStorage implements IStorage {
     if (existingSettings) return existingSettings;
 
     const [newSettings] = await db.insert(settings).values({
-      keywords: DEFAULT_KEYWORDS,
+      interestFilterPrompt: DEFAULT_INTEREST_FILTER_PROMPT,
       regions: DEFAULT_REGIONS,
       sourceTiers: {},
       summaryLength: "brief",
@@ -158,7 +164,7 @@ export class DatabaseStorage implements IStorage {
       return updated;
     }
     const [created] = await db.insert(settings).values({
-      keywords: update.keywords || DEFAULT_KEYWORDS,
+      interestFilterPrompt: update.interestFilterPrompt || DEFAULT_INTEREST_FILTER_PROMPT,
       regions: update.regions || DEFAULT_REGIONS,
       sourceTiers: update.sourceTiers || {},
       summaryLength: update.summaryLength || "brief",
@@ -364,6 +370,17 @@ export class DatabaseStorage implements IStorage {
   async getSavedLeadByLeadId(leadId: string): Promise<SavedLead | undefined> {
     const [saved] = await db.select().from(savedLeads).where(eq(savedLeads.leadId, leadId));
     return saved || undefined;
+  }
+
+  async getSavedLeadByCompanyName(companyName: string): Promise<(SavedLead & { lead: Lead }) | undefined> {
+    const normalizedName = companyName.toLowerCase().trim();
+    const allSaved = await this.getAllSavedLeads();
+
+    return allSaved.find(saved =>
+      saved.lead.companyNames.some(name =>
+        name.toLowerCase().trim() === normalizedName
+      )
+    );
   }
 
   async createSavedLead(insertSavedLead: InsertSavedLead): Promise<SavedLead> {

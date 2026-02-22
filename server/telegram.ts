@@ -2,6 +2,35 @@ import type { Lead } from "@shared/schema";
 
 const TELEGRAM_API = 'https://api.telegram.org/bot';
 
+/** Telegram callback_query object shape (subset of fields we use) */
+export interface TelegramCallbackQuery {
+  id: string;
+  from: { id: number; first_name: string };
+  message?: {
+    message_id: number;
+    chat: { id: number };
+    text?: string;
+  };
+  data?: string;
+}
+
+/** Telegram update object shape (subset of fields we use) */
+export interface TelegramUpdate {
+  update_id: number;
+  message?: {
+    message_id: number;
+    chat: { id: number };
+    text?: string;
+    from?: { id: number; first_name: string };
+  };
+  callback_query?: TelegramCallbackQuery;
+  channel_post?: {
+    message_id: number;
+    chat: { id: number };
+    text?: string;
+  };
+}
+
 export async function sendTelegramMessage(
   chatId: string,
   text: string,
@@ -82,9 +111,6 @@ ${lead.aiSummary}
       inline_keyboard: [
         [
           { text: "💾 Save", callback_data: `lead_save_${lead.id}` },
-          { text: "✅ Mark Reviewed", callback_data: `lead_reviewed_${lead.id}` }
-        ],
-        [
           { text: "🗑️ Dismiss", callback_data: `lead_dismiss_${lead.id}` }
         ]
       ]
@@ -137,4 +163,154 @@ export async function answerCallbackQuery(callbackQueryId: string, text?: string
   }
 
   return true;
+}
+
+/**
+ * Registers a webhook URL with Telegram so updates are pushed via HTTP POST
+ * instead of pulled via getUpdates polling.
+ *
+ * @param webhookUrl - The publicly accessible HTTPS URL for the webhook endpoint
+ * @returns true if the webhook was set successfully
+ */
+export async function setWebhook(webhookUrl: string): Promise<boolean> {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+
+  if (!token) {
+    throw new Error('TELEGRAM_BOT_TOKEN not configured');
+  }
+
+  console.log(`Setting Telegram webhook to: ${webhookUrl}`);
+
+  const response = await fetch(`${TELEGRAM_API}${token}/setWebhook`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      url: webhookUrl,
+      allowed_updates: ['message', 'callback_query'],
+    }),
+  });
+
+  const result = await response.json();
+
+  if (!result.ok) {
+    console.error('Failed to set Telegram webhook:', result);
+    throw new Error(result.description || 'Failed to set webhook');
+  }
+
+  console.log('Telegram webhook set successfully');
+  return true;
+}
+
+/**
+ * Removes the current webhook, allowing the bot to fall back to getUpdates polling.
+ *
+ * @returns true if the webhook was deleted successfully
+ */
+export async function deleteWebhook(): Promise<boolean> {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+
+  if (!token) {
+    throw new Error('TELEGRAM_BOT_TOKEN not configured');
+  }
+
+  console.log('Deleting Telegram webhook...');
+
+  const response = await fetch(`${TELEGRAM_API}${token}/deleteWebhook`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ drop_pending_updates: false }),
+  });
+
+  const result = await response.json();
+
+  if (!result.ok) {
+    console.error('Failed to delete Telegram webhook:', result);
+    return false;
+  }
+
+  console.log('Telegram webhook deleted');
+  return true;
+}
+
+/**
+ * Edits the inline keyboard (reply markup) of an existing message.
+ * Used to replace action buttons with a status indicator after a callback is processed.
+ *
+ * @param chatId - The chat where the message lives
+ * @param messageId - The message_id of the message to edit
+ * @param newReplyMarkup - New inline keyboard markup, or undefined to remove all buttons
+ * @returns true if the edit succeeded
+ */
+export async function editMessageReplyMarkup(
+  chatId: string,
+  messageId: number,
+  newReplyMarkup?: object
+): Promise<boolean> {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+
+  if (!token) {
+    throw new Error('TELEGRAM_BOT_TOKEN not configured');
+  }
+
+  const body: Record<string, unknown> = {
+    chat_id: chatId,
+    message_id: messageId,
+  };
+
+  if (newReplyMarkup) {
+    body.reply_markup = newReplyMarkup;
+  } else {
+    // Pass empty inline_keyboard to remove all buttons
+    body.reply_markup = { inline_keyboard: [] };
+  }
+
+  const response = await fetch(`${TELEGRAM_API}${token}/editMessageReplyMarkup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  const result = await response.json();
+
+  if (!result.ok) {
+    // Telegram returns an error if markup is unchanged -- not a real failure
+    if (result.description?.includes('message is not modified')) {
+      return true;
+    }
+    console.error('Failed to edit message reply markup:', result);
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Appends a status line to an existing message and removes its inline buttons.
+ * This provides visual feedback that a button action was processed.
+ *
+ * @param chatId - The chat where the message lives
+ * @param messageId - The message_id of the message to edit
+ * @param originalText - The original message text (HTML) that should be preserved
+ * @param statusText - The status indicator to append (e.g. "Saved", "Reviewed")
+ */
+export async function editMessageWithStatus(
+  chatId: string,
+  messageId: number,
+  statusText: string
+): Promise<boolean> {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+
+  if (!token) {
+    throw new Error('TELEGRAM_BOT_TOKEN not configured');
+  }
+
+  // We edit the reply markup to show a single disabled-looking button with the status
+  // This approach avoids needing the original message text (which we may not have)
+  const statusMarkup = {
+    inline_keyboard: [
+      [{ text: statusText, callback_data: 'noop' }]
+    ]
+  };
+
+  return editMessageReplyMarkup(chatId, messageId, statusMarkup);
 }

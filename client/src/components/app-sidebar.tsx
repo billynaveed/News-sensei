@@ -1,4 +1,4 @@
-import { LayoutDashboard, Settings, Activity, TrendingUp, BookmarkCheck, Bug } from "lucide-react";
+import { LayoutDashboard, Settings, Activity, TrendingUp, BookmarkCheck, Bug, Building2 } from "lucide-react";
 import { Link, useLocation, useSearch } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -37,6 +37,11 @@ const menuItems = [
     title: "Debug",
     url: "/debug",
     icon: Bug,
+  },
+  {
+    title: "IPO Filings",
+    url: "/ipo-filings",
+    icon: Building2,
   },
 ];
 

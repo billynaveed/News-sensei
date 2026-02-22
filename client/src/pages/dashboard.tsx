@@ -1,15 +1,15 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { useSearch } from "wouter";
+import { useSearch, Link } from "wouter";
 import { format } from "date-fns";
 import { motion, AnimatePresence } from "framer-motion";
-import { 
-  ExternalLink, 
-  Bookmark, 
+import {
+  ExternalLink,
+  Bookmark,
   BookmarkCheck,
-  Phone, 
-  X, 
-  Filter, 
+  Phone,
+  X,
+  Filter,
   RefreshCw,
   Building2,
   User,
@@ -19,7 +19,10 @@ import {
   AlertCircle,
   Clock,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  DollarSign,
+  Lightbulb,
+  ChevronRight,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardFooter } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -43,7 +46,8 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import type { Lead, LeadStatus, PriorityLevel, SourceTier, FetchMethod } from "@shared/schema";
+import { FetchMethodBadge } from "@/components/FetchMethodBadge";
+import type { Lead, LeadStatus, PriorityLevel, SourceTier, FetchMethod, KeyFinancials } from "@shared/schema";
 
 type FilterState = {
   publishedDays: string;
@@ -79,21 +83,21 @@ const statusLabels: Record<LeadStatus, string> = {
   dismissed: "Dismissed",
 };
 
-const fetchMethodLabels: Record<FetchMethod, string> = {
-  rss: "RSS",
-  google_news: "Google News",
-  scrapingbee: "ScrapingBee",
-};
 
-const fetchMethodColors: Record<FetchMethod, string> = {
-  rss: "bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/20",
-  google_news: "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20",
-  scrapingbee: "bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/20",
-};
+/** Formats key financials into a readable string for display */
+function formatKeyFinancials(financials: KeyFinancials): string {
+  const parts: string[] = [];
+  if (financials.fundingAmount) parts.push(`Funding: ${financials.fundingAmount}`);
+  if (financials.valuation) parts.push(`Valuation: ${financials.valuation}`);
+  if (financials.dealValue) parts.push(`Deal: ${financials.dealValue}`);
+  return parts.join(" | ");
+}
 
 function LeadCard({ lead, onUpdateStatus }: { lead: Lead; onUpdateStatus: (id: string, status: LeadStatus) => void }) {
   const priorityClass = priorityColors[lead.priorityLevel];
   const tierClass = tierColors[lead.sourceTier];
+  const hasKeyFinancials = lead.keyFinancials &&
+    (lead.keyFinancials.fundingAmount || lead.keyFinancials.valuation || lead.keyFinancials.dealValue);
 
   return (
     <Card className="group" data-testid={`lead-card-${lead.id}`}>
@@ -107,8 +111,15 @@ function LeadCard({ lead, onUpdateStatus }: { lead: Lead; onUpdateStatus: (id: s
               {lead.priorityLevel.charAt(0).toUpperCase() + lead.priorityLevel.slice(1)} Priority
             </Badge>
             {lead.fetchMethod && (
-              <Badge variant="outline" className={fetchMethodColors[lead.fetchMethod]} size="sm">
-                {fetchMethodLabels[lead.fetchMethod]}
+              <FetchMethodBadge method={lead.fetchMethod} />
+            )}
+            {lead.isUpdate && (
+              <Badge
+                variant="outline"
+                className="bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/20"
+                size="sm"
+              >
+                {"\uD83D\uDCF0"} Update for saved company
               </Badge>
             )}
             {lead.status === "new" && (
@@ -125,9 +136,9 @@ function LeadCard({ lead, onUpdateStatus }: { lead: Lead; onUpdateStatus: (id: s
               </Badge>
             )}
           </div>
-          <a 
-            href={lead.sourceUrl} 
-            target="_blank" 
+          <a
+            href={lead.sourceUrl}
+            target="_blank"
             rel="noopener noreferrer"
             className="block font-semibold text-base leading-snug hover:text-primary transition-colors line-clamp-2"
             data-testid={`link-headline-${lead.id}`}
@@ -135,6 +146,16 @@ function LeadCard({ lead, onUpdateStatus }: { lead: Lead; onUpdateStatus: (id: s
             {lead.headline}
             <ExternalLink className="inline-block ml-1.5 h-3.5 w-3.5 opacity-50" />
           </a>
+          {lead.relatedSavedLeadId && (
+            <Link
+              href="/saved-leads"
+              className="inline-flex items-center gap-1 text-xs text-primary hover:text-primary/80 transition-colors"
+              data-testid={`link-related-saved-${lead.id}`}
+            >
+              <BookmarkCheck className="h-3 w-3" />
+              View related saved lead
+            </Link>
+          )}
         </div>
         <div className="flex items-center gap-1 flex-shrink-0">
           <div className="flex items-center justify-center w-10 h-10 rounded-md bg-muted font-mono text-sm font-bold">
@@ -180,10 +201,40 @@ function LeadCard({ lead, onUpdateStatus }: { lead: Lead; onUpdateStatus: (id: s
           </div>
         </div>
 
+        {/* Key Financials - displayed when enrichment data is available */}
+        {hasKeyFinancials && (
+          <div className="flex items-start gap-2 bg-emerald-500/5 border border-emerald-500/20 rounded-md p-3">
+            <DollarSign className="h-4 w-4 text-emerald-600 dark:text-emerald-400 mt-0.5 flex-shrink-0" />
+            <div>
+              <div className="text-xs text-emerald-700 dark:text-emerald-300 uppercase tracking-wide font-medium mb-0.5">
+                Key Financials
+              </div>
+              <div className="text-sm font-medium font-mono tabular-nums text-emerald-800 dark:text-emerald-200">
+                {formatKeyFinancials(lead.keyFinancials!)}
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="bg-muted/50 rounded-md p-3">
           <div className="text-xs text-muted-foreground uppercase tracking-wide font-medium mb-1.5">AI Summary</div>
           <p className="text-sm leading-relaxed">{lead.aiSummary}</p>
         </div>
+
+        {/* Wealth Angle - displayed when pipeline enrichment provides it */}
+        {lead.wealthAngle && (
+          <div className="flex items-start gap-2 bg-amber-500/5 border border-amber-500/20 rounded-md p-3">
+            <Lightbulb className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5 flex-shrink-0" />
+            <div>
+              <div className="text-xs text-amber-700 dark:text-amber-300 uppercase tracking-wide font-medium mb-0.5">
+                Wealth Angle
+              </div>
+              <p className="text-sm leading-relaxed text-amber-900 dark:text-amber-100">
+                {lead.wealthAngle}
+              </p>
+            </div>
+          </div>
+        )}
 
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-xs text-muted-foreground uppercase tracking-wide font-medium">Keywords:</span>
@@ -194,6 +245,19 @@ function LeadCard({ lead, onUpdateStatus }: { lead: Lead; onUpdateStatus: (id: s
           ))}
         </div>
 
+        {/* Pipeline Logic - collapsible for tuning */}
+        {lead.pipelineReasoning && (
+          <details className="group">
+            <summary className="flex items-center gap-1.5 cursor-pointer text-xs text-muted-foreground uppercase tracking-wide font-medium hover:text-foreground transition-colors">
+              <ChevronRight className="h-3 w-3 transition-transform group-open:rotate-90" />
+              Pipeline Logic
+            </summary>
+            <pre className="mt-2 text-xs leading-relaxed text-muted-foreground bg-muted/30 rounded-md p-2.5 whitespace-pre-wrap font-mono">
+              {lead.pipelineReasoning}
+            </pre>
+          </details>
+        )}
+
         <div className="flex items-center justify-between text-xs text-muted-foreground">
           <span>{lead.sourceName}</span>
           <span>{lead.region}</span>
@@ -201,26 +265,29 @@ function LeadCard({ lead, onUpdateStatus }: { lead: Lead; onUpdateStatus: (id: s
       </CardContent>
       <CardFooter className="flex items-center justify-between gap-2 pt-0">
         <div className="flex items-center gap-2">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => onUpdateStatus(lead.id, "saved")}
-                disabled={lead.status === "saved"}
-                className={lead.status === "saved" ? "text-emerald-600 dark:text-emerald-400" : "text-emerald-600 dark:text-emerald-400"}
-                data-testid={`button-save-${lead.id}`}
-              >
-                {lead.status === "saved" ? (
-                  <BookmarkCheck className="h-4 w-4 fill-current" />
-                ) : (
-                  <Bookmark className="h-4 w-4" />
-                )}
-                {lead.status === "saved" ? "Saved" : "Save"}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>{lead.status === "saved" ? "Already saved" : "Bookmark for later"}</TooltipContent>
-          </Tooltip>
+          {/* Hide save button for update leads (already saved via related lead) */}
+          {!lead.isUpdate && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onUpdateStatus(lead.id, "saved")}
+                  disabled={lead.status === "saved"}
+                  className={lead.status === "saved" ? "text-emerald-600 dark:text-emerald-400" : "text-emerald-600 dark:text-emerald-400"}
+                  data-testid={`button-save-${lead.id}`}
+                >
+                  {lead.status === "saved" ? (
+                    <BookmarkCheck className="h-4 w-4 fill-current" />
+                  ) : (
+                    <Bookmark className="h-4 w-4" />
+                  )}
+                  {lead.status === "saved" ? "Saved" : "Save"}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{lead.status === "saved" ? "Already saved" : "Bookmark for later"}</TooltipContent>
+            </Tooltip>
+          )}
           <Tooltip>
             <TooltipTrigger asChild>
               <Button

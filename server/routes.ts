@@ -1,22 +1,83 @@
-import type { Express } from "express";
+import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { z } from "zod";
+import crypto from "crypto";
 import { storage } from "./storage";
 import { sendTestEmail, sendLeadAlertEmail } from "./sendgrid";
-import { sendTestTelegramMessage, getTelegramUpdates } from "./telegram";
+import { sendTestTelegramMessage, getTelegramUpdates, type TelegramUpdate } from "./telegram";
+import { handleUpdate as handleTelegramUpdate } from "./telegram-bot";
 import { scanForLeads, getScanProgress } from "./scanner";
 import { migrateSavedLeads } from "./migrate-saved-leads";
 import { ensureSavedLeadsTable } from "./ensure-saved-leads-table";
 import { enrichSavedLead, formatEnrichmentForSavedLead } from "./founder-enrichment";
 import { restartScheduler } from "./scheduler";
-import type { LeadStatus } from "@shared/schema";
+import { ensureIpoFilingsTable } from "./ensure-ipo-table";
+import { ensureResearchCacheTable } from "./ensure-research-cache-table";
+import { scanForIpoFilings, getAllIpoFilings, getIpoFilingById, backfillIpoAnalysis } from "./ipo-scanner";
+import { generateRegistrationOptions, verifyRegistrationResponse, generateAuthenticationOptions, verifyAuthenticationResponse } from "@simplewebauthn/server";
+import type { LeadStatus, IpoExchange } from "@shared/schema";
+import { webauthnCredentials, authSessions } from "@shared/schema";
+import { db } from "./db";
+import { eq } from "drizzle-orm";
+
+// WebAuthn configuration
+const RP_NAME = "Sensei";
+const RP_ID = "77.42.84.43.nip.io";
+const ORIGIN = "https://news-sensei.77.42.84.43.nip.io";
+const SESSION_COOKIE = "ns_auth";
+const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+// In-memory challenge store (challenge -> timestamp)
+const challengeStore = new Map<string, number>();
+
+// Clean expired challenges periodically
+setInterval(() => {
+  const now = Date.now();
+  for (const [challenge, ts] of challengeStore) {
+    if (now - ts > 5 * 60 * 1000) challengeStore.delete(challenge);
+  }
+}, 60 * 1000);
+
+async function getCredentialCount(): Promise<number> {
+  const creds = await db.select().from(webauthnCredentials);
+  return creds.length;
+}
+
+async function validateSessionToken(token: string | undefined): Promise<boolean> {
+  if (!token) return false;
+  const sessions = await db.select().from(authSessions).where(eq(authSessions.token, token));
+  if (sessions.length === 0) return false;
+  return new Date(sessions[0].expiresAt) > new Date();
+}
+
+// Auth middleware - protect /api/* except /api/auth/* and /api/telegram-webhook
+async function authMiddleware(req: Request, res: Response, next: NextFunction) {
+  // Skip auth routes and telegram webhook
+  if (req.path.startsWith("/api/auth/") || req.path === "/api/telegram-webhook") {
+    return next();
+  }
+  // Only protect /api/* routes
+  if (!req.path.startsWith("/api/")) {
+    return next();
+  }
+  // If no credentials registered, allow all (first-use setup)
+  const count = await getCredentialCount();
+  if (count === 0) return next();
+  // Check session cookie
+  const token = req.cookies?.[SESSION_COOKIE];
+  const valid = await validateSessionToken(token);
+  if (!valid) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  next();
+}
 
 const updateLeadStatusSchema = z.object({
   status: z.enum(["new", "reviewed", "saved", "contacted", "dismissed"]),
 });
 
 const updateSettingsSchema = z.object({
-  keywords: z.array(z.string()).min(1).optional(),
+  interestFilterPrompt: z.string().min(1, "Interest filter prompt cannot be empty").optional(),
   regions: z.array(z.string()).min(1).optional(),
   sourceTiers: z.record(z.string()).optional(),
   summaryLength: z.enum(["brief", "detailed", "actionable"]).optional(),
@@ -37,6 +98,7 @@ const createSourceSchema = z.object({
   domain: z.string().min(1),
   tier: z.enum(["tier1", "tier2", "tier3"]),
   active: z.boolean().optional(),
+  usePremiumScraping: z.boolean().optional(),
 });
 
 const updateSourceSchema = z.object({
@@ -44,6 +106,7 @@ const updateSourceSchema = z.object({
   domain: z.string().min(1).optional(),
   tier: z.enum(["tier1", "tier2", "tier3"]).optional(),
   active: z.boolean().optional(),
+  usePremiumScraping: z.boolean().optional(),
 });
 
 const createRssFeedSchema = z.object({
@@ -89,6 +152,225 @@ export async function registerRoutes(
   } catch (error) {
     console.error("Error ensuring saved_leads table:", error);
   }
+
+  // Ensure ipo_filings table exists
+  try {
+    const created = await ensureIpoFilingsTable();
+    if (created) {
+      console.log("ipo_filings table was created");
+    }
+  } catch (error) {
+    console.error("Error ensuring ipo_filings table:", error);
+  }
+
+  // Ensure research_cache table exists
+  try {
+    const created = await ensureResearchCacheTable();
+    if (created) {
+      console.log("research_cache table was created");
+    }
+  } catch (error) {
+    console.error("Error ensuring research_cache table:", error);
+  }
+
+  // Ensure webauthn tables exist
+  try {
+    await db.execute(`CREATE TABLE IF NOT EXISTS webauthn_credentials (
+      id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+      credential_id TEXT NOT NULL UNIQUE,
+      public_key TEXT NOT NULL,
+      counter INTEGER NOT NULL DEFAULT 0,
+      device_name TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+    )`);
+    await db.execute(`CREATE TABLE IF NOT EXISTS auth_sessions (
+      id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+      token TEXT NOT NULL UNIQUE,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+      expires_at TIMESTAMP NOT NULL
+    )`);
+  } catch (error) {
+    console.error("Error ensuring auth tables:", error);
+  }
+
+  // Register auth middleware
+  app.use(authMiddleware);
+
+  // Auth routes
+  app.get("/api/auth/status", async (req, res) => {
+    try {
+      const count = await getCredentialCount();
+      const token = req.cookies?.[SESSION_COOKIE];
+      const isAuthenticated = await validateSessionToken(token);
+      res.json({ isSetup: count > 0, isAuthenticated });
+    } catch (error) {
+      console.error("Error checking auth status:", error);
+      res.status(500).json({ error: "Failed to check auth status" });
+    }
+  });
+
+  app.post("/api/auth/register-options", async (req, res) => {
+    try {
+      const existingCreds = await db.select().from(webauthnCredentials);
+      const options = await generateRegistrationOptions({
+        rpName: RP_NAME,
+        rpID: RP_ID,
+        userName: "owner",
+        userDisplayName: "Owner",
+        attestationType: "none",
+        excludeCredentials: existingCreds.map(c => ({
+          id: c.credentialId,
+          type: "public-key" as const,
+        })),
+        authenticatorSelection: {
+          residentKey: "preferred",
+          userVerification: "preferred",
+        },
+      });
+      challengeStore.set(options.challenge, Date.now());
+      res.json(options);
+    } catch (error) {
+      console.error("Error generating registration options:", error);
+      res.status(500).json({ error: "Failed to generate registration options" });
+    }
+  });
+
+  app.post("/api/auth/register-verify", async (req, res) => {
+    try {
+      const { body: regResponse, deviceName } = req.body;
+      // Find matching challenge
+      let matchedChallenge: string | undefined;
+      for (const [challenge] of challengeStore) {
+        matchedChallenge = challenge;
+        break;
+      }
+      if (!matchedChallenge) {
+        return res.status(400).json({ error: "No pending challenge" });
+      }
+      const verification = await verifyRegistrationResponse({
+        response: regResponse,
+        expectedChallenge: matchedChallenge,
+        expectedOrigin: ORIGIN,
+        expectedRPID: RP_ID,
+      });
+      if (!verification.verified || !verification.registrationInfo) {
+        return res.status(400).json({ error: "Verification failed" });
+      }
+      challengeStore.delete(matchedChallenge);
+      const { credential } = verification.registrationInfo;
+      // Store credential - encode binary fields as base64
+      await db.insert(webauthnCredentials).values({
+        credentialId: Buffer.from(credential.id).toString("base64url"),
+        publicKey: Buffer.from(credential.publicKey).toString("base64url"),
+        counter: credential.counter,
+        deviceName: deviceName || "Unknown Device",
+      });
+      // Create session
+      const token = crypto.randomBytes(32).toString("hex");
+      const expiresAt = new Date(Date.now() + SESSION_MAX_AGE_MS);
+      await db.insert(authSessions).values({ token, expiresAt });
+      res.cookie(SESSION_COOKIE, token, {
+        httpOnly: true,
+        secure: true,
+        sameSite: "strict",
+        maxAge: SESSION_MAX_AGE_MS,
+        path: "/",
+      });
+      res.json({ verified: true });
+    } catch (error) {
+      console.error("Error verifying registration:", error);
+      res.status(500).json({ error: "Failed to verify registration" });
+    }
+  });
+
+  app.post("/api/auth/login-options", async (req, res) => {
+    try {
+      const creds = await db.select().from(webauthnCredentials);
+      const options = await generateAuthenticationOptions({
+        rpID: RP_ID,
+        allowCredentials: creds.map(c => ({
+          id: c.credentialId,
+          type: "public-key" as const,
+        })),
+        userVerification: "preferred",
+      });
+      challengeStore.set(options.challenge, Date.now());
+      res.json(options);
+    } catch (error) {
+      console.error("Error generating login options:", error);
+      res.status(500).json({ error: "Failed to generate login options" });
+    }
+  });
+
+  app.post("/api/auth/login-verify", async (req, res) => {
+    try {
+      const authResponse = req.body;
+      // Find the credential
+      const credentialId = authResponse.id;
+      const creds = await db.select().from(webauthnCredentials);
+      const cred = creds.find(c => c.credentialId === credentialId);
+      if (!cred) {
+        return res.status(400).json({ error: "Credential not found" });
+      }
+      // Find matching challenge
+      let matchedChallenge: string | undefined;
+      for (const [challenge] of challengeStore) {
+        matchedChallenge = challenge;
+        break;
+      }
+      if (!matchedChallenge) {
+        return res.status(400).json({ error: "No pending challenge" });
+      }
+      const verification = await verifyAuthenticationResponse({
+        response: authResponse,
+        expectedChallenge: matchedChallenge,
+        expectedOrigin: ORIGIN,
+        expectedRPID: RP_ID,
+        credential: {
+          id: cred.credentialId,
+          publicKey: Buffer.from(cred.publicKey, "base64url"),
+          counter: cred.counter,
+        },
+      });
+      if (!verification.verified) {
+        return res.status(400).json({ error: "Verification failed" });
+      }
+      challengeStore.delete(matchedChallenge);
+      // Update counter
+      await db.update(webauthnCredentials)
+        .set({ counter: verification.authenticationInfo.newCounter })
+        .where(eq(webauthnCredentials.credentialId, cred.credentialId));
+      // Create session
+      const token = crypto.randomBytes(32).toString("hex");
+      const expiresAt = new Date(Date.now() + SESSION_MAX_AGE_MS);
+      await db.insert(authSessions).values({ token, expiresAt });
+      res.cookie(SESSION_COOKIE, token, {
+        httpOnly: true,
+        secure: true,
+        sameSite: "strict",
+        maxAge: SESSION_MAX_AGE_MS,
+        path: "/",
+      });
+      res.json({ verified: true });
+    } catch (error) {
+      console.error("Error verifying login:", error);
+      res.status(500).json({ error: "Failed to verify login" });
+    }
+  });
+
+  app.post("/api/auth/logout", async (req, res) => {
+    try {
+      const token = req.cookies?.[SESSION_COOKIE];
+      if (token) {
+        await db.delete(authSessions).where(eq(authSessions.token, token));
+      }
+      res.clearCookie(SESSION_COOKIE, { path: "/" });
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error logging out:", error);
+      res.status(500).json({ error: "Failed to logout" });
+    }
+  });
 
   // Seed default sources and run log cleanup on startup
   try {
@@ -297,6 +579,37 @@ export async function registerRoutes(
     } catch (error: any) {
       console.error("Error getting Telegram updates:", error);
       res.status(500).json({ error: error.message || "Failed to get Telegram updates" });
+    }
+  });
+
+  // Telegram webhook endpoint - receives updates pushed by Telegram
+  app.post("/api/telegram-webhook", async (req, res) => {
+    try {
+      const update = req.body as TelegramUpdate;
+
+      if (!update || !update.update_id) {
+        console.warn('Telegram webhook received invalid payload:', JSON.stringify(req.body).slice(0, 200));
+        return res.status(400).json({ error: "Invalid update payload" });
+      }
+
+      console.log(`Telegram webhook received update ${update.update_id}`, {
+        hasMessage: !!update.message,
+        hasCallback: !!update.callback_query,
+        callbackData: update.callback_query?.data,
+      });
+
+      // Process the update asynchronously so we respond to Telegram quickly.
+      // Telegram requires a 200 response within a few seconds or it will retry.
+      handleTelegramUpdate(update).catch((error) => {
+        console.error('Error processing Telegram webhook update:', error);
+      });
+
+      // Always respond 200 to Telegram to prevent retries
+      res.status(200).json({ ok: true });
+    } catch (error) {
+      console.error('Error in Telegram webhook handler:', error);
+      // Still respond 200 to prevent Telegram from retrying
+      res.status(200).json({ ok: true });
     }
   });
 
@@ -585,6 +898,52 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error fetching debug data:", error);
       res.status(500).json({ error: "Failed to fetch debug data" });
+    }
+  });
+
+  // IPO Filings endpoints
+  app.get("/api/ipo-filings", async (req, res) => {
+    try {
+      const exchange = req.query.exchange as IpoExchange | undefined;
+      const filings = await getAllIpoFilings(exchange);
+      res.json(filings);
+    } catch (error) {
+      console.error("Error fetching IPO filings:", error);
+      res.status(500).json({ error: "Failed to fetch IPO filings" });
+    }
+  });
+
+  app.get("/api/ipo-filings/:id", async (req, res) => {
+    try {
+      const filing = await getIpoFilingById(req.params.id);
+      if (!filing) {
+        return res.status(404).json({ error: "IPO filing not found" });
+      }
+      res.json(filing);
+    } catch (error) {
+      console.error("Error fetching IPO filing:", error);
+      res.status(500).json({ error: "Failed to fetch IPO filing" });
+    }
+  });
+
+  app.post("/api/ipo-scan", async (req, res) => {
+    try {
+      const result = await scanForIpoFilings();
+      res.json(result);
+    } catch (error) {
+      console.error("Error triggering IPO scan:", error);
+      res.status(500).json({ error: "Failed to trigger IPO scan" });
+    }
+  });
+
+  app.post("/api/ipo-backfill", async (req, res) => {
+    try {
+      const limit = parseInt(req.query.limit as string) || 10;
+      const count = await backfillIpoAnalysis(limit);
+      res.json({ enriched: count });
+    } catch (error) {
+      console.error("Error backfilling IPO analysis:", error);
+      res.status(500).json({ error: "Failed to backfill IPO analysis" });
     }
   });
 
