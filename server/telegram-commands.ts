@@ -5,6 +5,7 @@ import { performResearch, formatResearchTelegram, checkRateLimit, recordRateLimi
 import { storage } from './storage';
 import type { Settings } from '@shared/schema';
 import OpenAI from 'openai';
+import { stripJsonFences } from './json-utils';
 
 const openai = new OpenAI({
   apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
@@ -105,13 +106,12 @@ Rules:
 Return JSON: {"type": "founder" | "company"}`;
 
     const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "google/gemini-2.5-flash-lite",
       messages: [{ role: "user", content: prompt }],
-      response_format: { type: "json_object" },
       temperature: 0,
     });
 
-    const result = JSON.parse(response.choices[0].message.content || '{"type": "company"}');
+    const result = JSON.parse(stripJsonFences(response.choices[0].message.content || '{"type": "company"}'));
     return result.type === "founder" ? "founder" : "company";
   } catch (error) {
     console.error('Error classifying entity:', error);

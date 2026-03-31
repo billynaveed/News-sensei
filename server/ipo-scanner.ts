@@ -5,6 +5,7 @@ import { ipoFilings, type InsertIpoFiling, type IpoExchange, type IpoFiling } fr
 import { eq, and, desc, isNull } from "drizzle-orm";
 import { sendTelegramMessage } from "./telegram";
 import { storage } from "./storage";
+import { stripJsonFences } from "./json-utils";
 
 const openai = new OpenAI({
   apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
@@ -390,7 +391,7 @@ async function analyzeProspectus(filing: IpoFiling): Promise<ProspectusAnalysis 
     }
 
     const response = await openai.chat.completions.create({
-      model: "gpt-4o",
+      model: "anthropic/claude-sonnet-4",
       temperature: 0.1,
       messages: [
         {
@@ -420,8 +421,7 @@ Return ONLY valid JSON, no markdown.`,
     if (!raw) return null;
 
     // Parse JSON (handle potential markdown wrapping)
-    const jsonStr = raw.replace(/^```json\s*/, "").replace(/```\s*$/, "").trim();
-    const parsed = JSON.parse(jsonStr) as ProspectusAnalysis;
+    const parsed = JSON.parse(stripJsonFences(raw)) as ProspectusAnalysis;
     console.log(`[IPO] Analysis complete for ${filing.companyName}: industry=${parsed.industry}`);
     return parsed;
   } catch (err: any) {

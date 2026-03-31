@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { log } from "./index";
+import { stripJsonFences } from "./json-utils";
 import {
   searchFounderResidence,
   searchCompanyHeadquarters,
@@ -92,10 +93,9 @@ Important guidelines:
 Return ONLY the JSON object, no markdown formatting.`;
 
     const response = await openai.chat.completions.create({
-      model: "gpt-4o",
+      model: "anthropic/claude-sonnet-4",
       messages: [{ role: "user", content: prompt }],
       max_completion_tokens: 1500,
-      response_format: { type: "json_object" },
     });
 
     const content = response.choices[0]?.message?.content;
@@ -103,7 +103,7 @@ Return ONLY the JSON object, no markdown formatting.`;
       throw new Error("No response from AI");
     }
 
-    const enrichmentData = JSON.parse(content);
+    const enrichmentData = JSON.parse(stripJsonFences(content));
 
     const result: FounderEnrichmentResult = {
       founderName,
@@ -182,10 +182,9 @@ Important guidelines:
 Return ONLY the JSON object, no markdown formatting.`;
 
     const response = await openai.chat.completions.create({
-      model: "gpt-4o",
+      model: "anthropic/claude-sonnet-4",
       messages: [{ role: "user", content: prompt }],
       max_completion_tokens: 1000,
-      response_format: { type: "json_object" },
     });
 
     const content = response.choices[0]?.message?.content;
@@ -193,7 +192,7 @@ Return ONLY the JSON object, no markdown formatting.`;
       throw new Error("No response from AI");
     }
 
-    const enrichmentData = JSON.parse(content);
+    const enrichmentData = JSON.parse(stripJsonFences(content));
 
     const result: CompanyEnrichmentResult = {
       companyName,
@@ -291,10 +290,9 @@ Important:
 - Return ONLY the JSON object, no markdown formatting`;
 
     const response = await openai.chat.completions.create({
-      model: "gpt-4o",
+      model: "anthropic/claude-sonnet-4",
       messages: [{ role: "user", content: prompt }],
       max_completion_tokens: 1500,
-      response_format: { type: "json_object" },
     });
 
     const content = response.choices[0]?.message?.content;
@@ -302,7 +300,7 @@ Important:
       throw new Error("No response from AI");
     }
 
-    const enrichmentData = JSON.parse(content);
+    const enrichmentData = JSON.parse(stripJsonFences(content));
 
     // Extract web search sources
     const webSources = searchResults ? extractSearchSources(searchResults) : [];
@@ -400,10 +398,9 @@ Important:
 - Return ONLY the JSON object, no markdown formatting`;
 
     const response = await openai.chat.completions.create({
-      model: "gpt-4o",
+      model: "anthropic/claude-sonnet-4",
       messages: [{ role: "user", content: prompt }],
       max_completion_tokens: 1000,
-      response_format: { type: "json_object" },
     });
 
     const content = response.choices[0]?.message?.content;
@@ -411,7 +408,7 @@ Important:
       throw new Error("No response from AI");
     }
 
-    const enrichmentData = JSON.parse(content);
+    const enrichmentData = JSON.parse(stripJsonFences(content));
 
     // Calculate confidence based on search results
     const hasHeadquarters = !!enrichmentData.headquarters;

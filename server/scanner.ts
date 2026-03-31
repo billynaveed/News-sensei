@@ -3,6 +3,7 @@ import { storage } from "./storage";
 import { sendLeadAlertEmail } from "./sendgrid";
 import { sendLeadAlertTelegram } from "./telegram";
 import { fetchAllArticles, type RawArticle, type RssFeedWithMeta } from "./adapters";
+import { stripJsonFences } from "./json-utils";
 import { enrichSavedLead, formatEnrichmentForSavedLead } from "./founder-enrichment";
 import { passesInterestFilter, extractPrimaryCompany, isPublicCompany, checkDuplication } from "./pipeline-stages";
 import { log } from "./index";
@@ -52,16 +53,15 @@ Return only valid JSON, no markdown.`;
 
   try {
     const response = await openai.chat.completions.create({
-      model: "gpt-4o",
+      model: "google/gemini-2.5-flash-lite",
       messages: [{ role: "user", content: prompt }],
       max_completion_tokens: 1024,
-      response_format: { type: "json_object" },
     });
 
     const content = response.choices[0]?.message?.content;
     if (!content) return null;
 
-    const extracted = JSON.parse(content);
+    const extracted = JSON.parse(stripJsonFences(content));
 
     // Check if AI determined article is not relevant to target regions
     if (extracted.relevant === false) {
@@ -333,10 +333,9 @@ Extract and return JSON:
 
   try {
     const response = await openai.chat.completions.create({
-      model: "gpt-4o",
+      model: "anthropic/claude-sonnet-4",
       messages: [{ role: "user", content: prompt }],
       max_completion_tokens: 2000,
-      response_format: { type: "json_object" },
     });
 
     const content = response.choices[0]?.message?.content;
@@ -345,7 +344,7 @@ Extract and return JSON:
       return null;
     }
 
-    const extracted = JSON.parse(content);
+    const extracted = JSON.parse(stripJsonFences(content));
 
     // Reject if not relevant to target regions
     if (extracted.regionRelevance === false) {

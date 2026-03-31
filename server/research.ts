@@ -10,6 +10,7 @@ import { storage } from "./storage";
 import { db } from "./db";
 import { researchCache } from "@shared/schema";
 import { eq, and, gt, ilike, or, sql } from "drizzle-orm";
+import { stripJsonFences } from "./json-utils";
 
 const openai = new OpenAI({
   apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
@@ -275,14 +276,13 @@ IMPORTANT:
 
   try {
     const response = await openai.chat.completions.create({
-      model: "gpt-4o",
+      model: "anthropic/claude-sonnet-4",
       messages: [{ role: "user", content: prompt }],
-      response_format: { type: "json_object" },
       max_completion_tokens: 3000,
       temperature: 0.3,
     });
 
-    const parsed = JSON.parse(response.choices[0].message.content || "{}");
+    const parsed = JSON.parse(stripJsonFences(response.choices[0].message.content || "{}"));
 
     const result: ResearchResult = {
       name: parsed.name || query,

@@ -4,6 +4,7 @@ import { enrichSavedLead, formatEnrichmentForSavedLead } from "./founder-enrichm
 import { log } from "./index";
 import type { RawArticle } from "./adapters";
 import type { InsertLead, PriorityLevel, SourceTier } from "@shared/schema";
+import { stripJsonFences } from "./json-utils";
 
 // ============================================================================
 // OpenAI Client
@@ -191,9 +192,8 @@ Return JSON:
 
   try {
     const response = await openai.chat.completions.create({
-      model: "gpt-4o",
+      model: "google/gemini-2.5-flash-lite",
       messages: [{ role: "user", content: prompt }],
-      response_format: { type: "json_object" },
       max_completion_tokens: 256,
     });
 
@@ -202,7 +202,7 @@ Return JSON:
       return { passes: false, reason: "No response from AI", confidenceScore: 0 };
     }
 
-    const result = JSON.parse(content);
+    const result = JSON.parse(stripJsonFences(content));
     const confidenceScore: number = result.confidenceScore ?? 0;
     const passes = result.relevant === true && confidenceScore > 60;
 
@@ -278,9 +278,8 @@ Return JSON: { "companyName": "string or null", "confidenceScore": 0-100 }`;
 
   try {
     const response = await openai.chat.completions.create({
-      model: "gpt-4o",
+      model: "google/gemini-2.5-flash-lite",
       messages: [{ role: "user", content: prompt }],
-      response_format: { type: "json_object" },
       max_completion_tokens: 128,
     });
 
@@ -289,7 +288,7 @@ Return JSON: { "companyName": "string or null", "confidenceScore": 0-100 }`;
       return { companyName: null, confidenceScore: 0 };
     }
 
-    const result = JSON.parse(content);
+    const result = JSON.parse(stripJsonFences(content));
     const companyName: string | null = result.companyName || null;
     const confidenceScore: number = result.confidenceScore ?? 0;
 
@@ -367,9 +366,8 @@ Return JSON:
 
   try {
     const response = await openai.chat.completions.create({
-      model: "gpt-4o",
+      model: "google/gemini-2.5-flash-lite",
       messages: [{ role: "user", content: prompt }],
-      response_format: { type: "json_object" },
       max_completion_tokens: 256,
     });
 
@@ -378,7 +376,7 @@ Return JSON:
       return { isPublic: false, reason: "No response from AI", confidenceScore: 0 };
     }
 
-    const result = JSON.parse(content);
+    const result = JSON.parse(stripJsonFences(content));
     const confidenceScore: number = result.confidence ?? 0;
     const isPublic = result.isPublic === true && confidenceScore > 70;
 
@@ -509,9 +507,8 @@ Return JSON:
 }`;
 
     const response = await openai.chat.completions.create({
-      model: "gpt-4o",
+      model: "google/gemini-2.5-flash-lite",
       messages: [{ role: "user", content: prompt }],
-      response_format: { type: "json_object" },
       max_completion_tokens: 256,
     });
 
@@ -526,7 +523,7 @@ Return JSON:
       };
     }
 
-    const comparison = JSON.parse(content);
+    const comparison = JSON.parse(stripJsonFences(content));
     const percentNew: number = comparison.percentNew ?? 0;
 
     if (comparison.substantiallyNew === true && percentNew > 40) {
@@ -809,16 +806,16 @@ Extract and return JSON:
   "matchedIndicators": ["IPO", "Series C", "Exit", "M&A", etc — only real indicators, not aspirational ones],
   "wealthAngle": "WHO specifically is getting wealthy and HOW MUCH? If you cannot name a person, say 'No identifiable individual'",
   "confidenceScore": 0-100,
-  "regionRelevance": true/false
+  "regionRelevance": true/false,
+  "category": "news or lifestyle — classify as 'news' if this is a business/finance/funding/M&A/IPO/startup article, or 'lifestyle' if it covers luxury, real estate, philanthropy, personal life, travel, culture, society events, or celebrity wealth"
 }`;
 
   try {
     const response = await Promise.race([
       openai.chat.completions.create({
-        model: "gpt-4o",
+        model: "anthropic/claude-sonnet-4",
         messages: [{ role: "user", content: prompt }],
         max_completion_tokens: 2000,
-        response_format: { type: "json_object" },
       }),
       createTimeoutPromise<never>(DEEP_ANALYSIS_TIMEOUT_MS, "Deep analysis timed out"),
     ]);
@@ -829,7 +826,7 @@ Extract and return JSON:
       return null;
     }
 
-    const extracted = JSON.parse(content);
+    const extracted = JSON.parse(stripJsonFences(content));
 
     // Reject if not relevant to target regions
     if (extracted.regionRelevance === false) {
@@ -865,6 +862,7 @@ Extract and return JSON:
       region: article.region,
       status: "new",
       fetchMethod: article.fetchMethod,
+      category: extracted.category === "lifestyle" ? "lifestyle" : "news",
     };
 
     const keyFinancials = {
