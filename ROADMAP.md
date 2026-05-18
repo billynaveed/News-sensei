@@ -181,6 +181,58 @@ After v1→v2, the UI wiring above will need to be repointed at unified `leads` 
 
 Total: **~3-4 focused days of work** before the system is clean. The re-validation pass adds a day vs. naive copy, but means you start v2 with a vetted dataset instead of importing 3,292 rows of unknown quality.
 
+### Phase 2 execution — how to actually run the ETL
+
+**Status (2026-05-18):** Script + DDL written. v2 tables created in DB. Not run yet.
+
+**Files:**
+- `scripts/v2-create-tables.sql` — DDL for v2 tables (applied, idempotent)
+- `scripts/v2-add-settings-columns.sql` — adds primary/fallback LLM columns to `settings` (requires `postgres` user, defer to Phase 4)
+- `scripts/migrate-v1-to-v2.ts` — the ETL
+- `migration_progress` table — resumability tracking (per-row stage + outcome)
+
+**Run order:**
+
+```bash
+# 1) Sanity check on a small sample (~25 rows from each source table).
+#    Costs roughly $0.05. Runs the full pipeline against real rows.
+#    Writes to migration_progress but NOT to leads_v2.
+tsx scripts/migrate-v1-to-v2.ts --sample 25
+
+# 2) Inspect ./migration-report.md
+#    - Are accepted leads sensible? (sample of 30 in the report)
+#    - Are dropped leads being dropped for the right reasons?
+#    - What's the pass rate? Expect ~5-15% based on prior bake-offs.
+
+# 3) If sample looks good, full dry-run (still no leads_v2 writes).
+#    Costs ~$8-15. Runs overnight (~6-10 hours wall-clock).
+#    Resumable: if it crashes, just re-run.
+tsx scripts/migrate-v1-to-v2.ts
+
+# 4) Inspect ./migration-report.md again. If acceptable:
+#    Wipe migration_progress and re-run with --commit.
+#    (Or: skip the dry-run and commit directly if step 1 was convincing.)
+PGPASSWORD=newspass123 psql -h localhost -p 5433 -U newsuser newssensei \
+  -c "TRUNCATE migration_progress;"
+tsx scripts/migrate-v1-to-v2.ts --commit
+
+# 5) Verify
+PGPASSWORD=newspass123 psql -h localhost -p 5433 -U newsuser newssensei \
+  -c "SELECT category, priority_level, COUNT(*) FROM leads_v2 GROUP BY 1, 2 ORDER BY 1, 2;"
+```
+
+**Tuning knobs (top of migrate-v1-to-v2.ts):**
+- `SCORE_THRESHOLD = 40` — lower to keep more, raise to be stricter
+- `RATE_LIMIT_MS = 250` — sleep between LLM calls; raise if OpenRouter rate-limits
+- `DEFAULT_REGIONS` — currently SEA + HK + Taiwan, hard-coded
+
+**Cost ceiling:** if the run-rate looks too expensive, kill it (Ctrl+C). It's resumable — re-run with `--sample 100` to extrapolate cost first.
+
+**What the ETL deliberately skips vs. live pipeline:**
+- `checkDuplication` (LLM-based) — replaced with in-batch company-name set for historical import. Saves ~3,000 calls.
+- `fetchFullArticleContent` — only fetched if the row's `full_text` is empty (most are populated). Saves ~5,000 calls.
+- `enrichLeadWithWebSearch` — skipped entirely. Run as a separate enrichment pass later for the high-scorers if needed.
+
 ---
 
 ## 🔴 High Priority (Next 2 Weeks)
