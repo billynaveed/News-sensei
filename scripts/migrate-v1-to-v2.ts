@@ -1,30 +1,26 @@
 /**
  * Phase 2 ETL — migrate v1 lifestyle data into the unified v2 schema.
  *
- * Reads from v1 tables (publications, lifestyle_sources, lifestyle_leads,
- * lifestyle_articles), pushes each article through the current pipeline
- * stages, and writes survivors (score >= 40) to leads_v2.
+ * Two-tier hybrid (chosen 2026-05-18 after sample run showed news
+ * pipeline was wrong filter for lifestyle content):
  *
- *   PREREQUISITES
- *     - scripts/v2-create-tables.sql must have been applied
- *     - .env has DATABASE_URL + OpenRouter credentials
- *     - Lifestyle cron paused (LIFESTYLE_CRON_ENABLED unset/false)
+ *   Tier A: relevance_score >= 70 → bulk-copy via SQL. No LLM.
+ *   Tier B: relevance_score 40-69 → re-validate via LIFESTYLE pipeline
+ *           (classifyLifestyleArticle from lifestyle-scanner.ts).
+ *   Tier C: relevance_score < 40 → skip.
  *
  *   USAGE
- *     # Dry-run, sample 25 rows from each source, print summary:
- *     tsx scripts/migrate-v1-to-v2.ts --sample 25
- *
- *     # Dry-run, full dataset, calls LLMs but does NOT write leads_v2:
+ *     # Dry-run, prints what would happen, no writes:
  *     tsx scripts/migrate-v1-to-v2.ts
  *
- *     # Real run, write to leads_v2, resumable:
+ *     # Write everything (resumable, idempotent):
  *     tsx scripts/migrate-v1-to-v2.ts --commit
  *
- *     # Resume after crash (idempotent — skips rows in migration_progress):
- *     tsx scripts/migrate-v1-to-v2.ts --commit
+ *     # Just Tier A (skip the LLM re-validation pass):
+ *     tsx scripts/migrate-v1-to-v2.ts --commit --tier A
  *
- *     # Process only one source table:
- *     tsx scripts/migrate-v1-to-v2.ts --commit --source lifestyle_leads
+ *     # Sample a few Tier B rows to sanity-check the LLM cost:
+ *     tsx scripts/migrate-v1-to-v2.ts --tier B --sample 10
  *
  *   OUTPUT
  *     - migration_progress table: per-row stage + outcome + drop reason
@@ -32,18 +28,10 @@
  */
 
 import "dotenv/config";
-import { randomUUID, createHash } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { Pool } from "pg";
-import {
-  passesInterestFilter,
-  extractPrimaryCompany,
-  isPublicCompany,
-  checkDuplication,
-  deepAnalyzeArticle,
-} from "../server/pipeline-stages";
-import type { RawArticle } from "../server/adapters";
-import { DEFAULT_INTEREST_FILTER_PROMPT } from "../shared/schema";
+import { classifyLifestyleArticle } from "../server/lifestyle-scanner";
 
 // ============================================================================
 // Config & argv
@@ -51,22 +39,16 @@ import { DEFAULT_INTEREST_FILTER_PROMPT } from "../shared/schema";
 
 const argv = process.argv.slice(2);
 const COMMIT = argv.includes("--commit");
+const TIER = (() => {
+  const i = argv.indexOf("--tier");
+  const v = i >= 0 ? argv[i + 1] : null;
+  return v === "A" || v === "B" ? v : "both";
+})();
 const SAMPLE_N = (() => {
   const i = argv.indexOf("--sample");
-  return i >= 0 ? parseInt(argv[i + 1] ?? "25", 10) : null;
-})();
-const LIMIT = (() => {
-  const i = argv.indexOf("--limit");
-  return i >= 0 ? parseInt(argv[i + 1] ?? "0", 10) || null : null;
-})();
-const SOURCE_FILTER = (() => {
-  const i = argv.indexOf("--source");
-  return i >= 0 ? argv[i + 1] : null;
+  return i >= 0 ? parseInt(argv[i + 1] ?? "10", 10) : null;
 })();
 
-const DEFAULT_REGIONS = ["Singapore", "Malaysia", "Indonesia", "Thailand", "Vietnam", "Philippines", "Hong Kong", "Taiwan"];
-const RATE_LIMIT_MS = 250;
-const SCORE_THRESHOLD = 40;
 const REPORT_PATH = "./migration-report.md";
 
 if (!process.env.DATABASE_URL) {
@@ -77,61 +59,35 @@ if (!process.env.DATABASE_URL) {
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
 // ============================================================================
-// Helpers
+// Stats
 // ============================================================================
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-function hashUrl(url: string): string {
-  return createHash("sha256").update(url).digest("hex").slice(0, 32);
-}
-
 interface RunStats {
-  total: number;
-  alreadyProcessed: number;
-  droppedAtStage: Record<string, number>;
-  inserted: number;
-  failed: number;
-  primaryCalls: number;
-  fallbackCalls: number;
-  sampleAccepted: Array<{ headline: string; score: number; company: string; sourceName: string }>;
-  sampleDropped: Array<{ headline: string; reason: string; stage: string }>;
+  tierA_copied: number;
+  tierA_dedup_url: number;
+  tierB_passed: number;
+  tierB_rejected: number;
+  tierB_errored: number;
+  llmCalls: number;
+  sampleAccepted: Array<{ headline: string; score: number; tier: "A" | "B"; source: string }>;
+  sampleRejected: Array<{ headline: string; reason: string }>;
 }
 
 const stats: RunStats = {
-  total: 0,
-  alreadyProcessed: 0,
-  droppedAtStage: {},
-  inserted: 0,
-  failed: 0,
-  primaryCalls: 0,
-  fallbackCalls: 0,
+  tierA_copied: 0,
+  tierA_dedup_url: 0,
+  tierB_passed: 0,
+  tierB_rejected: 0,
+  tierB_errored: 0,
+  llmCalls: 0,
   sampleAccepted: [],
-  sampleDropped: [],
+  sampleRejected: [],
 };
 
-async function recordProgress(opts: {
-  sourceTable: string;
-  sourceId: string;
-  stage: string;
-  outcome: "passed" | "dropped" | "failed" | "inserted";
-  dropReason?: string;
-  targetLeadId?: string;
-  durationMs?: number;
-}): Promise<void> {
-  await pool.query(
-    `INSERT INTO migration_progress
-       (source_table, source_id, stage, outcome, drop_reason, target_lead_id, duration_ms)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
-     ON CONFLICT (source_table, source_id) DO UPDATE
-       SET stage = EXCLUDED.stage,
-           outcome = EXCLUDED.outcome,
-           drop_reason = EXCLUDED.drop_reason,
-           target_lead_id = EXCLUDED.target_lead_id,
-           duration_ms = EXCLUDED.duration_ms,
-           processed_at = CURRENT_TIMESTAMP`,
-    [opts.sourceTable, opts.sourceId, opts.stage, opts.outcome, opts.dropReason ?? null, opts.targetLeadId ?? null, opts.durationMs ?? null]
-  );
+function priorityLevelFor(score: number): "high" | "medium" | "low" {
+  if (score >= 70) return "high";
+  if (score >= 40) return "medium";
+  return "low";
 }
 
 async function alreadyProcessed(sourceTable: string, sourceId: string): Promise<boolean> {
@@ -142,84 +98,83 @@ async function alreadyProcessed(sourceTable: string, sourceId: string): Promise<
   return res.rowCount! > 0;
 }
 
-function trackDrop(stage: string, reason: string, headline: string) {
-  stats.droppedAtStage[stage] = (stats.droppedAtStage[stage] ?? 0) + 1;
-  if (stats.sampleDropped.length < 30) {
-    stats.sampleDropped.push({ headline, reason, stage });
-  }
+async function recordProgress(opts: {
+  sourceTable: string;
+  sourceId: string;
+  stage: string;
+  outcome: "passed" | "dropped" | "failed" | "inserted";
+  dropReason?: string;
+  targetLeadId?: string;
+}): Promise<void> {
+  await pool.query(
+    `INSERT INTO migration_progress
+       (source_table, source_id, stage, outcome, drop_reason, target_lead_id)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     ON CONFLICT (source_table, source_id) DO UPDATE
+       SET stage = EXCLUDED.stage,
+           outcome = EXCLUDED.outcome,
+           drop_reason = EXCLUDED.drop_reason,
+           target_lead_id = EXCLUDED.target_lead_id,
+           processed_at = CURRENT_TIMESTAMP`,
+    [opts.sourceTable, opts.sourceId, opts.stage, opts.outcome, opts.dropReason ?? null, opts.targetLeadId ?? null]
+  );
 }
 
 // ============================================================================
-// Source migration (no LLM cost — just copy publications + lifestyle_sources)
+// Source migration (no LLM)
 // ============================================================================
 
 async function migrateSources(): Promise<Map<string, string>> {
-  // Returns Map<"v1_table:v1_id", "v2_uuid"> so leads can FK to the new sources.
   const mapping = new Map<string, string>();
-
   console.log("\n--- Migrating sources ---");
 
-  // lifestyle_sources (NEW table — prefer values from here when slug collides)
   const newSources = await pool.query(
     "SELECT id, name, slug, region, publication_type, base_url, feed_url, scrape_config, check_interval_min, status FROM lifestyle_sources"
   );
   console.log(`Found ${newSources.rowCount} rows in lifestyle_sources`);
 
   for (const row of newSources.rows) {
-    const domain = (() => {
-      try {
-        return new URL(row.base_url).hostname;
-      } catch {
-        return row.slug;
-      }
-    })();
+    const domain = (() => { try { return new URL(row.base_url).hostname; } catch { return row.slug; } })();
     const newId = randomUUID();
     if (COMMIT) {
-      await pool.query(
+      const res = await pool.query(
         `INSERT INTO sources_v2 (id, category, name, slug, domain, base_url, region, publication_type, feed_url, scrape_config, check_interval_min, status, active)
          VALUES ($1, 'lifestyle', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE)
-         ON CONFLICT (slug) DO UPDATE SET base_url = EXCLUDED.base_url RETURNING id`,
+         ON CONFLICT (slug) DO UPDATE SET base_url = EXCLUDED.base_url
+         RETURNING id`,
         [newId, row.name, row.slug, domain, row.base_url, row.region, row.publication_type, row.feed_url, row.scrape_config, row.check_interval_min, row.status]
       );
+      mapping.set(`lifestyle_sources:${row.id}`, res.rows[0].id);
+    } else {
+      mapping.set(`lifestyle_sources:${row.id}`, newId);
     }
-    mapping.set(`lifestyle_sources:${row.id}`, newId);
   }
 
-  // publications (OLD table — only insert if slug not already present)
   const oldSources = await pool.query(
-    "SELECT id, name, slug, base_url, tier, region, feed_url, scrape_config, check_interval_min, is_active FROM publications"
+    "SELECT id, name, slug, base_url, region, feed_url, scrape_config, check_interval_min, is_active FROM publications"
   );
   console.log(`Found ${oldSources.rowCount} rows in publications`);
 
-  const existingSlugs = new Set(newSources.rows.map((r: { slug: string }) => r.slug));
-
   for (const row of oldSources.rows) {
-    if (existingSlugs.has(row.slug)) {
-      // Reuse the new-table mapping (find by slug)
-      const matched = newSources.rows.find((r: { slug: string }) => r.slug === row.slug);
-      if (matched) {
-        mapping.set(`publications:${row.id}`, mapping.get(`lifestyle_sources:${matched.id}`)!);
-      }
+    const existingFromNew = newSources.rows.find((r: { slug: string }) => r.slug === row.slug);
+    if (existingFromNew) {
+      mapping.set(`publications:${row.id}`, mapping.get(`lifestyle_sources:${existingFromNew.id}`)!);
       continue;
     }
-
-    const domain = (() => {
-      try {
-        return new URL(row.base_url).hostname;
-      } catch {
-        return row.slug;
-      }
-    })();
+    const domain = (() => { try { return new URL(row.base_url).hostname; } catch { return row.slug; } })();
     const newId = randomUUID();
     if (COMMIT) {
-      await pool.query(
+      const res = await pool.query(
         `INSERT INTO sources_v2 (id, category, name, slug, domain, base_url, region, feed_url, scrape_config, check_interval_min, active)
          VALUES ($1, 'lifestyle', $2, $3, $4, $5, $6, $7, $8, $9, $10)
-         ON CONFLICT (slug) DO NOTHING`,
+         ON CONFLICT (slug) DO UPDATE SET base_url = EXCLUDED.base_url
+         RETURNING id`,
         [newId, row.name, row.slug, domain, row.base_url, row.region, row.feed_url, row.scrape_config, row.check_interval_min, row.is_active]
       );
+      mapping.set(`publications:${row.id}`, res.rows[0].id);
+    } else {
+      mapping.set(`publications:${row.id}`, newId);
     }
-    mapping.set(`publications:${row.id}`, newId);
   }
 
   console.log(`Source mapping built: ${mapping.size} entries.`);
@@ -227,318 +182,275 @@ async function migrateSources(): Promise<Map<string, string>> {
 }
 
 // ============================================================================
-// Article-row → RawArticle adapter
+// Tier A — bulk copy >=70 (no LLM)
 // ============================================================================
 
-interface V1Row {
-  sourceTable: "lifestyle_leads" | "lifestyle_articles";
-  sourceId: string;
-  publicationId: string | null;
-  url: string;
-  title: string;
-  fullText: string | null;
-  snippet: string | null;
-  publishedAt: Date | null;
-  region: string | null;
-  sourceName: string;
-  saved: boolean;
-  dismissed: boolean;
-  feedback: string | null;
-}
+async function bulkCopyTierA(sourceMap: Map<string, string>): Promise<void> {
+  console.log("\n--- Tier A: bulk-copy rows with relevance_score >= 70 ---");
 
-function toRawArticle(row: V1Row): RawArticle {
-  return {
-    headline: row.title || "(no title)",
-    url: row.url,
-    source: row.sourceName,
-    sourceTier: "tier2",
-    publishedAt: row.publishedAt ?? new Date(),
-    content: row.fullText ?? row.snippet ?? "",
-    region: row.region ?? "Unknown",
-    fetchMethod: "rss",
-  };
-}
+  // Track URLs we've copied so the second source table doesn't insert duplicates.
+  const copiedUrls = new Set<string>();
 
-// ============================================================================
-// Per-row pipeline
-// ============================================================================
+  // ----- From lifestyle_articles (status='extracted') -----
+  const lifestyleArticlesRes = await pool.query(`
+    SELECT a.id, a.source_id, a.url, a.title, a.full_text, a.snippet,
+           a.published_at, a.headline AS ai_headline, a.summary, a.banker_angle,
+           a.event_type, a.relevance_score, a.image_url, a.filter_reason,
+           s.region, s.name as source_name
+    FROM lifestyle_articles a
+    LEFT JOIN lifestyle_sources s ON a.source_id = s.id
+    WHERE a.status = 'extracted' AND a.relevance_score >= 70
+    ORDER BY a.relevance_score DESC, a.created_at ASC
+  `);
+  console.log(`  lifestyle_articles candidates: ${lifestyleArticlesRes.rowCount}`);
 
-async function processRow(row: V1Row, sourceUuid: string | null, seenCompanies: Set<string>): Promise<void> {
-  stats.total++;
-  const headline = row.title || "(no title)";
-
-  if (await alreadyProcessed(row.sourceTable, row.sourceId)) {
-    stats.alreadyProcessed++;
-    return;
-  }
-
-  const startTime = Date.now();
-  const article = toRawArticle(row);
-
-  try {
-    // ---- Stage 1: interest filter ----
-    stats.primaryCalls++;
-    const interest = await passesInterestFilter(article, DEFAULT_INTEREST_FILTER_PROMPT, DEFAULT_REGIONS);
-    await sleep(RATE_LIMIT_MS);
-    if (!interest.passes) {
-      const reason = interest.reason ?? "interest filter rejected";
-      trackDrop("interest_filter", reason, headline);
-      await recordProgress({
-        sourceTable: row.sourceTable,
-        sourceId: row.sourceId,
-        stage: "interest_filter",
-        outcome: "dropped",
-        dropReason: reason,
-        durationMs: Date.now() - startTime,
-      });
-      return;
+  for (const r of lifestyleArticlesRes.rows) {
+    if (await alreadyProcessed("lifestyle_articles", r.id)) continue;
+    if (copiedUrls.has(r.url)) {
+      stats.tierA_dedup_url++;
+      continue;
     }
+    copiedUrls.add(r.url);
 
-    // ---- Stage 2: company extraction ----
-    stats.primaryCalls++;
-    const company = await extractPrimaryCompany(article);
-    await sleep(RATE_LIMIT_MS);
-    if (!company.companyName) {
-      trackDrop("company_extraction", "no identifiable company", headline);
-      await recordProgress({
-        sourceTable: row.sourceTable,
-        sourceId: row.sourceId,
-        stage: "company_extraction",
-        outcome: "dropped",
-        dropReason: "no company",
-        durationMs: Date.now() - startTime,
-      });
-      return;
-    }
-
-    // ---- Stage 3: public company check ----
-    stats.primaryCalls++;
-    const publicCheck = await isPublicCompany(company.companyName, headline);
-    await sleep(RATE_LIMIT_MS);
-    if (publicCheck.isPublic) {
-      trackDrop("public_company", "company already public", headline);
-      await recordProgress({
-        sourceTable: row.sourceTable,
-        sourceId: row.sourceId,
-        stage: "public_company",
-        outcome: "dropped",
-        dropReason: "company is publicly listed",
-        durationMs: Date.now() - startTime,
-      });
-      return;
-    }
-
-    // ---- Stage 4: in-batch dedup ----
-    const companyKey = company.companyName.toLowerCase().trim();
-    if (seenCompanies.has(companyKey)) {
-      trackDrop("dedup_company", "duplicate company in batch", headline);
-      await recordProgress({
-        sourceTable: row.sourceTable,
-        sourceId: row.sourceId,
-        stage: "dedup_company",
-        outcome: "dropped",
-        dropReason: `duplicate of company "${company.companyName}" earlier in batch`,
-        durationMs: Date.now() - startTime,
-      });
-      return;
-    }
-    // Note: skipping LLM-based checkDuplication for migration. The headline-level
-    // similarity check is more relevant for live scans than for the historical
-    // import — at this point we just want one canonical lead per company.
-
-    // ---- Stage 5: skip fetchFullArticleContent (we have full_text or snippet) ----
-
-    // ---- Stage 6: deep analysis ----
-    stats.primaryCalls++;
-    const fullContent = row.fullText ?? row.snippet ?? "";
-    const analysis = await deepAnalyzeArticle(article, fullContent, DEFAULT_REGIONS);
-    await sleep(RATE_LIMIT_MS);
-
-    if (!analysis) {
-      trackDrop("deep_analysis", "analysis returned null", headline);
-      await recordProgress({
-        sourceTable: row.sourceTable,
-        sourceId: row.sourceId,
-        stage: "deep_analysis",
-        outcome: "dropped",
-        dropReason: "deep analysis returned null",
-        durationMs: Date.now() - startTime,
-      });
-      return;
-    }
-
-    const score = analysis.leadData.priorityScore ?? 0;
-    if (score < SCORE_THRESHOLD) {
-      trackDrop("score_threshold", `score ${score} < ${SCORE_THRESHOLD}`, headline);
-      await recordProgress({
-        sourceTable: row.sourceTable,
-        sourceId: row.sourceId,
-        stage: "score_threshold",
-        outcome: "dropped",
-        dropReason: `score ${score} below ${SCORE_THRESHOLD}`,
-        durationMs: Date.now() - startTime,
-      });
-      return;
-    }
-
-    // ---- Stage 7 (enrichment) skipped — would 2x cost; can run as a separate pass later ----
-
-    // ---- Insert into leads_v2 ----
-    seenCompanies.add(companyKey);
+    const sourceUuid = r.source_id ? sourceMap.get(`lifestyle_sources:${r.source_id}`) ?? null : null;
     const leadId = randomUUID();
-    const leadData = analysis.leadData;
+    const score = r.relevance_score ?? 70;
 
     if (COMMIT) {
-      const status = row.saved ? "saved" : row.dismissed ? "dismissed" : "new";
       await pool.query(
         `INSERT INTO leads_v2 (
            id, category, source_id,
            headline, source_url, source_name, source_tier,
            published_at, region,
            company_names, founder_names, investors, matched_keywords,
-           ai_summary, wealth_angle, key_financials, pipeline_reasoning, sea_connection,
-           priority_score, priority_level, status, fetch_method, analyzed_by_model
+           ai_summary, banker_angle, event_type, relevance_score,
+           priority_score, priority_level, status, fetch_method,
+           analyzed_by_model
          ) VALUES (
            $1, 'lifestyle', $2,
-           $3, $4, $5, $6,
-           $7, $8,
-           $9, $10, $11, $12,
-           $13, $14, $15, $16, $17,
-           $18, $19, $20, $21, $22
+           $3, $4, $5, 'tier2',
+           $6, $7,
+           '{}', '{}', '{}', '{}',
+           $8, $9, $10, $11,
+           $12, $13, 'new', 'rss',
+           'google/gemini-2.5-flash-lite (v1 lifestyle scanner)'
          )`,
         [
           leadId, sourceUuid,
-          headline, row.url, row.sourceName, "tier2",
-          leadData.publishedAt ?? row.publishedAt ?? new Date(), row.region ?? "Unknown",
-          leadData.companyNames ?? [company.companyName],
-          leadData.founderNames ?? [],
-          leadData.investors ?? [],
-          leadData.matchedKeywords ?? [],
-          leadData.aiSummary ?? "",
-          analysis.wealthAngle ?? "",
-          analysis.keyFinancials ?? null,
-          leadData.pipelineReasoning ?? null,
-          leadData.seaConnection ?? null,
-          score,
-          leadData.priorityLevel ?? "medium",
-          status,
-          "rss",
-          "google/gemini-2.5-flash-lite",
+          r.title, r.url, r.source_name ?? "unknown",
+          r.published_at ?? new Date(), r.region ?? "Unknown",
+          r.summary ?? "", r.banker_angle, r.event_type, score,
+          score, priorityLevelFor(score),
+        ]
+      );
+    }
+    stats.tierA_copied++;
+    if (stats.sampleAccepted.length < 30) {
+      stats.sampleAccepted.push({ headline: r.title ?? "(no title)", score, tier: "A", source: r.source_name ?? "unknown" });
+    }
+    await recordProgress({ sourceTable: "lifestyle_articles", sourceId: r.id, stage: "tier_a_bulk", outcome: COMMIT ? "inserted" : "passed", targetLeadId: leadId });
+  }
+
+  // ----- From lifestyle_leads (OLD table) -----
+  const lifestyleLeadsRes = await pool.query(`
+    SELECT l.id, l.publication_id, l.url, l.title, l.full_text, l.snippet,
+           l.published_at, l.headline AS ai_headline, l.summary, l.banker_angle,
+           l.event_type, l.relevance_score, l.wealth_signals, l.image_url,
+           COALESCE(l.saved, FALSE) AS saved,
+           COALESCE(l.dismissed, FALSE) AS dismissed,
+           l.feedback,
+           p.region, p.name as source_name
+    FROM lifestyle_leads l
+    LEFT JOIN publications p ON l.publication_id = p.id
+    WHERE l.relevance_score >= 70
+    ORDER BY l.relevance_score DESC, l.id ASC
+  `);
+  console.log(`  lifestyle_leads candidates: ${lifestyleLeadsRes.rowCount}`);
+
+  for (const r of lifestyleLeadsRes.rows) {
+    if (await alreadyProcessed("lifestyle_leads", r.id)) continue;
+    if (copiedUrls.has(r.url)) {
+      stats.tierA_dedup_url++;
+      await recordProgress({ sourceTable: "lifestyle_leads", sourceId: String(r.id), stage: "tier_a_dedup", outcome: "dropped", dropReason: "URL already migrated via lifestyle_articles" });
+      continue;
+    }
+    copiedUrls.add(r.url);
+
+    const sourceUuid = r.publication_id ? sourceMap.get(`publications:${r.publication_id}`) ?? null : null;
+    const leadId = randomUUID();
+    const score = Math.round(r.relevance_score ?? 70);
+    const status = r.saved ? "saved" : r.dismissed ? "dismissed" : "new";
+    const matchedKeywords: string[] = r.wealth_signals ?? [];
+
+    if (COMMIT) {
+      await pool.query(
+        `INSERT INTO leads_v2 (
+           id, category, source_id,
+           headline, source_url, source_name, source_tier,
+           published_at, region,
+           company_names, founder_names, investors, matched_keywords,
+           ai_summary, banker_angle, event_type, relevance_score,
+           priority_score, priority_level, status, fetch_method,
+           analyzed_by_model
+         ) VALUES (
+           $1, 'lifestyle', $2,
+           $3, $4, $5, 'tier2',
+           $6, $7,
+           '{}', '{}', '{}', $8,
+           $9, $10, $11, $12,
+           $13, $14, $15, 'rss',
+           'google/gemini-2.5-flash-lite (v1 lifestyle scanner)'
+         )`,
+        [
+          leadId, sourceUuid,
+          r.title, r.url, r.source_name ?? "unknown",
+          r.published_at ?? new Date(), r.region ?? "Unknown",
+          matchedKeywords,
+          r.summary ?? "", r.banker_angle, r.event_type, score,
+          score, priorityLevelFor(score), status,
         ]
       );
 
-      // Preserve saved metadata
-      if (row.saved) {
-        await pool.query(
-          `INSERT INTO saved_leads_v2 (lead_id) VALUES ($1)`,
-          [leadId]
-        );
+      if (r.saved) {
+        await pool.query(`INSERT INTO saved_leads_v2 (lead_id) VALUES ($1)`, [leadId]);
       }
-      // Preserve feedback as lead_feedback_v2 row
-      if (row.feedback === "thumbs_up" || row.feedback === "thumbs_down") {
-        await pool.query(
-          `INSERT INTO lead_feedback_v2 (lead_id, verdict) VALUES ($1, $2)`,
-          [leadId, row.feedback]
-        );
+      if (r.feedback === "thumbs_up" || r.feedback === "thumbs_down") {
+        await pool.query(`INSERT INTO lead_feedback_v2 (lead_id, verdict) VALUES ($1, $2)`, [leadId, r.feedback]);
       }
     }
-
-    stats.inserted++;
+    stats.tierA_copied++;
     if (stats.sampleAccepted.length < 30) {
-      stats.sampleAccepted.push({ headline, score, company: company.companyName, sourceName: row.sourceName });
+      stats.sampleAccepted.push({ headline: r.title ?? "(no title)", score, tier: "A", source: r.source_name ?? "unknown" });
     }
-    await recordProgress({
-      sourceTable: row.sourceTable,
-      sourceId: row.sourceId,
-      stage: "inserted",
-      outcome: COMMIT ? "inserted" : "passed",
-      targetLeadId: leadId,
-      durationMs: Date.now() - startTime,
-    });
-  } catch (err: any) {
-    stats.failed++;
-    const msg = err?.message ?? String(err);
-    console.error(`  ! row failed: ${headline.slice(0, 60)} — ${msg}`);
-    await recordProgress({
-      sourceTable: row.sourceTable,
-      sourceId: row.sourceId,
-      stage: "error",
-      outcome: "failed",
-      dropReason: msg,
-      durationMs: Date.now() - startTime,
-    });
+    await recordProgress({ sourceTable: "lifestyle_leads", sourceId: String(r.id), stage: "tier_a_bulk", outcome: COMMIT ? "inserted" : "passed", targetLeadId: leadId });
   }
+
+  console.log(`  Tier A copied: ${stats.tierA_copied} (URL-dedup: ${stats.tierA_dedup_url})`);
 }
 
 // ============================================================================
-// Row iterators
+// Tier B — re-validate 40-69 through lifestyle filter
 // ============================================================================
 
-async function* iterateLifestyleLeads(sourceMap: Map<string, string>): AsyncGenerator<{ row: V1Row; sourceUuid: string | null }> {
-  const sql = `
+async function revalidateTierB(sourceMap: Map<string, string>): Promise<void> {
+  console.log("\n--- Tier B: re-validate rows with relevance_score 40-69 ---");
+
+  const limit = SAMPLE_N ? `LIMIT ${SAMPLE_N}` : "";
+
+  // Most Tier B candidates are in lifestyle_leads (lifestyle_articles has 0).
+  const res = await pool.query(`
     SELECT l.id, l.publication_id, l.url, l.title, l.full_text, l.snippet,
-           l.published_at, p.region, p.name as source_name,
-           COALESCE(l.saved, FALSE) as saved,
-           COALESCE(l.dismissed, FALSE) as dismissed,
-           l.feedback
+           l.published_at, l.headline AS ai_headline, l.summary, l.banker_angle,
+           l.event_type, l.relevance_score, l.wealth_signals, l.image_url,
+           COALESCE(l.saved, FALSE) AS saved,
+           COALESCE(l.dismissed, FALSE) AS dismissed,
+           l.feedback,
+           p.region, p.name as source_name
     FROM lifestyle_leads l
     LEFT JOIN publications p ON l.publication_id = p.id
-    ORDER BY l.relevance_score DESC NULLS LAST, l.id ASC
-    ${SAMPLE_N ? `LIMIT ${SAMPLE_N}` : LIMIT ? `LIMIT ${LIMIT}` : ""}
-  `;
-  const res = await pool.query(sql);
+    WHERE l.relevance_score >= 40 AND l.relevance_score < 70
+    ORDER BY l.relevance_score DESC, l.id ASC
+    ${limit}
+  `);
+  console.log(`  lifestyle_leads Tier B candidates: ${res.rowCount}`);
+
   for (const r of res.rows) {
-    yield {
-      row: {
+    if (await alreadyProcessed("lifestyle_leads", String(r.id))) continue;
+
+    const articleInput = {
+      title: r.title ?? "",
+      snippet: r.snippet ?? r.full_text?.slice(0, 1000) ?? "",
+    };
+
+    try {
+      stats.llmCalls++;
+      const decision = await classifyLifestyleArticle(articleInput as any);
+      if (!decision.relevant) {
+        stats.tierB_rejected++;
+        if (stats.sampleRejected.length < 30) {
+          stats.sampleRejected.push({ headline: r.title ?? "(no title)", reason: decision.reason ?? "rejected by lifestyle filter" });
+        }
+        await recordProgress({
+          sourceTable: "lifestyle_leads",
+          sourceId: String(r.id),
+          stage: "tier_b_classify",
+          outcome: "dropped",
+          dropReason: decision.reason ?? "rejected",
+        });
+        continue;
+      }
+
+      // Passed re-validation — insert with original score
+      const sourceUuid = r.publication_id ? sourceMap.get(`publications:${r.publication_id}`) ?? null : null;
+      const leadId = randomUUID();
+      const score = Math.round(r.relevance_score ?? 40);
+      const status = r.saved ? "saved" : r.dismissed ? "dismissed" : "new";
+      const matchedKeywords: string[] = r.wealth_signals ?? [];
+
+      if (COMMIT) {
+        await pool.query(
+          `INSERT INTO leads_v2 (
+             id, category, source_id,
+             headline, source_url, source_name, source_tier,
+             published_at, region,
+             company_names, founder_names, investors, matched_keywords,
+             ai_summary, banker_angle, event_type, relevance_score,
+             priority_score, priority_level, status, fetch_method,
+             analyzed_by_model, pipeline_reasoning
+           ) VALUES (
+             $1, 'lifestyle', $2,
+             $3, $4, $5, 'tier2',
+             $6, $7,
+             '{}', '{}', '{}', $8,
+             $9, $10, $11, $12,
+             $13, $14, $15, 'rss',
+             'google/gemini-2.5-flash-lite (Tier B re-validated)', $16
+           )`,
+          [
+            leadId, sourceUuid,
+            r.title, r.url, r.source_name ?? "unknown",
+            r.published_at ?? new Date(), r.region ?? "Unknown",
+            matchedKeywords,
+            r.summary ?? "", r.banker_angle, decision.eventType ?? r.event_type, score,
+            score, priorityLevelFor(score), status,
+            decision.reason,
+          ]
+        );
+
+        if (r.saved) {
+          await pool.query(`INSERT INTO saved_leads_v2 (lead_id) VALUES ($1)`, [leadId]);
+        }
+        if (r.feedback === "thumbs_up" || r.feedback === "thumbs_down") {
+          await pool.query(`INSERT INTO lead_feedback_v2 (lead_id, verdict) VALUES ($1, $2)`, [leadId, r.feedback]);
+        }
+      }
+
+      stats.tierB_passed++;
+      if (stats.sampleAccepted.length < 30) {
+        stats.sampleAccepted.push({ headline: r.title ?? "(no title)", score, tier: "B", source: r.source_name ?? "unknown" });
+      }
+      await recordProgress({
         sourceTable: "lifestyle_leads",
         sourceId: String(r.id),
-        publicationId: r.publication_id ? String(r.publication_id) : null,
-        url: r.url,
-        title: r.title ?? "",
-        fullText: r.full_text,
-        snippet: r.snippet,
-        publishedAt: r.published_at,
-        region: r.region,
-        sourceName: r.source_name ?? "unknown",
-        saved: r.saved,
-        dismissed: r.dismissed,
-        feedback: r.feedback,
-      },
-      sourceUuid: r.publication_id ? sourceMap.get(`publications:${r.publication_id}`) ?? null : null,
-    };
+        stage: "tier_b_classify",
+        outcome: COMMIT ? "inserted" : "passed",
+        targetLeadId: leadId,
+      });
+    } catch (err: any) {
+      stats.tierB_errored++;
+      const msg = err?.message ?? String(err);
+      console.error(`  ! row ${r.id} failed: ${msg.slice(0, 100)}`);
+      await recordProgress({
+        sourceTable: "lifestyle_leads",
+        sourceId: String(r.id),
+        stage: "tier_b_classify",
+        outcome: "failed",
+        dropReason: msg,
+      });
+    }
   }
-}
 
-async function* iterateLifestyleArticles(sourceMap: Map<string, string>): AsyncGenerator<{ row: V1Row; sourceUuid: string | null }> {
-  const sql = `
-    SELECT a.id, a.source_id, a.url, a.title, a.full_text, a.snippet,
-           a.published_at, s.region, s.name as source_name
-    FROM lifestyle_articles a
-    LEFT JOIN lifestyle_sources s ON a.source_id = s.id
-    ORDER BY a.relevance_score DESC NULLS LAST, a.created_at ASC
-    ${SAMPLE_N ? `LIMIT ${SAMPLE_N}` : LIMIT ? `LIMIT ${LIMIT}` : ""}
-  `;
-  const res = await pool.query(sql);
-  for (const r of res.rows) {
-    yield {
-      row: {
-        sourceTable: "lifestyle_articles",
-        sourceId: r.id,
-        publicationId: r.source_id ? String(r.source_id) : null,
-        url: r.url,
-        title: r.title ?? "",
-        fullText: r.full_text,
-        snippet: r.snippet,
-        publishedAt: r.published_at,
-        region: r.region,
-        sourceName: r.source_name ?? "unknown",
-        saved: false,
-        dismissed: false,
-        feedback: null,
-      },
-      sourceUuid: r.source_id ? sourceMap.get(`lifestyle_sources:${r.source_id}`) ?? null : null,
-    };
-  }
+  console.log(`  Tier B: ${stats.tierB_passed} passed, ${stats.tierB_rejected} rejected, ${stats.tierB_errored} errored`);
 }
 
 // ============================================================================
@@ -547,63 +459,50 @@ async function* iterateLifestyleArticles(sourceMap: Map<string, string>): AsyncG
 
 function writeReport(durationMs: number) {
   const mins = Math.round(durationMs / 60_000);
-  const totalCalls = stats.primaryCalls + stats.fallbackCalls;
-  // Rough cost estimate: Gemini 2.5 Flash Lite at $0.10 / M input + $0.40 / M output.
-  // Assume ~2k input + 500 output per call → $0.0004 per call.
-  const estCostUsd = (totalCalls * 0.0004).toFixed(4);
-
-  const dropLines = Object.entries(stats.droppedAtStage)
-    .sort(([, a], [, b]) => b - a)
-    .map(([stage, n]) => `- ${stage}: ${n}`)
-    .join("\n");
+  const estCostUsd = (stats.llmCalls * 0.0004).toFixed(4);
 
   const accepted = stats.sampleAccepted
-    .map((s) => `- [${s.score}] **${s.company}** — ${s.headline.slice(0, 100)} _(${s.sourceName})_`)
+    .map((s) => `- [Tier ${s.tier} · ${s.score}] ${s.headline.slice(0, 100)} _(${s.source})_`)
     .join("\n");
-  const dropped = stats.sampleDropped
-    .map((s) => `- [${s.stage}] ${s.headline.slice(0, 100)} — _${s.reason.slice(0, 200)}_`)
+  const rejected = stats.sampleRejected
+    .map((s) => `- ${s.headline.slice(0, 100)} — _${s.reason.slice(0, 200)}_`)
     .join("\n");
 
-  const md = `# v1 → v2 Migration Report
+  const md = `# v1 → v2 Migration Report — hybrid
 
 _Generated ${new Date().toISOString()}_
 
-**Mode:** ${COMMIT ? "COMMIT (wrote to leads_v2)" : "DRY-RUN (no writes to leads_v2)"}
-${SAMPLE_N ? `**Sample size:** ${SAMPLE_N} rows per source table` : ""}
-${LIMIT ? `**Limit:** ${LIMIT} rows per source table` : ""}
+**Mode:** ${COMMIT ? "COMMIT (wrote to leads_v2)" : "DRY-RUN (no writes)"}
+**Tier scope:** ${TIER}
+${SAMPLE_N ? `**Tier B sample size:** ${SAMPLE_N}` : ""}
 
 ## Totals
 
-| Metric | Count |
+| Bucket | Count |
 |---|---:|
-| Rows considered | ${stats.total} |
-| Skipped (already in migration_progress) | ${stats.alreadyProcessed} |
-| Inserted into leads_v2 | ${stats.inserted} |
-| Dropped (filtered out) | ${Object.values(stats.droppedAtStage).reduce((a, b) => a + b, 0)} |
-| Failed (errors) | ${stats.failed} |
+| Tier A copied (score ≥ 70) | ${stats.tierA_copied} |
+| Tier A URL-dedup skipped | ${stats.tierA_dedup_url} |
+| Tier B passed (re-validated 40-69) | ${stats.tierB_passed} |
+| Tier B rejected by lifestyle filter | ${stats.tierB_rejected} |
+| Tier B errored | ${stats.tierB_errored} |
+| **Total leads_v2 inserts** | **${stats.tierA_copied + stats.tierB_passed}** |
 
-## LLM cost
+## LLM cost (Tier B only)
 
-| | Count |
+| | |
 |---|---:|
-| Primary model calls | ${stats.primaryCalls} |
-| Fallback model calls | ${stats.fallbackCalls} |
-| Total | ${totalCalls} |
+| Classify calls | ${stats.llmCalls} |
 | Est. cost | ~$${estCostUsd} |
 
 Run duration: ${mins} min (${(durationMs / 1000).toFixed(1)}s).
-
-## Drops by stage
-
-${dropLines || "_(none)_"}
 
 ## Sample — accepted leads (up to 30)
 
 ${accepted || "_(none)_"}
 
-## Sample — dropped rows (up to 30, with reasons)
+## Sample — Tier B rejected (up to 30, with reasons)
 
-${dropped || "_(none)_"}
+${rejected || "_(none)_"}
 `;
   writeFileSync(REPORT_PATH, md);
   console.log(`\nReport written: ${REPORT_PATH}`);
@@ -614,43 +513,18 @@ ${dropped || "_(none)_"}
 // ============================================================================
 
 async function main() {
-  console.log("=== News-sensei v1 → v2 migration ===");
-  console.log(`Mode: ${COMMIT ? "COMMIT" : "DRY-RUN"}`);
-  if (SAMPLE_N) console.log(`Sample size: ${SAMPLE_N} per source table`);
-  if (LIMIT) console.log(`Limit: ${LIMIT} per source table`);
-  if (SOURCE_FILTER) console.log(`Source filter: ${SOURCE_FILTER}`);
+  console.log("=== News-sensei v1 → v2 migration (hybrid) ===");
+  console.log(`Mode: ${COMMIT ? "COMMIT" : "DRY-RUN"} | Tier: ${TIER}${SAMPLE_N ? ` | Sample: ${SAMPLE_N}` : ""}`);
 
   const startTime = Date.now();
   const sourceMap = await migrateSources();
-  const seenCompanies = new Set<string>();
 
-  if (!SOURCE_FILTER || SOURCE_FILTER === "lifestyle_leads") {
-    console.log("\n--- Processing lifestyle_leads ---");
-    let i = 0;
-    for await (const { row, sourceUuid } of iterateLifestyleLeads(sourceMap)) {
-      i++;
-      if (i % 50 === 0) {
-        console.log(`  [${i}] processed=${stats.total} inserted=${stats.inserted} dropped=${Object.values(stats.droppedAtStage).reduce((a, b) => a + b, 0)}`);
-      }
-      await processRow(row, sourceUuid, seenCompanies);
-    }
-  }
-
-  if (!SOURCE_FILTER || SOURCE_FILTER === "lifestyle_articles") {
-    console.log("\n--- Processing lifestyle_articles ---");
-    let i = 0;
-    for await (const { row, sourceUuid } of iterateLifestyleArticles(sourceMap)) {
-      i++;
-      if (i % 50 === 0) {
-        console.log(`  [${i}] processed=${stats.total} inserted=${stats.inserted} dropped=${Object.values(stats.droppedAtStage).reduce((a, b) => a + b, 0)}`);
-      }
-      await processRow(row, sourceUuid, seenCompanies);
-    }
-  }
+  if (TIER === "A" || TIER === "both") await bulkCopyTierA(sourceMap);
+  if (TIER === "B" || TIER === "both") await revalidateTierB(sourceMap);
 
   const durationMs = Date.now() - startTime;
   console.log("\n=== Done ===");
-  console.log(`Total: ${stats.total} | Inserted: ${stats.inserted} | Dropped: ${Object.values(stats.droppedAtStage).reduce((a, b) => a + b, 0)} | Failed: ${stats.failed}`);
+  console.log(`Tier A: ${stats.tierA_copied} copied | Tier B: ${stats.tierB_passed} passed, ${stats.tierB_rejected} rejected`);
   writeReport(durationMs);
 
   await pool.end();
@@ -661,5 +535,3 @@ main().catch(async (err) => {
   await pool.end();
   process.exit(1);
 });
-// Side-note: hashUrl is exported-ready in case Phase 3 also needs it.
-void hashUrl;

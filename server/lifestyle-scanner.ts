@@ -126,7 +126,7 @@ async function upsertCompany(name: string, articleUrl: string) {
   return createdRows[0];
 }
 
-async function classifyLifestyleArticle(article: typeof lifestyleArticles.$inferSelect | typeof lifestyleArticles.$inferInsert) {
+export async function classifyLifestyleArticle(article: typeof lifestyleArticles.$inferSelect | typeof lifestyleArticles.$inferInsert) {
   const prompt = `You are filtering luxury/society magazine content for a UHNW private banker.
 Return JSON only.
 
@@ -158,12 +158,13 @@ Return:
     model: MODEL,
     messages: [{ role: "user", content: prompt }],
     temperature: 0.1,
+    response_format: { type: "json_object" },
   });
 
   return JSON.parse(stripJsonFences(response.choices[0]?.message?.content || '{"relevant":false,"reason":"empty","confidence":0,"eventType":"other"}'));
 }
 
-async function extractStructuredLifestyleData(article: typeof lifestyleArticles.$inferSelect, source: typeof lifestyleSources.$inferSelect) {
+export async function extractStructuredLifestyleData(article: typeof lifestyleArticles.$inferSelect, source: typeof lifestyleSources.$inferSelect) {
   const prompt = `Extract wealthy/notable people and companies from this lifestyle article for a private banker CRM. Return JSON only.
 
 Title: ${article.title}
@@ -184,6 +185,7 @@ Schema:
     model: MODEL,
     messages: [{ role: "user", content: prompt }],
     temperature: 0.1,
+    response_format: { type: "json_object" },
   });
 
   const parsed = JSON.parse(stripJsonFences(response.choices[0]?.message?.content || "{}"));
