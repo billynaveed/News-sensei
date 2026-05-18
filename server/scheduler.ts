@@ -44,17 +44,23 @@ export async function startScheduler(): Promise<void> {
   });
   console.log('IPO scan scheduler started (runs every 2 hours)');
 
-  // Always schedule lifestyle scan every 2 hours (RSS-based, no browser needed)
-  lifestyleTask = cron.schedule('30 */2 * * *', async () => {
-    console.log('Running scheduled lifestyle scan...');
-    try {
-      const result = await scanLifestylePipeline();
-      console.log(`Lifestyle scan complete: ${result.newArticles} new articles, ${result.extracted} extracted, ${result.alertsSent} alerts`);
-    } catch (error) {
-      console.error('Error in scheduled lifestyle scan:', error);
-    }
-  });
-  console.log('Lifestyle scan scheduler started (runs every 2 hours at :30)');
+  // PAUSED 2026-05-18 for v2 schema rebuild (ROADMAP §P0 Phase 0).
+  // Re-enable after Phase 3 cutover lands. Lifestyle scan still runnable
+  // on-demand via POST /api/lifestyle-scan.
+  if (process.env.LIFESTYLE_CRON_ENABLED === 'true') {
+    lifestyleTask = cron.schedule('30 */2 * * *', async () => {
+      console.log('Running scheduled lifestyle scan...');
+      try {
+        const result = await scanLifestylePipeline();
+        console.log(`Lifestyle scan complete: ${result.newArticles} new articles, ${result.extracted} extracted, ${result.alertsSent} alerts`);
+      } catch (error) {
+        console.error('Error in scheduled lifestyle scan:', error);
+      }
+    });
+    console.log('Lifestyle scan scheduler started (runs every 2 hours at :30)');
+  } else {
+    console.log('Lifestyle scan scheduler PAUSED (v2 rebuild in progress). Set LIFESTYLE_CRON_ENABLED=true to resume.');
+  }
 
   console.log(`Configuring scheduler for ${frequency} scans`);
 
