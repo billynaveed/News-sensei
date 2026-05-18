@@ -1,7 +1,7 @@
 import { eq, desc, gte, and, ne, sql, lt } from "drizzle-orm";
 import { db } from "./db";
 import {
-  users, leads, settings, sources, scanLogs, rssFeeds, savedLeads,
+  users, leads, settings, sources, scanLogs, rssFeeds, savedLeads, scannedUrls,
   DEFAULT_INTEREST_FILTER_PROMPT,
   type User, type InsertUser,
   type Lead, type InsertLead, type LeadStatus,
@@ -9,7 +9,8 @@ import {
   type Source, type InsertSource,
   type RssFeed, type InsertRssFeed,
   type ScanLog, type InsertScanLog,
-  type SavedLead, type InsertSavedLead
+  type SavedLead, type InsertSavedLead,
+  type ScannedUrl
 } from "@shared/schema";
 
 export interface IStorage {
@@ -48,6 +49,11 @@ export interface IStorage {
   getScanLogById(id: string): Promise<ScanLog | undefined>;
   createScanLog(log: InsertScanLog): Promise<ScanLog>;
   cleanupOldScanLogs(retentionDays: number): Promise<number>;
+
+  // Scanned URLs (deduplication)
+  hasScannedUrl(urlHash: string): Promise<boolean>;
+  recordScannedUrl(url: string, sourceName: string): Promise<void>;
+  cleanupOldScannedUrls(retentionDays: number): Promise<number>;
 
   // Saved Leads
   getAllSavedLeads(): Promise<(SavedLead & { lead: Lead })[]>;
@@ -340,6 +346,45 @@ export class DatabaseStorage implements IStorage {
     }
 
     return oldLogs.length;
+  }
+
+  async hasScannedUrl(urlHash: string): Promise<boolean> {
+    const [existing] = await db.select().from(scannedUrls).where(eq(scannedUrls.urlHash, urlHash));
+    return !!existing;
+  }
+
+  async recordScannedUrl(url: string, sourceName: string): Promise<void> {
+    const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(url))
+      .then(buf => Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join(''));
+
+    const existing = await this.hasScannedUrl(hash);
+    if (existing) {
+      await db.update(scannedUrls)
+        .set({ lastSeen: new Date(), scanCount: sql`${scannedUrls.scanCount} + 1` })
+        .where(eq(scannedUrls.urlHash, hash));
+    } else {
+      await db.insert(scannedUrls).values({
+        urlHash: hash,
+        url,
+        sourceName,
+        scanCount: 1,
+      });
+    }
+  }
+
+  async cleanupOldScannedUrls(retentionDays: number): Promise<number> {
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
+
+    const oldUrls = await db.select({ urlHash: scannedUrls.urlHash })
+      .from(scannedUrls)
+      .where(lt(scannedUrls.lastSeen, cutoffDate));
+
+    if (oldUrls.length > 0) {
+      await db.delete(scannedUrls).where(lt(scannedUrls.lastSeen, cutoffDate));
+    }
+
+    return oldUrls.length;
   }
 
   // Saved Leads methods

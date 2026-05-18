@@ -6,6 +6,7 @@ import { fetchAllArticles, type RawArticle, type RssFeedWithMeta } from "./adapt
 import { stripJsonFences } from "./json-utils";
 import { enrichSavedLead, formatEnrichmentForSavedLead } from "./founder-enrichment";
 import { passesInterestFilter, extractPrimaryCompany, isPublicCompany, checkDuplication } from "./pipeline-stages";
+import { validateSeaAnchor } from "./sea-guard";
 import { log } from "./index";
 import type { InsertLead, PriorityLevel, SourceTier, SourceSearched, ArticleProcessed, ScrapingBeeDebugEntry } from "@shared/schema";
 
@@ -127,6 +128,7 @@ export interface DeepAnalysisResult {
   };
   wealthAngle: string;
   confidenceScore: number;
+  seaConnection: string | null;
 }
 
 /** Stage 7 result: enrichment metadata from web search */
@@ -309,7 +311,54 @@ Headline: ${article.headline}
 Source: ${article.source}
 Content: ${fullContent.slice(0, 6000)}
 
-Target Regions: ${targetRegions.join(", ")}
+Target Regions (SEA / HK / Taiwan): ${targetRegions.join(", ")}
+
+GEOGRAPHY RULE (strict, source-backed). A lead qualifies on geography ONLY if the
+article itself contains evidence of one of these:
+  1. company_hq           — company is headquartered in a Target Region
+  2. founder_base         — a named founder currently lives / works in a Target Region
+  3. founder_roots        — a named founder has credible roots in a Target Region
+                            (born / raised / educated / family / previously based there)
+  4. operational_centre   — company has a strong operational centre in a Target Region
+                            (regional HQ, primary office, principal market with leadership presence)
+  5. wealth_event         — the article explicitly concerns a wealth liquidity event
+                            for a SEA / HK / Taiwan founder, family or private company
+
+NOT ENOUGH (must NOT pass on these alone — record each one observed in
+disqualifyingSignals so the deterministic guard can reject):
+  - sea_publisher_only      → article is published by a SEA outlet (Tech in Asia,
+                              Business Times, Straits Times, KrASIA, DealStreetAsia,
+                              The Edge, e27, SCMP, CNA, etc) but the subject company
+                              and founders are non-SEA
+  - sea_investor_only       → company is non-SEA but an investor / backer / fund is
+                              SEA-based (GIC, Temasek, Khazanah, EDBI, MUFG-SEA arm,
+                              SEA family office, etc). Investor identity does NOT
+                              establish target-region relevance.
+  - vague_apac_expansion    → vague "expanding into Asia / APAC", "Asian customers",
+                              "Asia growth strategy" with no concrete office, founder,
+                              or HQ in a Target Region
+  - sea_customers_only      → company sells to SEA customers but is not based there
+  - sea_distribution_only   → distribution / partner network in SEA only
+
+Mainland China is NOT in the Target Regions. Beijing, Shanghai, Shenzhen,
+Guangzhou, Hangzhou-based companies do NOT qualify unless they have an
+independent qualifying anchor in HK or Taiwan or another Target Region.
+
+Required structured output:
+- hqLocation       : "City, Country" of the subject company HQ, or null if unclear.
+- founderLocations : array of {"name": "...", "location": "City, Country | null"} for
+                     each named founder. Use null when location is not stated.
+- seaEvidenceType  : one of "company_hq" | "founder_base" | "founder_roots"
+                     | "operational_centre" | "wealth_event" | "none"
+- seaEvidenceText  : a quoted or paraphrased passage from the article (15+ chars)
+                     that supports seaEvidenceType. MUST mention a specific Target
+                     Region city or country. Use empty string if seaEvidenceType
+                     is "none".
+- disqualifyingSignals : array of strings drawn from the NOT ENOUGH list above
+                         (e.g. ["sea_investor_only"]). Empty array if none apply.
+- regionRelevance  : true ONLY if seaEvidenceType is not "none" AND
+                     disqualifyingSignals would not by themselves be the sole
+                     reason for relevance.
 
 Extract and return JSON:
 {
@@ -317,7 +366,7 @@ Extract and return JSON:
   "primaryCompany": "the main company this article is about",
   "founderNames": ["array of founders/key people"],
   "investors": ["array of investors mentioned"],
-  "summary": "Comprehensive 2-3 paragraph summary covering: what happened, deal size/valuation if mentioned, strategic significance, and why this matters for private banking",
+  "summary": "1-2 sentence summary of what happened",
   "keyFinancials": {
     "fundingAmount": "e.g. $50M or null",
     "valuation": "e.g. $500M or null",
@@ -328,12 +377,18 @@ Extract and return JSON:
   "matchedIndicators": ["IPO", "Series B", "Exit", etc],
   "wealthAngle": "Explanation of the wealth/liquidity opportunity for private banking",
   "confidenceScore": 0-100,
+  "hqLocation": "City, Country or null",
+  "founderLocations": [{"name": "Founder Name", "location": "City, Country or null"}],
+  "seaEvidenceType": "company_hq | founder_base | founder_roots | operational_centre | wealth_event | none",
+  "seaEvidenceText": "supporting passage from the article (or empty string if none)",
+  "disqualifyingSignals": ["array of disqualifier strings, may be empty"],
+  "seaConnection": "Specific SEA connection sentence or null",
   "regionRelevance": true/false
 }`;
 
   try {
     const response = await openai.chat.completions.create({
-      model: "anthropic/claude-sonnet-4",
+      model: "google/gemini-2.5-flash-lite",
       messages: [{ role: "user", content: prompt }],
       max_completion_tokens: 2000,
     });
@@ -346,7 +401,7 @@ Extract and return JSON:
 
     const extracted = JSON.parse(stripJsonFences(content));
 
-    // Reject if not relevant to target regions
+    // Reject if not relevant to target regions (LLM verdict)
     if (extracted.regionRelevance === false) {
       logPipelineDecision({
         stage: 6,
@@ -354,6 +409,33 @@ Extract and return JSON:
         articleHeadline: article.headline,
         decision: "REJECTED",
         reason: "Not relevant to target regions",
+        confidenceScore: extracted.confidenceScore ?? 0,
+        durationMs: Date.now() - startTime,
+      });
+      return null;
+    }
+
+    // Deterministic SEA-anchor guard: even if the LLM said regionRelevance=true,
+    // verify structured evidence cannot rest on disqualifying signals (SEA
+    // publisher / SEA investor / vague APAC expansion alone). This is the
+    // hard backstop for the recurring problem where a SEA source/publisher or
+    // SEA-based backer caused non-SEA stories (Anthropic, Hillhouse, ByteDance)
+    // to be mis-classified as SEA leads.
+    const guard = validateSeaAnchor({
+      hqLocation: extracted.hqLocation ?? null,
+      founderLocations: extracted.founderLocations ?? null,
+      seaEvidenceType: extracted.seaEvidenceType ?? "none",
+      seaEvidenceText: extracted.seaEvidenceText ?? extracted.seaConnection ?? "",
+      disqualifyingSignals: extracted.disqualifyingSignals ?? null,
+      llmRegionRelevance: extracted.regionRelevance ?? null,
+    });
+    if (!guard.passes) {
+      logPipelineDecision({
+        stage: 6,
+        stageName: "Deep Analysis",
+        articleHeadline: article.headline,
+        decision: "REJECTED (SEA guard)",
+        reason: `SEA anchor guard: ${guard.reason}`,
         confidenceScore: extracted.confidenceScore ?? 0,
         durationMs: Date.now() - startTime,
       });
@@ -380,6 +462,8 @@ Extract and return JSON:
       region: article.region,
       status: "new",
       fetchMethod: article.fetchMethod,
+      category: "news",
+      seaConnection: extracted.seaConnection || extracted.seaEvidenceText || guard.reason,
     };
 
     const keyFinancials = {
@@ -393,6 +477,7 @@ Extract and return JSON:
       keyFinancials,
       wealthAngle: extracted.wealthAngle || "",
       confidenceScore: extracted.confidenceScore ?? 0,
+      seaConnection: extracted.seaConnection || null,
     };
 
     logPipelineDecision({
@@ -626,6 +711,47 @@ export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: 
     const articlesProcessed: ArticleProcessed[] = [];
     const errors: string[] = [...fetchErrors];
 
+    // --- Cross-scan URL deduplication ---
+    // Track every URL we've ever fetched to avoid re-processing the same article
+    // across multiple scans. This catches articles that failed pre-filter or Stage 1
+    // in previous scans, which the leads-table dedup cannot catch.
+    const uniqueArticles: RawArticle[] = [];
+    for (const article of articles) {
+      const urlHash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(article.url))
+        .then(buf => Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join(''));
+
+      const alreadyScanned = await storage.hasScannedUrl(urlHash);
+      if (alreadyScanned) {
+        duplicatesSkipped++;
+        articlesProcessed.push({
+          headline: article.headline,
+          source: article.source,
+          region: article.region,
+          status: "skipped",
+          reason: "URL already scanned within retention window",
+          fetchMethod: article.fetchMethod,
+        });
+        continue;
+      }
+      uniqueArticles.push(article);
+    }
+
+    // Record all fetched URLs (even those that were deduplicated) so we don't fetch them again
+    for (const article of articles) {
+      await storage.recordScannedUrl(article.url, article.source);
+    }
+
+    log(`[Scan] Fetched ${articles.length} articles, ${uniqueArticles.length} unique after URL dedup (${duplicatesSkipped} skipped)`, "pipeline");
+
+    scanProgress.set(currentScanId, {
+      status: "processing",
+      currentSource: "Multiple sources",
+      articlesFound: uniqueArticles.length,
+      articlesProcessed: 0,
+      totalArticles: uniqueArticles.length,
+      message: `Found ${uniqueArticles.length} unique articles after dedup, processing...`
+    });
+
     const DEFAULT_INTEREST_FILTER_PROMPT = `You are a lead intelligence filter for a private banker focused on ultra-high-net-worth individuals. Determine if this article describes a wealth event relevant to private banking prospecting.
 
 RELEVANT (pass these):
@@ -648,16 +774,16 @@ KEY RULE: There must be a specific named person (founder, entrepreneur, family o
 
     const filterPrompt = settings.interestFilterPrompt || DEFAULT_INTEREST_FILTER_PROMPT;
 
-    for (let i = 0; i < articles.length; i++) {
-      const article = articles[i];
-      
-      scanProgress.set(currentScanId, { 
-        status: "processing", 
+    for (let i = 0; i < uniqueArticles.length; i++) {
+      const article = uniqueArticles[i];
+
+      scanProgress.set(currentScanId, {
+        status: "processing",
         currentSource: article.source,
-        articlesFound: articles.length,
+        articlesFound: uniqueArticles.length,
         articlesProcessed: i,
-        totalArticles: articles.length,
-        message: `[${i+1}/${articles.length}] Processing: ${article.headline.substring(0, 50)}...` 
+        totalArticles: uniqueArticles.length,
+        message: `[${i+1}/${uniqueArticles.length}] Processing: ${article.headline.substring(0, 50)}...`
       });
 
       // --- Pre-check 0: Cheap keyword pre-filter (no API call) ---
@@ -872,7 +998,7 @@ KEY RULE: There must be a specific named person (founder, entrepreneur, family o
     const matchesFound = newLeads + duplicatesSkipped;
 
     log(
-      `[Scan Complete] ${articles.length} articles → ` +
+      `[Scan Complete] ${articles.length} fetched, ${uniqueArticles.length} unique → ` +
       `${interestFiltered} interest-filtered, ${noCompanySkipped} no-company, ` +
       `${publicCompaniesFiltered} public-filtered, ${duplicatesSkipped} duplicates, ` +
       `${newLeads} new leads (${enrichedCount} enriched) [${durationMs}ms]`,
@@ -880,7 +1006,7 @@ KEY RULE: There must be a specific named person (founder, entrepreneur, family o
     );
 
     await storage.createScanLog({
-      articlesScanned: articles.length,
+      articlesScanned: uniqueArticles.length,
       matchesFound,
       newLeads,
       duplicatesSkipped,
@@ -891,13 +1017,23 @@ KEY RULE: There must be a specific named person (founder, entrepreneur, family o
       scrapingBeeDebug: debugEntries.length > 0 ? debugEntries : null,
     });
 
-    scanProgress.set(currentScanId, { 
-      status: "complete", 
-      articlesFound: articles.length,
-      articlesProcessed: articles.length,
-      totalArticles: articles.length,
-      message: `Complete! ${newLeads} new leads found.` 
+    scanProgress.set(currentScanId, {
+      status: "complete",
+      articlesFound: uniqueArticles.length,
+      articlesProcessed: uniqueArticles.length,
+      totalArticles: uniqueArticles.length,
+      message: `Complete! ${newLeads} new leads found.`
     });
+
+    // Cleanup old URL tracking records (keep 7 days)
+    try {
+      const cleaned = await storage.cleanupOldScannedUrls(7);
+      if (cleaned > 0) {
+        log(`[Scan] Cleaned up ${cleaned} old scanned URL records`, "pipeline");
+      }
+    } catch (cleanupError) {
+      log(`[Scan] Error cleaning up scanned URLs: ${cleanupError}`, "pipeline");
+    }
 
     // Send notifications for new high-priority leads
     if (createdLeads.length > 0) {

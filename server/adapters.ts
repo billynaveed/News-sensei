@@ -69,17 +69,25 @@ export async function fetchFromRssFeed(
 
   try {
     const parsed = await rssParser.parseURL(feed.url);
-    
+
+    // Only keep articles published in the last 12 hours
+    const RSS_CUTOFF_HOURS = 12;
+    const rssCutoffTime = new Date(Date.now() - RSS_CUTOFF_HOURS * 60 * 60 * 1000);
+
     for (const item of parsed.items) {
       if (!item.title || !item.link) continue;
 
+      // Skip articles older than 12 hours
+      const pubDate = item.pubDate ? new Date(item.pubDate) : null;
+      if (pubDate && pubDate < rssCutoffTime) continue;
+
       const content = item.contentSnippet || item.content || item.summary || "";
       const combinedText = `${item.title} ${content}`.toLowerCase();
-      
+
       // When keywords array is empty, skip keyword filtering (AI pipeline handles relevance)
       // When keywords array is empty, skip keyword filtering (AI pipeline handles relevance)
       if (keywords.length > 0) {
-        const matchesKeyword = keywords.some(kw => 
+        const matchesKeyword = keywords.some(kw =>
           combinedText.includes(kw.toLowerCase())
         );
         if (!matchesKeyword) continue;
@@ -178,15 +186,23 @@ export async function fetchRssViaScrapingBee(
     }
 
     const parsed = await rssParser.parseString(responseText);
-    
+
+    // Only keep articles published in the last 12 hours
+    const RSS_CUTOFF_HOURS = 12;
+    const rssCutoffTime = new Date(Date.now() - RSS_CUTOFF_HOURS * 60 * 60 * 1000);
+
     for (const item of parsed.items) {
       if (!item.title || !item.link) continue;
 
+      // Skip articles older than 12 hours
+      const pubDate = item.pubDate ? new Date(item.pubDate) : null;
+      if (pubDate && pubDate < rssCutoffTime) continue;
+
       const content = item.contentSnippet || item.content || item.summary || "";
       const combinedText = `${item.title} ${content}`.toLowerCase();
-      
+
       if (keywords.length > 0) {
-        const matchesKeyword = keywords.some(kw => 
+        const matchesKeyword = keywords.some(kw =>
         combinedText.includes(kw.toLowerCase())
       );
 
@@ -256,15 +272,23 @@ export async function fetchFromGoogleNews(
     const googleNewsRssUrl = `https://news.google.com/rss/search?q=${searchQuery}&hl=en&gl=SG&ceid=SG:en`;
     
     const parsed = await rssParser.parseURL(googleNewsRssUrl);
-    
+
+    // Only keep articles published in the last 12 hours
+    const RSS_CUTOFF_HOURS = 12;
+    const rssCutoffTime = new Date(Date.now() - RSS_CUTOFF_HOURS * 60 * 60 * 1000);
+
     for (const item of parsed.items) {
       if (!item.title || !item.link) continue;
 
+      // Skip articles older than 12 hours
+      const pubDate = item.pubDate ? new Date(item.pubDate) : null;
+      if (pubDate && pubDate < rssCutoffTime) continue;
+
       const content = item.contentSnippet || item.content || item.summary || "";
       const combinedText = `${item.title} ${content}`.toLowerCase();
-      
+
       if (keywords.length > 0) {
-        const matchesKeyword = keywords.some(kw => 
+        const matchesKeyword = keywords.some(kw =>
         combinedText.includes(kw.toLowerCase())
       );
 

@@ -2,11 +2,13 @@ import cron, { type ScheduledTask } from 'node-cron';
 import { storage } from './storage';
 import { scanForLeads } from './scanner';
 import { scanForIpoFilings } from './ipo-scanner';
+import { scanLifestylePipeline } from './lifestyle-scanner';
 
 let hourlyTask: ScheduledTask | null = null;
 let dailyTask: ScheduledTask | null = null;
 let weeklyTask: ScheduledTask | null = null;
 let ipoTask: ScheduledTask | null = null;
+let lifestyleTask: ScheduledTask | null = null;
 
 /**
  * Starts the scan scheduler based on current settings
@@ -41,6 +43,18 @@ export async function startScheduler(): Promise<void> {
     }
   });
   console.log('IPO scan scheduler started (runs every 2 hours)');
+
+  // Always schedule lifestyle scan every 2 hours (RSS-based, no browser needed)
+  lifestyleTask = cron.schedule('30 */2 * * *', async () => {
+    console.log('Running scheduled lifestyle scan...');
+    try {
+      const result = await scanLifestylePipeline();
+      console.log(`Lifestyle scan complete: ${result.newArticles} new articles, ${result.extracted} extracted, ${result.alertsSent} alerts`);
+    } catch (error) {
+      console.error('Error in scheduled lifestyle scan:', error);
+    }
+  });
+  console.log('Lifestyle scan scheduler started (runs every 2 hours at :30)');
 
   console.log(`Configuring scheduler for ${frequency} scans`);
 
@@ -108,6 +122,10 @@ export function stopScheduler(): void {
   if (ipoTask) {
     ipoTask.stop();
     ipoTask = null;
+  }
+  if (lifestyleTask) {
+    lifestyleTask.stop();
+    lifestyleTask = null;
   }
 }
 

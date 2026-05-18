@@ -1,4 +1,4 @@
-import { pgTable, text, varchar, integer, timestamp, boolean, json, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, serial, timestamp, boolean, json, jsonb, real } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { sql } from "drizzle-orm";
@@ -59,6 +59,8 @@ export const leads = pgTable("leads", {
   companyDescription: text("company_description"),
   enrichmentData: jsonb("enrichment_data").$type<Record<string, unknown>>(),
   pipelineReasoning: text("pipeline_reasoning"),
+  category: text("category"),
+  seaConnection: text("sea_connection"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
 
@@ -99,11 +101,34 @@ EXCLUDE articles about:
 
 BE STRICT: When in doubt, mark as NOT relevant. A private banker cannot act on general business news — they need a specific liquidity event with an identifiable wealthy individual.
 
-Target Regions: Singapore, Malaysia, Indonesia, Thailand, Vietnam, Philippines, Hong Kong, Taiwan
+Target Regions: Singapore, Malaysia, Indonesia, Thailand, Vietnam, Philippines, Hong Kong, Taiwan.
+
+GEOGRAPHY RULE (strict, source-backed). Pass on geography ONLY when the article
+itself contains evidence of one of:
+  (a) the SUBJECT company is headquartered in a Target Region, OR
+  (b) a NAMED founder is currently based in a Target Region, OR
+  (c) a NAMED founder has credible roots in a Target Region (born / raised /
+      educated / family / previously based there), OR
+  (d) the SUBJECT company has a strong operational centre in a Target Region
+      (regional HQ, primary office with leadership presence), OR
+  (e) the article explicitly concerns a wealth liquidity event for a
+      SEA / HK / Taiwan founder, family or private company.
+
+The following are NOT enough on their own:
+  - SEA publisher or source domain (Tech in Asia, Business Times, Straits Times,
+    KrASIA, DealStreetAsia, The Edge, e27, SCMP, CNA, Hubbis)
+  - SEA-based investor, backer, fund or LP (GIC, Temasek, Khazanah, EDBI,
+    family offices, sovereign funds)
+  - Vague "Asia expansion", "APAC growth", APAC customers or distribution
+  - Mainland China entities (Beijing / Shanghai / Shenzhen / Guangzhou /
+    Hangzhou — e.g. ByteDance, Tencent, Alibaba). Mainland China is NOT a
+    Target Region; only HK and Taiwan count.
+  - Global companies (Anthropic, OpenAI, SpaceX, Stripe) whose only SEA tie is
+    a SEA backer or a SEA-published article.
 
 Return JSON with:
 - relevant: true/false
-- reason: brief explanation of WHY this creates (or doesn't create) a bankable liquidity event
+- reason: brief explanation. If relevant, name which of (a)-(e) applies and quote the supporting passage. If not relevant, name the disqualifying signal.
 - confidenceScore: 0-100 (how confident you are)`;
 
 // Settings table - stores user preferences
@@ -235,6 +260,24 @@ export const insertScanLogSchema = createInsertSchema(scanLogs).omit({
 export type InsertScanLog = z.infer<typeof insertScanLogSchema>;
 export type ScanLog = typeof scanLogs.$inferSelect;
 
+// Scanned URLs table - tracks URLs already processed to prevent re-scanning
+export const scannedUrls = pgTable("scanned_urls", {
+  urlHash: text("url_hash").primaryKey(),
+  url: text("url").notNull(),
+  firstSeen: timestamp("first_seen").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  lastSeen: timestamp("last_seen").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  sourceName: text("source_name"),
+  scanCount: integer("scan_count").notNull().default(1),
+});
+
+export const insertScannedUrlSchema = createInsertSchema(scannedUrls).omit({
+  firstSeen: true,
+  lastSeen: true,
+});
+
+export type InsertScannedUrl = z.infer<typeof insertScannedUrlSchema>;
+export type ScannedUrl = typeof scannedUrls.$inferSelect;
+
 // Saved leads table - separate from leads table for enhanced metadata
 export const savedLeads = pgTable("saved_leads", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -323,3 +366,178 @@ export const researchCache = pgTable("research_cache", {
 });
 
 export type ResearchCacheEntry = typeof researchCache.$inferSelect;
+
+// Lifestyle publication type
+export type LifestylePublicationType = "luxury_magazine" | "business_magazine" | "newspaper" | "blog";
+export type LifestyleSourceStatus = "active" | "paused" | "error";
+export type LifestyleArticleStatus = "pending" | "filtered" | "filtered_out" | "extracted";
+
+// Lifestyle sources table
+export const lifestyleSources = pgTable("lifestyle_sources", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  name: text("name").notNull(),
+  slug: text("slug").notNull().unique(),
+  region: text("region").notNull(),
+  publicationType: text("publication_type").notNull().$type<LifestylePublicationType>(),
+  baseUrl: text("base_url").notNull(),
+  feedUrl: text("feed_url"),
+  scrapeConfig: jsonb("scrape_config"),
+  checkIntervalMin: integer("check_interval_min").notNull().default(240),
+  lastChecked: timestamp("last_checked"),
+  status: text("status").notNull().$type<LifestyleSourceStatus>().default("active"),
+  errorMessage: text("error_message"),
+  errorCount: integer("error_count").notNull().default(0),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+export type LifestyleSource = typeof lifestyleSources.$inferSelect;
+export type InsertLifestyleSource = typeof lifestyleSources.$inferInsert;
+
+// Lifestyle articles table
+export const lifestyleArticles = pgTable("lifestyle_articles", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  sourceId: integer("source_id").notNull().references(() => lifestyleSources.id),
+  url: text("url").notNull().unique(),
+  title: text("title").notNull(),
+  snippet: text("snippet"),
+  imageUrl: text("image_url"),
+  publishedAt: timestamp("published_at"),
+  fullText: text("full_text"),
+  status: text("status").notNull().$type<LifestyleArticleStatus>().default("pending"),
+  filterReason: text("filter_reason"),
+  filterConfidence: real("filter_confidence"),
+  eventType: text("event_type"),
+  headline: text("headline"),
+  summary: text("summary"),
+  bankerAngle: text("banker_angle"),
+  relevanceScore: integer("relevance_score"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+export type LifestyleArticle = typeof lifestyleArticles.$inferSelect;
+
+// People table (shared across news and lifestyle)
+export const people = pgTable("people", {
+  id: serial("id").primaryKey(),
+  fullName: text("full_name").notNull(),
+  firstName: text("first_name"),
+  lastName: text("last_name"),
+  familyName: text("family_name"),
+  aliases: text("aliases").array(),
+  photoUrl: text("photo_url"),
+  bio: text("bio"),
+  nationality: text("nationality"),
+  region: text("region"),
+  city: text("city"),
+  netWorthEstimate: text("net_worth_estimate"),
+  netWorthSource: text("net_worth_source"),
+  wealthGeneration: text("wealth_generation"),
+  wealthSource: text("wealth_source"),
+  familyNotes: text("family_notes"),
+  fatherName: text("father_name"),
+  fatherStatus: text("father_status"),
+  motherName: text("mother_name"),
+  motherStatus: text("mother_status"),
+  spouseName: text("spouse_name"),
+  firstSeenAt: timestamp("first_seen_at").default(sql`CURRENT_TIMESTAMP`),
+  lastMentionedAt: timestamp("last_mentioned_at"),
+  mentionCount: integer("mention_count").default(1),
+  sources: text("sources").array(),
+  enriched: boolean("enriched").default(false),
+  enrichedAt: timestamp("enriched_at"),
+  enrichmentModel: text("enrichment_model"),
+  mergedIntoId: integer("merged_into_id"),
+  contactId: varchar("contact_id"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`),
+});
+
+export type Person = typeof people.$inferSelect;
+
+// Companies table
+export const companies = pgTable("companies", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  aliases: text("aliases").array(),
+  description: text("description"),
+  sector: text("sector"),
+  subSector: text("sub_sector"),
+  hqCountry: text("hq_country"),
+  hqCity: text("hq_city"),
+  foundedYear: integer("founded_year"),
+  website: text("website"),
+  isPublic: boolean("is_public"),
+  stockTicker: text("stock_ticker"),
+  stockExchange: text("stock_exchange"),
+  productsBrands: text("products_brands").array(),
+  brandDescription: text("brand_description"),
+  fundingStage: text("funding_stage"),
+  totalFunding: text("total_funding"),
+  revenueEstimate: text("revenue_estimate"),
+  fundingHistory: jsonb("funding_history"),
+  investors: text("investors").array(),
+  parentCompanyId: integer("parent_company_id"),
+  subsidiaries: text("subsidiaries").array(),
+  enriched: boolean("enriched").default(false),
+  enrichedAt: timestamp("enriched_at"),
+  enrichmentModel: text("enrichment_model"),
+  sourceUrls: text("source_urls").array(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`),
+});
+
+export type Company = typeof companies.$inferSelect;
+
+// People-companies junction table
+export const peopleCompanies = pgTable("people_companies", {
+  id: serial("id").primaryKey(),
+  personId: integer("person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
+  companyId: integer("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  role: text("role"),
+  roleType: text("role_type"),
+  ownershipPct: real("ownership_pct"),
+  isCurrent: boolean("is_current").default(true),
+  startYear: integer("start_year"),
+  endYear: integer("end_year"),
+  source: text("source"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
+});
+
+export type PeopleCompany = typeof peopleCompanies.$inferSelect;
+
+// Lifestyle lead people junction
+export const lifestyleLeadPeople = pgTable("lifestyle_lead_people", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  lifestyleLeadId: varchar("lifestyle_lead_id").notNull().references(() => lifestyleArticles.id, { onDelete: "cascade" }),
+  personId: integer("person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
+  mentionContext: text("mention_context"),
+});
+
+export type LifestyleLeadPerson = typeof lifestyleLeadPeople.$inferSelect;
+
+// Lifestyle lead companies junction
+export const lifestyleLeadCompanies = pgTable("lifestyle_lead_companies", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  lifestyleLeadId: varchar("lifestyle_lead_id").notNull().references(() => lifestyleArticles.id, { onDelete: "cascade" }),
+  companyId: integer("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  mentionContext: text("mention_context"),
+});
+
+export type LifestyleLeadCompany = typeof lifestyleLeadCompanies.$inferSelect;
+
+// Lifestyle scrape log
+export const lifestyleScrapeLog = pgTable("lifestyle_scrape_log", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  publicationId: integer("publication_id").references(() => lifestyleSources.id),
+  startedAt: timestamp("started_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  completedAt: timestamp("completed_at"),
+  method: text("method"),
+  articlesFound: integer("articles_found").notNull().default(0),
+  articlesNew: integer("articles_new").notNull().default(0),
+  error: text("error"),
+  durationMs: integer("duration_ms"),
+});
+
+export type LifestyleScrapeLog = typeof lifestyleScrapeLog.$inferSelect;

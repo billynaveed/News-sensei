@@ -16,9 +16,10 @@ import { ensureResearchCacheTable } from "./ensure-research-cache-table";
 import { scanForIpoFilings, getAllIpoFilings, getIpoFilingById, backfillIpoAnalysis } from "./ipo-scanner";
 import { generateRegistrationOptions, verifyRegistrationResponse, generateAuthenticationOptions, verifyAuthenticationResponse } from "@simplewebauthn/server";
 import type { LeadStatus, IpoExchange } from "@shared/schema";
-import { webauthnCredentials, authSessions } from "@shared/schema";
+import { webauthnCredentials, authSessions, lifestyleSources, lifestyleArticles, lifestyleScrapeLog } from "@shared/schema";
 import { db } from "./db";
-import { eq } from "drizzle-orm";
+import { eq, desc } from "drizzle-orm";
+import { getRecentLifestyleLeads, scanLifestylePipeline } from "./lifestyle-scanner";
 
 // WebAuthn configuration
 const RP_NAME = "Sensei";
@@ -52,8 +53,8 @@ async function validateSessionToken(token: string | undefined): Promise<boolean>
 
 // Auth middleware - protect /api/* except /api/auth/* and /api/telegram-webhook
 async function authMiddleware(req: Request, res: Response, next: NextFunction) {
-  // Skip auth routes and telegram webhook
-  if (req.path.startsWith("/api/auth/") || req.path === "/api/telegram-webhook") {
+  // Skip auth routes, telegram webhook, and browser ingest
+  if (req.path.startsWith("/api/auth/") || req.path === "/api/telegram-webhook" || req.path === "/api/browser-ingest") {
     return next();
   }
   // Only protect /api/* routes
@@ -944,6 +945,76 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error backfilling IPO analysis:", error);
       res.status(500).json({ error: "Failed to backfill IPO analysis" });
+    }
+  });
+
+  // Lifestyle leads (read) — surfaces ingested + scored lifestyle articles for /lifestyle-leads page
+  app.get("/api/lifestyle-leads", async (req, res) => {
+    try {
+      const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+      const leads = await getRecentLifestyleLeads(limit);
+      res.json(leads);
+    } catch (error) {
+      console.error("Error fetching lifestyle leads:", error);
+      res.status(500).json({ error: "Failed to fetch lifestyle leads" });
+    }
+  });
+
+  // Manual lifestyle scan trigger
+  app.post("/api/lifestyle-scan", async (_req, res) => {
+    try {
+      const result = await scanLifestylePipeline();
+      res.json(result);
+    } catch (error) {
+      console.error("Error running lifestyle scan:", error);
+      res.status(500).json({ error: "Failed to run lifestyle scan" });
+    }
+  });
+
+  // Browser ingest endpoint for Mac Mini lifestyle scraper
+  app.post("/api/browser-ingest", async (req, res) => {
+    try {
+      const { slug, articles } = req.body;
+      if (!slug || !Array.isArray(articles)) {
+        return res.status(400).json({ error: "slug and articles array required" });
+      }
+
+      const [source] = await db.select().from(lifestyleSources).where(eq(lifestyleSources.slug, slug)).limit(1);
+      if (!source) {
+        return res.status(404).json({ error: `Source not found: ${slug}` });
+      }
+
+      let inserted = 0;
+      const now = new Date();
+
+      for (const article of articles) {
+        if (!article.url || !article.title) continue;
+        try {
+          await db.insert(lifestyleArticles).values({
+            sourceId: source.id,
+            url: article.url,
+            title: article.title,
+            status: "pending",
+            publishedAt: article.publishedAt ? new Date(article.publishedAt) : now,
+          }).onConflictDoNothing();
+          inserted++;
+        } catch {
+          // skip duplicates
+        }
+      }
+
+      await db.insert(lifestyleScrapeLog).values({
+        publicationId: source.id,
+        method: "browser",
+        articlesFound: articles.length,
+        articlesNew: inserted,
+        completedAt: now,
+      });
+
+      res.json({ slug, articlesReceived: articles.length, articlesInserted: inserted });
+    } catch (error) {
+      console.error("Error in browser ingest:", error);
+      res.status(500).json({ error: "Failed to ingest articles" });
     }
   });
 

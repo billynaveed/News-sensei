@@ -14,6 +14,7 @@ import LogsPage from "@/pages/logs";
 import DebugPage from "@/pages/debug";
 import SavedLeadsPage from "@/pages/saved-leads";
 import IpoFilingsPage from "@/pages/ipo-filings";
+import LifestyleLeadsPage from "@/pages/lifestyle-leads";
 import NotFound from "@/pages/not-found";
 
 function Router() {
@@ -25,6 +26,7 @@ function Router() {
       <Route path="/logs" component={LogsPage} />
       <Route path="/debug" component={DebugPage} />
       <Route path="/ipo-filings" component={IpoFilingsPage} />
+      <Route path="/lifestyle-leads" component={LifestyleLeadsPage} />
       <Route component={NotFound} />
     </Switch>
   );

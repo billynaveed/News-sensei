@@ -15,6 +15,7 @@ import {
   peopleCompanies,
   type InsertLifestyleSource,
 } from "@shared/schema";
+import { storage } from "./storage";
 
 const parser = new Parser({ timeout: 10000 });
 const insecureParser = new Parser({ timeout: 10000, requestOptions: { rejectUnauthorized: false } });
@@ -314,7 +315,73 @@ export async function scanLifestylePipeline() {
   }
 
   await sendHighValueLifestyleAlerts(alerted);
-  return { sourcesChecked: dueSources.length, newArticles, extracted: filtered.length, alertsSent: alerted.length };
+
+  // Sync high-value lifestyle articles to main leads table for feed visibility
+  const syncResult = await syncLifestyleToLeads();
+
+  return { sourcesChecked: dueSources.length, newArticles, extracted: filtered.length, alertsSent: alerted.length, synced: syncResult.synced };
+}
+
+/**
+ * Sync high-value lifestyle articles to the main leads table so they appear in the feed.
+ * Only syncs articles with relevanceScore >= 60 that haven't been synced yet.
+ */
+export async function syncLifestyleToLeads(): Promise<{ synced: number; skipped: number }> {
+  const articles = await db.select()
+    .from(lifestyleArticles)
+    .where(eq(lifestyleArticles.status, "extracted"))
+    .orderBy(desc(lifestyleArticles.createdAt))
+    .limit(50);
+
+  let synced = 0;
+  let skipped = 0;
+
+  for (const article of articles) {
+    try {
+      // Check if already synced
+      const existing = await storage.getLeadByUrl(article.url);
+      if (existing) {
+        skipped++;
+        continue;
+      }
+
+      const [source] = await db.select().from(lifestyleSources).where(eq(lifestyleSources.id, article.sourceId)).limit(1);
+      if (!source) continue;
+
+      const score = article.relevanceScore || 60;
+      const priorityLevel = score >= 70 ? "high" : score >= 40 ? "medium" : "low";
+
+      await storage.createLead({
+        headline: article.headline || article.title || "Untitled",
+        sourceUrl: article.url,
+        sourceName: source.name,
+        sourceTier: "tier3",
+        publishedAt: article.publishedAt || article.createdAt,
+        companyNames: [],
+        founderNames: [],
+        investors: [],
+        aiSummary: article.summary || article.bankerAngle || article.snippet || "",
+        matchedKeywords: [article.eventType || "lifestyle"],
+        priorityScore: score,
+        priorityLevel,
+        region: source.region,
+        status: "new",
+        category: "lifestyle",
+        wealthAngle: article.bankerAngle || "",
+      } as any);
+
+      synced++;
+    } catch (error) {
+      log(`[lifestyle] sync to leads failed for ${article.url}: ${error}`, "lifestyle");
+      skipped++;
+    }
+  }
+
+  if (synced > 0) {
+    log(`[lifestyle] Synced ${synced} articles to leads table`, "lifestyle");
+  }
+
+  return { synced, skipped };
 }
 
 export async function getRecentLifestyleLeads(limit = 20) {

@@ -15,6 +15,14 @@ const openai = new OpenAI({
   baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
 });
 
+// Local gemma4 on Mac Mini via Ollama (free but slow)
+const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || "http://100.110.246.23:11434/v1";
+const ollama = new OpenAI({
+  apiKey: "ollama",
+  baseURL: OLLAMA_BASE_URL,
+  timeout: 120_000,
+});
+
 const SCRAPINGBEE_API_KEY = process.env.SCRAPINGBEE_API_KEY;
 
 // ============================================================================
@@ -86,7 +94,7 @@ export interface EnrichmentResult {
 const SCRAPINGBEE_TIMEOUT_MS = 15_000;
 
 /** Maximum time (ms) to wait for the deep analysis OpenAI call */
-const DEEP_ANALYSIS_TIMEOUT_MS = 30_000;
+const DEEP_ANALYSIS_TIMEOUT_MS = 120_000; // Increased for local-gemma4 (~46s per call)
 
 /** Maximum time (ms) to allow for Stage 7 enrichment before giving up */
 const ENRICHMENT_TIMEOUT_MS = 45_000;
@@ -173,10 +181,40 @@ export async function passesInterestFilter(
 
   const prompt = `${filterPrompt}
 
-CRITICAL REGIONAL FILTER: Only mark as relevant if the article is about companies, founders, or wealth events in these target regions: ${regionsStr}
-- If the article is ONLY about companies/founders in other regions (e.g., UK, US, Europe) with NO connection to ${regionsStr}, mark as NOT relevant.
-- If a global company is mentioned but the article has no specific relevance to ${regionsStr}, mark as NOT relevant.
-- The company or founder must have a clear presence, headquarters, or operations in ${regionsStr}.
+CRITICAL REGIONAL FILTER (SEA / HK / Taiwan, strict).
+Target Regions: ${regionsStr}.
+
+Pass on geography ONLY if the article itself shows ONE of:
+  (a) the SUBJECT company is HEADQUARTERED in a Target Region, OR
+  (b) a NAMED founder is BASED in a Target Region (current home / office), OR
+  (c) a NAMED founder has CREDIBLE ROOTS in a Target Region (born, raised,
+      educated, family, previously based there), OR
+  (d) the SUBJECT company has a STRONG OPERATIONAL CENTRE in a Target Region
+      (regional HQ, primary office with leadership, principal market with
+      on-the-ground leadership), OR
+  (e) the article EXPLICITLY concerns a wealth liquidity event for a
+      SEA / HK / Taiwan founder, family, or private company.
+
+REJECT — these signals alone do NOT make an article SEA-relevant:
+  - The publisher or source domain is SEA (Tech in Asia, Business Times,
+    Straits Times, KrASIA, DealStreetAsia, The Edge, e27, SCMP, CNA, Hubbis).
+    A SEA outlet covering a US / European / Mainland-China company is NOT
+    a SEA story.
+  - An investor, backer, fund, or LP is SEA-based (GIC, Temasek, Khazanah,
+    EDBI, family offices, sovereign funds, Hillhouse-LPs, etc.) but the
+    company itself is not. Investor identity does NOT establish SEA
+    relevance for the SUBJECT company.
+  - Vague "Asia expansion", "APAC growth", "Asian customers", regional
+    distribution, or partner network with no concrete office, founder, or
+    HQ in a Target Region.
+  - Mainland China entities (Beijing, Shanghai, Shenzhen, Guangzhou,
+    Hangzhou — e.g. ByteDance, Tencent, Alibaba mainland operations) are
+    NOT in scope. Mainland China is excluded; only HK and Taiwan count.
+  - Global companies (Anthropic, OpenAI, SpaceX, Stripe) where the only
+    SEA tie is a SEA backer or a SEA-published article.
+
+If you cannot point to a specific sentence in the article that establishes
+(a)–(e), mark relevant=false.
 
 Article Headline: ${article.headline}
 Article Snippet: ${article.content.slice(0, 500)}
@@ -186,7 +224,7 @@ Target Regions: ${regionsStr}
 Return JSON:
 {
   "relevant": true/false,
-  "reason": "Brief explanation of decision, including why it is or isn't relevant to the target regions",
+  "reason": "Brief explanation. If relevant, name which of (a)-(e) applies and quote the supporting passage. If not relevant, name the disqualifying signal (sea_publisher_only / sea_investor_only / vague_apac_expansion / mainland_china_only / global_company_no_sea_anchor).",
   "confidenceScore": 0-100
 }`;
 
@@ -789,12 +827,18 @@ PRIORITY SCORING GUIDE:
 
 CRITICAL: If the article is general market commentary, investment advice, industry analysis, or opinion without a SPECIFIC company undergoing a SPECIFIC liquidity event — score it 1-19 regardless of how "relevant to banking" it might seem.
 
+INVESTOR/BACKER WEALTH EVENTS:
+- If a billionaire or UHNW investor is named as backing a company involved in an M&A deal, IPO, or major funding round, this is HIGH priority.
+- Example: "Richard Li-backed bolttech" in a $200M M&A deal = score 70+ (the backer's wealth and influence make this a private banking opportunity)
+- Look for patterns like "[Name]-backed", "[Name]'s [Company]", "backed by [Name]", "investor [Name]".
+- Score 70+ when: named UHNW/backer + disclosed deal value or significant event + M&A/IPO/funding context.
+
 Extract and return JSON:
 {
   "companyNames": ["array of companies MENTIONED IN the article — NEVER include the news publisher/source (Bloomberg, Reuters, Nikkei, The Edge, Business Times, CNA, SCMP, Tech in Asia, KrASIA, DealStreetAsia, e27, Straits Times, Hubbis, etc)"],
   "primaryCompany": "the main company this article is ABOUT (the subject, not the publisher). Use commonly known name (e.g. 'Maya' not 'Digital Bank Maya')",
-  "founderNames": ["array of founders/key people WITH ACTUAL NAMES — not generic terms like 'investors' or 'founder'. If no names mentioned, use empty array []"],
-  "investors": ["array of investors mentioned"],
+  "founderNames": ["array of founders, key people, AND named billionaire investors/backers WITH ACTUAL NAMES. Include people described as 'backers', 'investors', 'supported by', 'X-backed' even if they are not the founder. Example: if article says 'Richard Li-backed bolttech', include 'Richard Li'. If no names mentioned, use empty array []"],
+  "investors": ["array of investors mentioned — include anyone described as backer, supporter, or financier"],
   "summary": "2-3 paragraphs: what happened, deal size/valuation, and the SPECIFIC liquidity event. If no liquidity event exists, say so clearly.",
   "keyFinancials": {
     "fundingAmount": "e.g. $50M or null",
@@ -804,21 +848,51 @@ Extract and return JSON:
   "priorityScore": 1-100,
   "priorityLevel": "high/medium/low",
   "matchedIndicators": ["IPO", "Series C", "Exit", "M&A", etc — only real indicators, not aspirational ones],
-  "wealthAngle": "WHO specifically is getting wealthy and HOW MUCH? If you cannot name a person, say 'No identifiable individual'",
+  "wealthAngle": "WHO specifically is getting wealthy and HOW MUCH? Name the person even if they are an investor/backer rather than a founder. Example: 'Richard Li (billionaire backer of bolttech) positioned to realize returns from the $200M MoneyHero acquisition'. If no individual is named anywhere in the article, say 'No identifiable individual'",
   "confidenceScore": 0-100,
   "regionRelevance": true/false,
   "category": "news or lifestyle — classify as 'news' if this is a business/finance/funding/M&A/IPO/startup article, or 'lifestyle' if it covers luxury, real estate, philanthropy, personal life, travel, culture, society events, or celebrity wealth"
 }`;
 
   try {
-    const response = await Promise.race([
-      openai.chat.completions.create({
-        model: "anthropic/claude-sonnet-4",
-        messages: [{ role: "user", content: prompt }],
-        max_completion_tokens: 2000,
-      }),
-      createTimeoutPromise<never>(DEEP_ANALYSIS_TIMEOUT_MS, "Deep analysis timed out"),
-    ]);
+    // Try local gemma4 (Mac Mini) first — free but slow
+    // Fall back to gemini-2.5-flash-lite via OpenRouter
+    let response: OpenAI.Chat.Completions.ChatCompletion | null = null;
+    let usedModel = "";
+
+    try {
+      log(`[Pipeline S6] Attempting local-gemma4...`, "pipeline");
+      response = await Promise.race([
+        ollama.chat.completions.create({
+          model: "gemma4:latest",
+          messages: [{ role: "user", content: prompt }],
+          max_completion_tokens: 2000,
+          temperature: 0.3,
+        }),
+        createTimeoutPromise<never>(DEEP_ANALYSIS_TIMEOUT_MS, "Local gemma4 timed out"),
+      ]);
+      usedModel = "local-gemma4";
+      log(`[Pipeline S6] Local gemma4 succeeded`, "pipeline");
+    } catch (primaryError) {
+      const primaryMsg = primaryError instanceof Error ? primaryError.message : "Unknown error";
+      log(`[Pipeline S6] Local gemma4 failed: ${primaryMsg}, falling back to gemini-2.5-flash-lite`, "pipeline");
+      try {
+        response = await Promise.race([
+          openai.chat.completions.create({
+            model: "google/gemini-2.5-flash-lite",
+            messages: [{ role: "user", content: prompt }],
+            max_completion_tokens: 2000,
+          }),
+          createTimeoutPromise<never>(DEEP_ANALYSIS_TIMEOUT_MS, "Gemini flash fallback timed out"),
+        ]);
+        usedModel = "gemini-2.5-flash-lite";
+        log(`[Pipeline S6] Gemini flash fallback succeeded`, "pipeline");
+      } catch (fallbackError) {
+        const fallbackMsg = fallbackError instanceof Error ? fallbackError.message : "Unknown error";
+        log(`[Pipeline S6] Gemini flash fallback also failed: ${fallbackMsg}`, "pipeline");
+        throw fallbackError;
+      }
+    }
 
     const content = response.choices[0]?.message?.content;
     if (!content) {
