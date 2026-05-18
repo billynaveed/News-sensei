@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { log } from "./index";
+import { log } from "./log";
 import { stripJsonFences } from "./json-utils";
 import {
   searchFounderResidence,

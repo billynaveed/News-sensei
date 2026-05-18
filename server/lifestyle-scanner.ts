@@ -4,7 +4,7 @@ import * as cheerio from "cheerio";
 import { stripJsonFences } from "./json-utils";
 import { and, desc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import { db } from "./db";
-import { log } from "./index";
+import { log } from "./log";
 import { sendTelegramMessage } from "./telegram";
 import {
   lifestyleSources,

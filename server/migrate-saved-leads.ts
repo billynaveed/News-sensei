@@ -1,5 +1,5 @@
 import { storage } from "./storage";
-import { log } from "./index";
+import { log } from "./log";
 
 /**
  * Migration script to move existing saved leads (status="saved")

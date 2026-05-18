@@ -7,7 +7,7 @@ import { stripJsonFences } from "./json-utils";
 import { enrichSavedLead, formatEnrichmentForSavedLead } from "./founder-enrichment";
 import { passesInterestFilter, extractPrimaryCompany, isPublicCompany, checkDuplication } from "./pipeline-stages";
 import { validateSeaAnchor } from "./sea-guard";
-import { log } from "./index";
+import { log } from "./log";
 import type { InsertLead, PriorityLevel, SourceTier, SourceSearched, ArticleProcessed, ScrapingBeeDebugEntry } from "@shared/schema";
 
 const SCRAPINGBEE_API_KEY = process.env.SCRAPINGBEE_API_KEY;

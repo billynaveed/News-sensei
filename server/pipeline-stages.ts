@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import { storage } from "./storage";
 import { enrichSavedLead, formatEnrichmentForSavedLead } from "./founder-enrichment";
-import { log } from "./index";
+import { log } from "./log";
 import type { RawArticle } from "./adapters";
 import type { InsertLead, PriorityLevel, SourceTier } from "@shared/schema";
 import { stripJsonFences } from "./json-utils";
@@ -15,13 +15,14 @@ const openai = new OpenAI({
   baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
 });
 
-// Local gemma4 on Mac Mini via Ollama (free but slow)
+// Local gemma4 on Mac Mini via Ollama (free but slow).
+// Disabled by default — Mac Mini was decommissioned 2026-05-18, ROADMAP §P0.
+// To re-enable: set OLLAMA_ENABLED=true in .env.
+const OLLAMA_ENABLED = process.env.OLLAMA_ENABLED === "true";
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || "http://100.110.246.23:11434/v1";
-const ollama = new OpenAI({
-  apiKey: "ollama",
-  baseURL: OLLAMA_BASE_URL,
-  timeout: 120_000,
-});
+const ollama = OLLAMA_ENABLED
+  ? new OpenAI({ apiKey: "ollama", baseURL: OLLAMA_BASE_URL, timeout: 120_000 })
+  : null;
 
 const SCRAPINGBEE_API_KEY = process.env.SCRAPINGBEE_API_KEY;
 
@@ -233,6 +234,7 @@ Return JSON:
       model: "google/gemini-2.5-flash-lite",
       messages: [{ role: "user", content: prompt }],
       max_completion_tokens: 256,
+      response_format: { type: "json_object" },
     });
 
     const content = response.choices[0]?.message?.content;
@@ -319,6 +321,7 @@ Return JSON: { "companyName": "string or null", "confidenceScore": 0-100 }`;
       model: "google/gemini-2.5-flash-lite",
       messages: [{ role: "user", content: prompt }],
       max_completion_tokens: 128,
+      response_format: { type: "json_object" },
     });
 
     const content = response.choices[0]?.message?.content;
@@ -407,6 +410,7 @@ Return JSON:
       model: "google/gemini-2.5-flash-lite",
       messages: [{ role: "user", content: prompt }],
       max_completion_tokens: 256,
+      response_format: { type: "json_object" },
     });
 
     const content = response.choices[0]?.message?.content;
@@ -548,6 +552,7 @@ Return JSON:
       model: "google/gemini-2.5-flash-lite",
       messages: [{ role: "user", content: prompt }],
       max_completion_tokens: 256,
+      response_format: { type: "json_object" },
     });
 
     const content = response.choices[0]?.message?.content;
@@ -855,41 +860,48 @@ Extract and return JSON:
 }`;
 
   try {
-    // Try local gemma4 (Mac Mini) first — free but slow
-    // Fall back to gemini-2.5-flash-lite via OpenRouter
+    // Try local gemma4 (Mac Mini via Ollama) first when enabled — free but slow.
+    // When OLLAMA_ENABLED is unset/false, go straight to OpenRouter Gemini.
     let response: OpenAI.Chat.Completions.ChatCompletion | null = null;
     let usedModel = "";
 
-    try {
-      log(`[Pipeline S6] Attempting local-gemma4...`, "pipeline");
-      response = await Promise.race([
-        ollama.chat.completions.create({
-          model: "gemma4:latest",
-          messages: [{ role: "user", content: prompt }],
-          max_completion_tokens: 2000,
-          temperature: 0.3,
-        }),
-        createTimeoutPromise<never>(DEEP_ANALYSIS_TIMEOUT_MS, "Local gemma4 timed out"),
-      ]);
-      usedModel = "local-gemma4";
-      log(`[Pipeline S6] Local gemma4 succeeded`, "pipeline");
-    } catch (primaryError) {
-      const primaryMsg = primaryError instanceof Error ? primaryError.message : "Unknown error";
-      log(`[Pipeline S6] Local gemma4 failed: ${primaryMsg}, falling back to gemini-2.5-flash-lite`, "pipeline");
+    if (ollama) {
+      try {
+        log(`[Pipeline S6] Attempting local-gemma4...`, "pipeline");
+        response = await Promise.race([
+          ollama.chat.completions.create({
+            model: "gemma4:latest",
+            messages: [{ role: "user", content: prompt }],
+            max_completion_tokens: 2000,
+            temperature: 0.3,
+          }),
+          createTimeoutPromise<never>(DEEP_ANALYSIS_TIMEOUT_MS, "Local gemma4 timed out"),
+        ]);
+        usedModel = "local-gemma4";
+        log(`[Pipeline S6] Local gemma4 succeeded`, "pipeline");
+      } catch (primaryError) {
+        const primaryMsg = primaryError instanceof Error ? primaryError.message : "Unknown error";
+        log(`[Pipeline S6] Local gemma4 failed: ${primaryMsg}, falling back to gemini-2.5-flash-lite`, "pipeline");
+        response = null;
+      }
+    }
+
+    if (!response) {
       try {
         response = await Promise.race([
           openai.chat.completions.create({
             model: "google/gemini-2.5-flash-lite",
             messages: [{ role: "user", content: prompt }],
             max_completion_tokens: 2000,
+            response_format: { type: "json_object" },
           }),
           createTimeoutPromise<never>(DEEP_ANALYSIS_TIMEOUT_MS, "Gemini flash fallback timed out"),
         ]);
         usedModel = "gemini-2.5-flash-lite";
-        log(`[Pipeline S6] Gemini flash fallback succeeded`, "pipeline");
+        log(`[Pipeline S6] Gemini flash ${ollama ? "fallback " : ""}succeeded`, "pipeline");
       } catch (fallbackError) {
         const fallbackMsg = fallbackError instanceof Error ? fallbackError.message : "Unknown error";
-        log(`[Pipeline S6] Gemini flash fallback also failed: ${fallbackMsg}`, "pipeline");
+        log(`[Pipeline S6] Gemini flash ${ollama ? "fallback " : ""}failed: ${fallbackMsg}`, "pipeline");
         throw fallbackError;
       }
     }
