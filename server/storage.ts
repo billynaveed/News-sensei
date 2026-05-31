@@ -2,6 +2,7 @@ import { eq, desc, gte, and, ne, sql, lt } from "drizzle-orm";
 import { db } from "./db";
 import {
   users, leads, settings, sources, scanLogs, rssFeeds, savedLeads, scannedUrls,
+  telegramRouting,
   DEFAULT_INTEREST_FILTER_PROMPT,
   type User, type InsertUser,
   type Lead, type InsertLead, type LeadStatus,
@@ -28,6 +29,7 @@ export interface IStorage {
 
   getSettings(): Promise<Settings | undefined>;
   upsertSettings(settings: Partial<InsertSettings>): Promise<Settings>;
+  setTelegramTopicId(topicId: number | null): Promise<void>;
 
   // Sources (simplified - domain-based)
   getAllSources(): Promise<Source[]>;
@@ -142,7 +144,9 @@ export class DatabaseStorage implements IStorage {
 
   async getSettings(): Promise<Settings | undefined> {
     const [existingSettings] = await db.select().from(settings).limit(1);
-    if (existingSettings) return existingSettings;
+    if (existingSettings) {
+      return { ...existingSettings, telegramTopicId: await this.getTelegramTopicId() };
+    }
 
     const [newSettings] = await db.insert(settings).values({
       interestFilterPrompt: DEFAULT_INTEREST_FILTER_PROMPT,
@@ -157,7 +161,20 @@ export class DatabaseStorage implements IStorage {
       rssEnabled: true,
       scrapingBeeEnabled: false,
     }).returning();
-    return newSettings;
+    return { ...newSettings, telegramTopicId: null };
+  }
+
+  /** Reads the configured Telegram forum topic id (null = General / unset). */
+  private async getTelegramTopicId(): Promise<number | null> {
+    const [row] = await db.select().from(telegramRouting).where(eq(telegramRouting.id, 1)).limit(1);
+    return row?.topicId ?? null;
+  }
+
+  /** Persists the Telegram forum topic id (captured by the /here command). */
+  async setTelegramTopicId(topicId: number | null): Promise<void> {
+    await db.insert(telegramRouting)
+      .values({ id: 1, topicId, updatedAt: new Date() })
+      .onConflictDoUpdate({ target: telegramRouting.id, set: { topicId, updatedAt: new Date() } });
   }
 
   async upsertSettings(update: Partial<InsertSettings>): Promise<Settings> {

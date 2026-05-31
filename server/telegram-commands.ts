@@ -68,11 +68,13 @@ Send /help for more details!`;
  */
 export async function handleHereCommand(chatId: string, messageThreadId?: number): Promise<void> {
   try {
+    // chatId + enabled go in settings (UPDATE is allowed); topic id goes in the
+    // separate telegram_routing table (settings can't be altered with a column).
     await storage.upsertSettings({
       telegramEnabled: true,
       telegramChatId: chatId,
-      telegramTopicId: messageThreadId ?? null,
     });
+    await storage.setTelegramTopicId(messageThreadId ?? null);
   } catch (error) {
     console.error('Error saving /here destination:', error);
     await sendTelegramMessage(

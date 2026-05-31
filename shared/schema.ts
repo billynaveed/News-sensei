@@ -144,9 +144,6 @@ export const settings = pgTable("settings", {
   alertEmail: text("alert_email").notNull(),
   telegramEnabled: boolean("telegram_enabled").notNull().default(false),
   telegramChatId: text("telegram_chat_id"),
-  // message_thread_id of the forum topic to post alerts into (null = General).
-  // Captured via the /here bot command. See server/telegram-commands.ts.
-  telegramTopicId: integer("telegram_topic_id"),
   logRetentionDays: integer("log_retention_days").notNull().default(2),
   // Global scanning method toggles - apply to ALL active sources
   googleNewsEnabled: boolean("google_news_enabled").notNull().default(false),
@@ -161,7 +158,19 @@ export const insertSettingsSchema = createInsertSchema(settings).omit({
 });
 
 export type InsertSettings = z.infer<typeof insertSettingsSchema>;
-export type Settings = typeof settings.$inferSelect;
+// telegramTopicId is NOT a column on `settings` (that table is owned by the
+// postgres superuser and can't be altered). It lives in `telegram_routing`
+// below and is overlaid onto the settings object by storage.getSettings().
+export type Settings = typeof settings.$inferSelect & { telegramTopicId?: number | null };
+
+// Single-row table holding the Telegram forum topic (message_thread_id) that
+// alerts are routed into. Separate table because `settings` can't be altered.
+// Owned by the app role (newsuser). Captured via the /here bot command.
+export const telegramRouting = pgTable("telegram_routing", {
+  id: integer("id").primaryKey().default(1),
+  topicId: integer("topic_id"),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
 
 // News sources configuration (simplified - domain-based)
 export const sources = pgTable("sources", {
