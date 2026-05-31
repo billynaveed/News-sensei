@@ -32,7 +32,10 @@ export interface KeyFinancials {
 }
 
 // Leads table - the main data model for news article matches
-export const leads = pgTable("leads", {
+// v2 cutover: this object now maps to the unified leads_v2 table (news +
+// lifestyle + ipo), which is a column superset of v1 leads. The v1 `leads`
+// table is left intact (postgres-owned) as a rollback snapshot.
+export const leads = pgTable("leads_v2", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   headline: text("headline").notNull(),
   sourceUrl: text("source_url").notNull(),
@@ -291,7 +294,8 @@ export type InsertScannedUrl = z.infer<typeof insertScannedUrlSchema>;
 export type ScannedUrl = typeof scannedUrls.$inferSelect;
 
 // Saved leads table - separate from leads table for enhanced metadata
-export const savedLeads = pgTable("saved_leads", {
+// v2 cutover: maps to saved_leads_v2 (FKs leads_v2). Superset of v1 saved_leads.
+export const savedLeads = pgTable("saved_leads_v2", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   leadId: varchar("lead_id").notNull().references(() => leads.id, { onDelete: "cascade" }),
   savedAt: timestamp("saved_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
