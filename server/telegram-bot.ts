@@ -23,7 +23,8 @@ function parseCommand(text: string): { command: string; args: string[] } | null 
   }
 
   const parts = trimmed.slice(1).split(/\s+/);
-  const command = parts[0].toLowerCase();
+  // In groups, commands often arrive as "/here@BotName" — strip the @mention.
+  const command = parts[0].toLowerCase().split('@')[0];
   const args = parts.slice(1);
 
   return { command, args };
