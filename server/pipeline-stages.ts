@@ -234,6 +234,7 @@ Return JSON:
       model: "google/gemini-2.5-flash-lite",
       messages: [{ role: "user", content: prompt }],
       max_completion_tokens: 256,
+      temperature: 0.2,
       response_format: { type: "json_object" },
     });
 
@@ -321,6 +322,7 @@ Return JSON: { "companyName": "string or null", "confidenceScore": 0-100 }`;
       model: "google/gemini-2.5-flash-lite",
       messages: [{ role: "user", content: prompt }],
       max_completion_tokens: 128,
+      temperature: 0.2,
       response_format: { type: "json_object" },
     });
 
@@ -410,6 +412,7 @@ Return JSON:
       model: "google/gemini-2.5-flash-lite",
       messages: [{ role: "user", content: prompt }],
       max_completion_tokens: 256,
+      temperature: 0.2,
       response_format: { type: "json_object" },
     });
 
@@ -552,6 +555,7 @@ Return JSON:
       model: "google/gemini-2.5-flash-lite",
       messages: [{ role: "user", content: prompt }],
       max_completion_tokens: 256,
+      temperature: 0.2,
       response_format: { type: "json_object" },
     });
 
@@ -837,6 +841,27 @@ INVESTOR/BACKER WEALTH EVENTS:
 - Example: "Richard Li-backed bolttech" in a $200M M&A deal = score 70+ (the backer's wealth and influence make this a private banking opportunity)
 - Look for patterns like "[Name]-backed", "[Name]'s [Company]", "backed by [Name]", "investor [Name]".
 - Score 70+ when: named UHNW/backer + disclosed deal value or significant event + M&A/IPO/funding context.
+- SKIP institutional backers with no named individual (Temasek, GIC, SoftBank Vision Fund, sovereign funds, generic "VC firm"). A person's name is required.
+
+WEALTH ANGLE QUALITY — the wealthAngle field is graded. Aim for 10/10:
+- 10/10: Names a specific person + the liquidity event + the amount. e.g. "Jane Doe (co-founder) positioned for a 9-figure windfall from the $500M acquisition by Stripe."
+- 7/10: Names a specific person + event, amount vague. e.g. "Richard Li (billionaire backer of bolttech) stands to realize returns from the reported $200M MoneyHero acquisition."
+- 4/10: Names a company event but no individual, or only an amount. e.g. "bolttech is being acquired for ~$200M (no individual named)."
+- 1/10: Generic, no person and no event. e.g. "No identifiable individual."
+NEVER write "No identifiable individual" if ANY person (founder, executive, or named backer) appears in the article — name them.
+
+WORKED EXAMPLES:
+Example A — Article: "Richard Li-backed bolttech in talks to acquire MoneyHero for US$200M".
+  → primaryCompany: "bolttech", founderNames: ["Richard Li"], investors: ["Richard Li"], dealValue: "$200M",
+     priorityScore: 75, priorityLevel: "high", matchedIndicators: ["M&A"],
+     wealthAngle: "Richard Li (billionaire backer of bolttech) positioned to realize returns from the reported US$200M MoneyHero acquisition."
+Example B — Article: "Singapore fintech Aspire raises US$120M Series D led by named founder Andrea Baronchelli".
+  → primaryCompany: "Aspire", founderNames: ["Andrea Baronchelli"], fundingAmount: "$120M",
+     priorityScore: 80, priorityLevel: "high", matchedIndicators: ["Series D"],
+     wealthAngle: "Andrea Baronchelli (founder/CEO of Aspire) sees a major paper-wealth increase from the US$120M Series D."
+Example C (REJECT) — Article: "Why Southeast Asian startups face a funding winter in 2026".
+  → primaryCompany: null, founderNames: [], priorityScore: 8, priorityLevel: "low",
+     wealthAngle: "No identifiable individual" (general market commentary, no specific company or event).
 
 Extract and return JSON:
 {
@@ -893,6 +918,7 @@ Extract and return JSON:
             model: "google/gemini-2.5-flash-lite",
             messages: [{ role: "user", content: prompt }],
             max_completion_tokens: 2000,
+            temperature: 0.2,
             response_format: { type: "json_object" },
           }),
           createTimeoutPromise<never>(DEEP_ANALYSIS_TIMEOUT_MS, "Gemini flash fallback timed out"),

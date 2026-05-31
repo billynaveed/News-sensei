@@ -170,6 +170,18 @@ export async function extractStructuredLifestyleData(article: typeof lifestyleAr
 Title: ${article.title}
 Text: ${(article.fullText || article.snippet || "").slice(0, 12000)}
 
+EXTRACTION RULES:
+- Extract every NAMED individual who is wealthy/notable: founders, heirs, tycoons, executives, philanthropists, art/property collectors, and named investors/backers ("[Name]-backed", "backed by [Name]").
+- Skip institutions with no named person (Temasek, sovereign funds, generic "family office").
+- wealth_signals: concrete evidence — net worth figure, business empire, major property/art purchase, rich-list rank, succession/wealth-transfer event.
+
+banker_angle — name the SPECIFIC person and why they are a private-banking prospect. Aim for high quality:
+- Good: "Peter Woo (Wharf Holdings chairman, est. US$13B net worth) profiled on succession planning — prime wealth-transfer prospect."
+- Weak: "Wealthy person featured in magazine." (avoid)
+- If no individual is identifiable, set banker_angle to "" and relevance_score below 40.
+
+relevance_score (0-100): 85+ = named UHNW with concrete wealth signal + actionable event (succession, sale, major purchase). 60-84 = named wealthy individual, softer signal. 40-59 = notable but thin. <40 = no identifiable UHNW individual.
+
 Schema:
 {
   "people": [{"full_name":"string","company":"string|null","role":"string|null","mention_context":"featured|mentioned|photographed","wealth_signals":["string"]}],
