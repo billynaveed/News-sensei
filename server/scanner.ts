@@ -1051,7 +1051,7 @@ KEY RULE: There must be a specific named person (founder, entrepreneur, family o
             // Send Telegram alert if enabled
             if (settings.telegramEnabled && settings.telegramChatId) {
               try {
-                await sendLeadAlertTelegram(settings.telegramChatId, newHighPriorityLeads);
+                await sendLeadAlertTelegram(settings.telegramChatId, newHighPriorityLeads, settings.telegramTopicId);
                 console.log(`Sent Telegram alert for ${newHighPriorityLeads.length} high-priority leads`);
               } catch (error) {
                 console.error("Error sending lead alert via Telegram:", error);

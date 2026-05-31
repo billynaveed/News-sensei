@@ -264,12 +264,19 @@ ${article.bankerAngle || article.summary || ""}
 }
 
 async function sendHighValueLifestyleAlerts(articleIds: string[]) {
-  if (!TELEGRAM_CHAT_ID || articleIds.length === 0) return;
+  if (articleIds.length === 0) return;
+  // Prefer the configured destination (set via the /here bot command) so
+  // lifestyle alerts land in the same "alerts" topic as news/IPO alerts.
+  // Fall back to the legacy env var if settings has no chat id.
+  const settings = await storage.getSettings();
+  const chatId = settings?.telegramChatId || TELEGRAM_CHAT_ID;
+  const topicId = settings?.telegramTopicId ?? null;
+  if (!chatId) return;
   const rows = await db.select().from(lifestyleArticles).where(inArray(lifestyleArticles.id, articleIds));
   for (const article of rows) {
     if ((article.relevanceScore || 0) < 85) continue;
     const persons = await db.select({ name: people.fullName }).from(lifestyleLeadPeople).innerJoin(people, eq(lifestyleLeadPeople.personId, people.id)).where(eq(lifestyleLeadPeople.lifestyleLeadId, article.id));
-    await sendTelegramMessage(TELEGRAM_CHAT_ID, formatLifestyleAlert(article, persons.map((p) => p.name)));
+    await sendTelegramMessage(chatId, formatLifestyleAlert(article, persons.map((p) => p.name)), 'HTML', undefined, topicId);
   }
 }
 

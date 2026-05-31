@@ -99,6 +99,8 @@ export const settings = pgTable("settings", {
   alertEmail: text("alert_email").notNull(),
   telegramEnabled: boolean("telegram_enabled").notNull().default(false),
   telegramChatId: text("telegram_chat_id"),
+  // message_thread_id of the forum topic to post alerts into (null = General).
+  telegramTopicId: integer("telegram_topic_id"),
 
   // Housekeeping
   logRetentionDays: integer("log_retention_days").notNull().default(2),

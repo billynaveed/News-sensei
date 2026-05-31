@@ -20,6 +20,8 @@ export interface TelegramUpdate {
   message?: {
     message_id: number;
     chat: { id: number };
+    // Present when the message was sent inside a forum supergroup topic.
+    message_thread_id?: number;
     text?: string;
     from?: { id: number; first_name: string };
   };
@@ -27,6 +29,7 @@ export interface TelegramUpdate {
   channel_post?: {
     message_id: number;
     chat: { id: number };
+    message_thread_id?: number;
     text?: string;
   };
 }
@@ -35,7 +38,8 @@ export async function sendTelegramMessage(
   chatId: string,
   text: string,
   parseMode: 'HTML' | 'Markdown' = 'HTML',
-  replyMarkup?: any
+  replyMarkup?: any,
+  messageThreadId?: number | null
 ): Promise<boolean> {
   const token = process.env.TELEGRAM_BOT_TOKEN;
 
@@ -53,6 +57,11 @@ export async function sendTelegramMessage(
     parse_mode: parseMode,
     disable_web_page_preview: true,
   };
+
+  // Route into a forum topic when configured (null/undefined => General).
+  if (messageThreadId != null) {
+    body.message_thread_id = messageThreadId;
+  }
 
   if (replyMarkup) {
     body.reply_markup = replyMarkup;
@@ -74,7 +83,7 @@ export async function sendTelegramMessage(
   return true;
 }
 
-export async function sendTestTelegramMessage(chatId: string): Promise<void> {
+export async function sendTestTelegramMessage(chatId: string, messageThreadId?: number | null): Promise<void> {
   const message = `
 <b>Lead Intelligence - Test Alert</b>
 
@@ -85,13 +94,13 @@ You will receive messages like this when new high-priority leads are found match
 <i>Private Banking SEA Coverage</i>
 `.trim();
 
-  await sendTelegramMessage(chatId, message);
+  await sendTelegramMessage(chatId, message, 'HTML', undefined, messageThreadId);
 }
 
-export async function sendLeadAlertTelegram(chatId: string, leads: Lead[]): Promise<void> {
+export async function sendLeadAlertTelegram(chatId: string, leads: Lead[], messageThreadId?: number | null): Promise<void> {
   // Send header message
   const header = `<b>🔔 ${leads.length} New Lead${leads.length > 1 ? 's' : ''} Found</b>\n\n`;
-  await sendTelegramMessage(chatId, header);
+  await sendTelegramMessage(chatId, header, 'HTML', undefined, messageThreadId);
 
   // Send each lead as a separate message with action buttons
   for (const lead of leads) {
@@ -116,7 +125,7 @@ ${lead.aiSummary}
       ]
     };
 
-    await sendTelegramMessage(chatId, message, 'HTML', keyboard);
+    await sendTelegramMessage(chatId, message, 'HTML', keyboard, messageThreadId);
   }
 }
 

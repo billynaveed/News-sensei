@@ -144,6 +144,9 @@ export const settings = pgTable("settings", {
   alertEmail: text("alert_email").notNull(),
   telegramEnabled: boolean("telegram_enabled").notNull().default(false),
   telegramChatId: text("telegram_chat_id"),
+  // message_thread_id of the forum topic to post alerts into (null = General).
+  // Captured via the /here bot command. See server/telegram-commands.ts.
+  telegramTopicId: integer("telegram_topic_id"),
   logRetentionDays: integer("log_retention_days").notNull().default(2),
   // Global scanning method toggles - apply to ALL active sources
   googleNewsEnabled: boolean("google_news_enabled").notNull().default(false),

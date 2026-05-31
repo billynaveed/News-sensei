@@ -557,7 +557,7 @@ export async function registerRoutes(
       if (!settings?.telegramChatId) {
         return res.status(400).json({ error: "No Telegram chat ID configured" });
       }
-      await sendTestTelegramMessage(settings.telegramChatId);
+      await sendTestTelegramMessage(settings.telegramChatId, settings.telegramTopicId);
       res.json({ success: true, message: "Test Telegram message sent" });
     } catch (error: any) {
       console.error("Error sending test Telegram message:", error);

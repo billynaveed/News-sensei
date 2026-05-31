@@ -1,5 +1,5 @@
 import { getTelegramUpdates, sendTelegramMessage, answerCallbackQuery, editMessageWithStatus, type TelegramUpdate } from './telegram';
-import { handleStartCommand, handleHelpCommand, handleResearchCommand, handleLeadsCommand, handleSaveCallback } from './telegram-commands';
+import { handleStartCommand, handleHelpCommand, handleResearchCommand, handleLeadsCommand, handleSaveCallback, handleHereCommand } from './telegram-commands';
 import { storage } from './storage';
 
 /** Whether the bot is operating in webhook mode (true) or polling mode (false) */
@@ -32,11 +32,18 @@ function parseCommand(text: string): { command: string; args: string[] } | null 
 /**
  * Routes a command to the appropriate handler
  */
-async function routeCommand(command: string, args: string[], chatId: string): Promise<void> {
+async function routeCommand(command: string, args: string[], chatId: string, messageThreadId?: number): Promise<void> {
   try {
+    // /here is a setup command — it must work even before settings exist, since
+    // its whole job is to capture where alerts should go.
+    if (command === 'here') {
+      await handleHereCommand(chatId, messageThreadId);
+      return;
+    }
+
     const settings = await storage.getSettings();
     if (!settings) {
-      await sendTelegramMessage(chatId, "⚠️ Settings not configured. Please configure the application first.");
+      await sendTelegramMessage(chatId, "⚠️ Settings not configured. Please configure the application first.", 'HTML', undefined, messageThreadId);
       return;
     }
 
@@ -58,11 +65,11 @@ async function routeCommand(command: string, args: string[], chatId: string): Pr
         break;
 
       default:
-        await sendTelegramMessage(chatId, `❌ Unknown command: /${command}\n\nUse /help to see available commands.`);
+        await sendTelegramMessage(chatId, `❌ Unknown command: /${command}\n\nUse /help to see available commands.`, 'HTML', undefined, messageThreadId);
     }
   } catch (error) {
     console.error('Error routing command:', error);
-    await sendTelegramMessage(chatId, "⚠️ Something went wrong. Please try again.");
+    await sendTelegramMessage(chatId, "⚠️ Something went wrong. Please try again.", 'HTML', undefined, messageThreadId);
   }
 }
 
@@ -124,8 +131,10 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
 
     const chatId = update.message.chat.id.toString();
     const text = update.message.text;
+    // Forum-topic thread the message came from (undefined in non-forum chats).
+    const messageThreadId = update.message.message_thread_id;
 
-    console.log(`Received message from chat ${chatId}: ${text}`);
+    console.log(`Received message from chat ${chatId}${messageThreadId ? ` (topic ${messageThreadId})` : ''}: ${text}`);
 
     const parsed = parseCommand(text);
     if (!parsed) {
@@ -147,7 +156,7 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
     }
 
     console.log(`Processing command: /${parsed.command} with args:`, parsed.args);
-    await routeCommand(parsed.command, parsed.args, chatId);
+    await routeCommand(parsed.command, parsed.args, chatId, messageThreadId);
 
   } catch (error) {
     console.error('Error handling update:', error);

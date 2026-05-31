@@ -518,7 +518,7 @@ ${details.join("\n")}${prospectusLink}
 <i>Detected by IPO Scanner</i>`;
 
     try {
-      await sendTelegramMessage(settings.telegramChatId, message);
+      await sendTelegramMessage(settings.telegramChatId, message, 'HTML', undefined, settings.telegramTopicId);
       // Mark alert as sent
       await db
         .update(ipoFilings)

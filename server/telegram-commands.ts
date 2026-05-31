@@ -59,6 +59,47 @@ Send /help for more details!`;
 }
 
 /**
+ * Handles the /here command — one-time setup that captures the current chat and
+ * forum topic as the alert destination, then persists it to settings.
+ *
+ * Usage: post "/here" inside the Telegram topic you want alerts delivered to
+ * (e.g. the "alerts" topic of the sensei group). Captures both the group's
+ * chat_id and the topic's message_thread_id automatically.
+ */
+export async function handleHereCommand(chatId: string, messageThreadId?: number): Promise<void> {
+  try {
+    await storage.upsertSettings({
+      telegramEnabled: true,
+      telegramChatId: chatId,
+      telegramTopicId: messageThreadId ?? null,
+    });
+  } catch (error) {
+    console.error('Error saving /here destination:', error);
+    await sendTelegramMessage(
+      chatId,
+      "⚠️ Couldn't save the alert destination (database error). Check the server logs.",
+      'HTML',
+      undefined,
+      messageThreadId,
+    );
+    return;
+  }
+
+  const where = messageThreadId
+    ? `this topic (thread <code>${messageThreadId}</code>)`
+    : `this chat (General — no topic detected)`;
+  const message = `✅ <b>Alerts wired up.</b>
+
+Lead alerts will now be delivered to ${where}.
+
+Chat ID: <code>${chatId}</code>${messageThreadId ? `\nTopic ID: <code>${messageThreadId}</code>` : ''}
+
+Trigger a test alert from Settings to confirm.`;
+
+  await sendTelegramMessage(chatId, message, 'HTML', undefined, messageThreadId);
+}
+
+/**
  * Handles the /help command
  */
 export async function handleHelpCommand(chatId: string): Promise<void> {
