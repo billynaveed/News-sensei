@@ -344,6 +344,34 @@ Mainland China is NOT in the Target Regions. Beijing, Shanghai, Shenzhen,
 Guangzhou, Hangzhou-based companies do NOT qualify unless they have an
 independent qualifying anchor in HK or Taiwan or another Target Region.
 
+PRIORITY SCORING:
+- 80-100 (HIGH): Clear liquidity event with a named individual. IPO filing,
+  acquisition with disclosed price, Series D+ / late-stage raise >$100M, confirmed exit.
+- 50-79 (MEDIUM): Likely liquidity event, details missing. IPO rumors, M&A talks,
+  Series C, unicorn milestone with named founders.
+- 20-49 (LOW): Tangential — possible future liquidity. Ignore Series A/B.
+- 1-19 (REJECT): No liquidity event — general market/industry commentary, opinion.
+
+INVESTOR/BACKER WEALTH EVENTS:
+- A NAMED billionaire/UHNW investor or backer of a company in an M&A deal, IPO, or
+  major raise is HIGH priority — treat the backer as a key person.
+- Patterns: "[Name]-backed", "backed by [Name]", "[Name]'s [Company]", "investor [Name]".
+- "Richard Li-backed bolttech" in a $200M M&A = score 70+ and EXTRACT Richard Li.
+- SKIP institutional backers with no named individual (Temasek, GIC, sovereign funds).
+
+WEALTH ANGLE QUALITY — the wealthAngle field is graded; aim for 10/10:
+- 10/10: names a specific person + the liquidity event + the amount.
+- 7/10: names a person + event, amount vague.
+- 4/10: company event but no individual named.
+- 1/10: generic, no person/event.
+NEVER write "No identifiable individual" if any person (founder, exec, or named
+backer) appears — name them.
+
+WORKED EXAMPLE — "Richard Li-backed bolttech in talks to acquire MoneyHero for US$200M":
+  founderNames ["Richard Li"], investors ["Richard Li"], dealValue "$200M",
+  priorityScore 75, wealthAngle "Richard Li (billionaire backer of bolttech) positioned
+  to realize returns from the reported US$200M MoneyHero acquisition."
+
 Required structured output:
 - hqLocation       : "City, Country" of the subject company HQ, or null if unclear.
 - founderLocations : array of {"name": "...", "location": "City, Country | null"} for
@@ -364,8 +392,8 @@ Extract and return JSON:
 {
   "companyNames": ["array of all companies mentioned"],
   "primaryCompany": "the main company this article is about",
-  "founderNames": ["array of founders/key people"],
-  "investors": ["array of investors mentioned"],
+  "founderNames": ["founders, key people, AND named billionaire investors/backers with ACTUAL NAMES. Include people described as 'backers'/'investors'/'X-backed' even if not the founder, e.g. 'Richard Li-backed bolttech' -> include 'Richard Li'. Empty array if no names."],
+  "investors": ["array of investors mentioned — include anyone described as backer, supporter, or financier"],
   "summary": "1-2 sentence summary of what happened",
   "keyFinancials": {
     "fundingAmount": "e.g. $50M or null",
@@ -375,7 +403,7 @@ Extract and return JSON:
   "priorityScore": 1-100,
   "priorityLevel": "high/medium/low",
   "matchedIndicators": ["IPO", "Series B", "Exit", etc],
-  "wealthAngle": "Explanation of the wealth/liquidity opportunity for private banking",
+  "wealthAngle": "WHO specifically gains wealth and HOW MUCH. Name the person even if an investor/backer rather than founder (e.g. 'Richard Li (backer of bolttech) positioned to realize returns from the $200M deal'). Say 'No identifiable individual' ONLY if no person is named anywhere.",
   "confidenceScore": 0-100,
   "hqLocation": "City, Country or null",
   "founderLocations": [{"name": "Founder Name", "location": "City, Country or null"}],
@@ -391,6 +419,7 @@ Extract and return JSON:
       model: "google/gemini-2.5-flash-lite",
       messages: [{ role: "user", content: prompt }],
       max_completion_tokens: 2000,
+      temperature: 0.2,
     });
 
     const content = response.choices[0]?.message?.content;
