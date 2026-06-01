@@ -35,6 +35,8 @@ let tavilyExtractsThisRun = 0;
  */
 async function fetchViaTavily(url: string): Promise<string | null> {
   if (!TAVILY_API_KEY) return null;
+  // Tavily can't resolve Google News redirect URLs — don't waste a credit on them.
+  if (url.includes("news.google.com")) return null;
   if (tavilyExtractsThisRun >= TAVILY_MAX_EXTRACTS_PER_RUN) {
     log(`[lifestyle][tavily] per-run cap (${TAVILY_MAX_EXTRACTS_PER_RUN}) reached — using snippet for ${url}`, "lifestyle");
     return null;
