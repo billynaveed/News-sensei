@@ -1,5 +1,6 @@
 import Parser from "rss-parser";
 import OpenAI from "openai";
+import { tavily } from "@tavily/core";
 import * as cheerio from "cheerio";
 import { stripJsonFences } from "./json-utils";
 import { and, desc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
@@ -20,35 +21,35 @@ import { storage } from "./storage";
 const parser = new Parser({ timeout: 10000 });
 const insecureParser = new Parser({ timeout: 10000, requestOptions: { rejectUnauthorized: false } });
 
-const SCRAPINGBEE_API_KEY = process.env.SCRAPINGBEE_API_KEY;
+const TAVILY_API_KEY = process.env.TAVILY_API_KEY;
+// Per-scan-run budget for Tavily extracts (full-text fallback on Cloudflare-blocked
+// premium articles). Each advanced extract = ~2 Tavily credits. Free tier is ~1000
+// credits/mo, so keep this low. Tunable via LIFESTYLE_TAVILY_MAX_PER_RUN.
+const TAVILY_MAX_EXTRACTS_PER_RUN = parseInt(process.env.LIFESTYLE_TAVILY_MAX_PER_RUN || "5", 10);
+let tavilyExtractsThisRun = 0;
 
 /**
- * Fetches a URL through ScrapingBee's premium (residential) proxy to bypass
- * Cloudflare bot-blocking on premium publications (Tatler, Vogue, Prestige, …).
- * Returns the response body (HTML/XML) or null if unavailable/failed.
- * @param renderJs - run a headless browser (needed for JS-challenge article pages,
- *   not for plain RSS/XML feeds).
+ * Full-text fallback for articles whose direct fetch is blocked (Cloudflare on
+ * premium magazines). Uses Tavily's extract endpoint. Capped per run + logged so
+ * usage/cost is observable (grep journal for "[tavily]"). Returns clean text or null.
  */
-async function fetchViaScrapingBee(url: string, renderJs = false): Promise<string | null> {
-  if (!SCRAPINGBEE_API_KEY) return null;
+async function fetchViaTavily(url: string): Promise<string | null> {
+  if (!TAVILY_API_KEY) return null;
+  if (tavilyExtractsThisRun >= TAVILY_MAX_EXTRACTS_PER_RUN) {
+    log(`[lifestyle][tavily] per-run cap (${TAVILY_MAX_EXTRACTS_PER_RUN}) reached — using snippet for ${url}`, "lifestyle");
+    return null;
+  }
   try {
-    const params = new URLSearchParams({
-      api_key: SCRAPINGBEE_API_KEY,
-      url,
-      render_js: renderJs ? "true" : "false",
-      premium_proxy: "true", // residential IPs — bypasses Cloudflare
-      country_code: "sg",
-    });
-    const res = await fetch(`https://app.scrapingbee.com/api/v1?${params.toString()}`, {
-      signal: AbortSignal.timeout(35000),
-    });
-    if (!res.ok) {
-      log(`[lifestyle] ScrapingBee ${res.status} for ${url}`, "lifestyle");
-      return null;
-    }
-    return await res.text();
+    const tvly = tavily({ apiKey: TAVILY_API_KEY });
+    // "advanced" is required to get past Cloudflare on premium magazines; "basic"
+    // returns empty for them. Advanced ≈ 2 credits/URL.
+    const res = await tvly.extract([url], { extractDepth: "advanced" });
+    const raw = res.results?.[0]?.rawContent || "";
+    tavilyExtractsThisRun++;
+    log(`[lifestyle][tavily] extract ${tavilyExtractsThisRun}/${TAVILY_MAX_EXTRACTS_PER_RUN} — ${raw.length} chars from ${url}`, "lifestyle");
+    return raw || null;
   } catch (e) {
-    log(`[lifestyle] ScrapingBee error for ${url}: ${e instanceof Error ? e.message : e}`, "lifestyle");
+    log(`[lifestyle][tavily] extract failed for ${url}: ${e instanceof Error ? e.message : e}`, "lifestyle");
     return null;
   }
 }
@@ -113,17 +114,9 @@ async function fetchGoogleNewsArticles(source: typeof lifestyleSources.$inferSel
 async function fetchRssArticles(source: typeof lifestyleSources.$inferSelect) {
   if (!source.feedUrl) return [];
   const useParser = source.baseUrl.includes("buro247.sg") ? insecureParser : parser;
-  let feed;
-  try {
-    feed = await useParser.parseURL(source.feedUrl);
-  } catch (directError) {
-    // Direct fetch blocked (e.g. Cloudflare 403 on premium magazines) — retry the
-    // feed through ScrapingBee's premium proxy, then parse the returned XML.
-    const xml = await fetchViaScrapingBee(source.feedUrl, false);
-    if (!xml) throw directError;
-    feed = await parser.parseString(xml);
-    log(`[lifestyle] ${source.slug} feed recovered via ScrapingBee`, "lifestyle");
-  }
+  // Premium magazines 403 here (Cloudflare). We don't fight that on the feed —
+  // the decoupled Google News path (fetchGoogleNewsArticles) covers those sources.
+  const feed = await useParser.parseURL(source.feedUrl);
   return (feed.items || []).slice(0, 15).map((item) => ({
     sourceId: source.id,
     url: item.link || "",
@@ -294,10 +287,11 @@ async function fetchFullText(url: string) {
       const text = stripHtml(html).slice(0, 20000);
       if (text.length > 200) return text;
     }
-  } catch { /* fall through to ScrapingBee */ }
-  // Direct fetch failed/blocked (Cloudflare) — render via ScrapingBee premium proxy.
-  const html = await fetchViaScrapingBee(url, true);
-  return html ? stripHtml(html).slice(0, 20000) : "";
+  } catch { /* fall through to Tavily */ }
+  // Direct fetch failed/blocked (Cloudflare) — Tavily extract returns clean text
+  // (capped + logged for cost monitoring).
+  const raw = await fetchViaTavily(url);
+  return raw ? raw.slice(0, 20000) : "";
 }
 
 function formatLifestyleAlert(article: typeof lifestyleArticles.$inferSelect, names: string[]) {
@@ -333,6 +327,7 @@ async function sendHighValueLifestyleAlerts(articleIds: string[]) {
 
 export async function scanLifestylePipeline() {
   await ensureLifestyleSourcesSeeded();
+  tavilyExtractsThisRun = 0; // reset the per-run Tavily budget
   const now = new Date();
   const allSources = await db.select().from(lifestyleSources).where(eq(lifestyleSources.status, "active"));
   const dueSources = allSources.filter((source) => !source.lastChecked || (now.getTime() - new Date(source.lastChecked).getTime()) >= source.checkIntervalMin * 60 * 1000);
@@ -399,6 +394,8 @@ export async function scanLifestylePipeline() {
   }
 
   await sendHighValueLifestyleAlerts(alerted);
+
+  log(`[lifestyle][tavily] ${tavilyExtractsThisRun} extract(s) used this run (cap ${TAVILY_MAX_EXTRACTS_PER_RUN}, ~${tavilyExtractsThisRun * 2} credits)`, "lifestyle");
 
   // Sync high-value lifestyle articles to main leads table for feed visibility
   const syncResult = await syncLifestyleToLeads();
