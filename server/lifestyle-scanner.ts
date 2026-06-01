@@ -19,6 +19,39 @@ import { storage } from "./storage";
 
 const parser = new Parser({ timeout: 10000 });
 const insecureParser = new Parser({ timeout: 10000, requestOptions: { rejectUnauthorized: false } });
+
+const SCRAPINGBEE_API_KEY = process.env.SCRAPINGBEE_API_KEY;
+
+/**
+ * Fetches a URL through ScrapingBee's premium (residential) proxy to bypass
+ * Cloudflare bot-blocking on premium publications (Tatler, Vogue, Prestige, …).
+ * Returns the response body (HTML/XML) or null if unavailable/failed.
+ * @param renderJs - run a headless browser (needed for JS-challenge article pages,
+ *   not for plain RSS/XML feeds).
+ */
+async function fetchViaScrapingBee(url: string, renderJs = false): Promise<string | null> {
+  if (!SCRAPINGBEE_API_KEY) return null;
+  try {
+    const params = new URLSearchParams({
+      api_key: SCRAPINGBEE_API_KEY,
+      url,
+      render_js: renderJs ? "true" : "false",
+      premium_proxy: "true", // residential IPs — bypasses Cloudflare
+      country_code: "sg",
+    });
+    const res = await fetch(`https://app.scrapingbee.com/api/v1?${params.toString()}`, {
+      signal: AbortSignal.timeout(35000),
+    });
+    if (!res.ok) {
+      log(`[lifestyle] ScrapingBee ${res.status} for ${url}`, "lifestyle");
+      return null;
+    }
+    return await res.text();
+  } catch (e) {
+    log(`[lifestyle] ScrapingBee error for ${url}: ${e instanceof Error ? e.message : e}`, "lifestyle");
+    return null;
+  }
+}
 const openai = new OpenAI({
   apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
   baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
@@ -80,7 +113,17 @@ async function fetchGoogleNewsArticles(source: typeof lifestyleSources.$inferSel
 async function fetchRssArticles(source: typeof lifestyleSources.$inferSelect) {
   if (!source.feedUrl) return [];
   const useParser = source.baseUrl.includes("buro247.sg") ? insecureParser : parser;
-  const feed = await useParser.parseURL(source.feedUrl);
+  let feed;
+  try {
+    feed = await useParser.parseURL(source.feedUrl);
+  } catch (directError) {
+    // Direct fetch blocked (e.g. Cloudflare 403 on premium magazines) — retry the
+    // feed through ScrapingBee's premium proxy, then parse the returned XML.
+    const xml = await fetchViaScrapingBee(source.feedUrl, false);
+    if (!xml) throw directError;
+    feed = await parser.parseString(xml);
+    log(`[lifestyle] ${source.slug} feed recovered via ScrapingBee`, "lifestyle");
+  }
   return (feed.items || []).slice(0, 15).map((item) => ({
     sourceId: source.id,
     url: item.link || "",
@@ -244,9 +287,17 @@ Schema:
 }
 
 async function fetchFullText(url: string) {
-  const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0 News-sensei Lifestyle Scanner" }, signal: AbortSignal.timeout(8000) });
-  const html = await res.text();
-  return stripHtml(html).slice(0, 20000);
+  try {
+    const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36" }, signal: AbortSignal.timeout(8000) });
+    if (res.ok) {
+      const html = await res.text();
+      const text = stripHtml(html).slice(0, 20000);
+      if (text.length > 200) return text;
+    }
+  } catch { /* fall through to ScrapingBee */ }
+  // Direct fetch failed/blocked (Cloudflare) — render via ScrapingBee premium proxy.
+  const html = await fetchViaScrapingBee(url, true);
+  return html ? stripHtml(html).slice(0, 20000) : "";
 }
 
 function formatLifestyleAlert(article: typeof lifestyleArticles.$inferSelect, names: string[]) {
@@ -291,7 +342,19 @@ export async function scanLifestylePipeline() {
 
   for (const source of dueSources) {
     try {
-      const candidates = [...await fetchRssArticles(source), ...await fetchGoogleNewsArticles(source)];
+      // Fetch RSS and Google News independently — a Cloudflare 403 on the
+      // publication's feed must not suppress the (unblocked) Google News path.
+      const [rss, gnews] = await Promise.all([
+        fetchRssArticles(source).catch((e) => {
+          log(`[lifestyle] ${source.slug} RSS failed: ${e instanceof Error ? e.message : e}`, "lifestyle");
+          return [] as Awaited<ReturnType<typeof fetchRssArticles>>;
+        }),
+        fetchGoogleNewsArticles(source).catch((e) => {
+          log(`[lifestyle] ${source.slug} GoogleNews failed: ${e instanceof Error ? e.message : e}`, "lifestyle");
+          return [] as Awaited<ReturnType<typeof fetchGoogleNewsArticles>>;
+        }),
+      ]);
+      const candidates = [...rss, ...gnews];
       for (const candidate of candidates) {
         const existing = await db.select().from(lifestyleArticles).where(eq(lifestyleArticles.url, candidate.url)).limit(1);
         if (existing[0]) continue;
