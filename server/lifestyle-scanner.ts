@@ -7,6 +7,7 @@ import { and, desc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import { db } from "./db";
 import { log } from "./log";
 import { sendTelegramMessage } from "./telegram";
+import { validateSeaAnchor } from "./sea-guard";
 import {
   lifestyleSources,
   lifestyleArticles,
@@ -220,6 +221,15 @@ banker_angle — name the SPECIFIC person and why they are a private-banking pro
 
 relevance_score (0-100): 85+ = named UHNW with concrete wealth signal + actionable event (succession, sale, major purchase). 60-84 = named wealthy individual, softer signal. 40-59 = notable but thin. <40 = no identifiable UHNW individual.
 
+GEOGRAPHY (Target Regions = Southeast Asia + Hong Kong + Taiwan ONLY:
+Singapore, Malaysia, Indonesia, Thailand, Vietnam, Philippines, Hong Kong, Taiwan).
+Mainland China, Japan, Korea, India, the US/UK/EU and Australia are OUT of target.
+For the PRIMARY individual, report where they are based and what anchors them (if any) to a Target Region:
+- founder_locations: array of {"name": "...", "location": "City, Country | null"} — the person's current base, as stated/implied in the article.
+- hq_location: "City, Country | null" — HQ of their main company.
+- sea_evidence_type: one of "company_hq" | "founder_base" | "founder_roots" | "operational_centre" | "wealth_event" | "none". Use "none" if the only tie to Asia is a SEA publisher, a SEA investor/backer, or vague "Asia expansion".
+- sea_evidence_text: a passage from the article (15+ chars) naming a specific Target Region city/country that supports sea_evidence_type. Empty string if none.
+
 Schema:
 {
   "people": [{"full_name":"string","company":"string|null","role":"string|null","mention_context":"featured|mentioned|photographed","wealth_signals":["string"]}],
@@ -228,7 +238,11 @@ Schema:
   "headline": "string",
   "summary": "string",
   "banker_angle": "string",
-  "relevance_score": number
+  "relevance_score": number,
+  "founder_locations": [{"name":"string","location":"City, Country or null"}],
+  "hq_location": "City, Country or null",
+  "sea_evidence_type": "company_hq | founder_base | founder_roots | operational_centre | wealth_event | none",
+  "sea_evidence_text": "supporting passage from the article (or empty string if none)"
 }`;
 
   const response = await openai.chat.completions.create({
@@ -239,6 +253,31 @@ Schema:
   });
 
   const parsed = JSON.parse(stripJsonFences(response.choices[0]?.message?.content || "{}"));
+
+  // Geography gate — same Target-Region rule (SEA + HK + Taiwan) as the main
+  // news pipeline (scanner.ts). The lifestyle path historically had no location
+  // filter, so out-of-region UHNW (e.g. Masayoshi Son / Tokyo) leaked through.
+  // Fail closed: reject before any alert, feed-sync, or CRM person/company write.
+  const guard = validateSeaAnchor({
+    hqLocation: parsed.hq_location ?? null,
+    founderLocations: Array.isArray(parsed.founder_locations) ? parsed.founder_locations : null,
+    seaEvidenceType: parsed.sea_evidence_type ?? "none",
+    seaEvidenceText: parsed.sea_evidence_text ?? "",
+  });
+  if (!guard.passes) {
+    await db.update(lifestyleArticles).set({
+      status: "filtered_out",
+      filterReason: `geo: ${guard.reason}`,
+      relevanceScore: 0,
+      eventType: parsed.event_type || article.eventType,
+      headline: parsed.headline || article.title,
+      summary: parsed.summary || article.snippet || "",
+      updatedAt: new Date(),
+    }).where(eq(lifestyleArticles.id, article.id));
+    log(`[lifestyle] geo-rejected ${article.url}: ${guard.reason}`, "lifestyle");
+    return { ...parsed, relevance_score: 0, region_rejected: true };
+  }
+
   const extractedPeople = Array.isArray(parsed.people) ? parsed.people : [];
   const extractedCompanies = Array.isArray(parsed.companies) ? parsed.companies : [];
 
