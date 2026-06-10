@@ -1,4 +1,4 @@
-import { pgTable, text, varchar, integer, serial, timestamp, boolean, json, jsonb, real } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, serial, timestamp, boolean, json, jsonb, real, index } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { sql } from "drizzle-orm";
@@ -65,11 +65,27 @@ export const leads = pgTable("leads_v2", {
   category: text("category"),
   seaConnection: text("sea_connection"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
-});
+}, (t) => ({
+  // Index names match scripts/v2-create-tables.sql so a future db:push reconciles
+  // rather than duplicating. sourceUrl is the dedup hot path (getLeadByUrl runs
+  // once per article per scan) and was previously UNINDEXED.
+  sourceUrlIdx: index("idx_leads_v2_source_url").on(t.sourceUrl),
+  statusIdx: index("idx_leads_v2_status").on(t.status),
+  categoryIdx: index("idx_leads_v2_category").on(t.category),
+  priorityScoreIdx: index("idx_leads_v2_priority_score").on(t.priorityScore),
+  publishedAtIdx: index("idx_leads_v2_published_at").on(t.publishedAt),
+}));
 
 export const insertLeadSchema = createInsertSchema(leads).omit({
   id: true,
   createdAt: true,
+}).extend({
+  // drizzle-zod erases $type<> enums to `string`; restore them so InsertLead
+  // matches the table's insert type (keeps storage.createLead type-safe).
+  sourceTier: z.enum(["tier1", "tier2", "tier3"]),
+  priorityLevel: z.enum(["high", "medium", "low"]),
+  status: z.enum(["new", "reviewed", "saved", "contacted", "dismissed"]).optional(),
+  fetchMethod: z.enum(["rss", "google_news", "scrapingbee", "scrapingbee_premium"]).nullable().optional(),
 });
 
 export type InsertLead = z.infer<typeof insertLeadSchema>;
@@ -190,6 +206,8 @@ export const sources = pgTable("sources", {
 export const insertSourceSchema = createInsertSchema(sources).omit({
   id: true,
   createdAt: true,
+}).extend({
+  tier: z.enum(["tier1", "tier2", "tier3"]),
 });
 
 export type InsertSource = z.infer<typeof insertSourceSchema>;
@@ -430,7 +448,10 @@ export const lifestyleArticles = pgTable("lifestyle_articles", {
   relevanceScore: integer("relevance_score"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
-});
+}, (t) => ({
+  // status is filtered repeatedly across the lifestyle pipeline (pending/filtered/extracted).
+  statusIdx: index("idx_lifestyle_articles_status").on(t.status),
+}));
 
 export type LifestyleArticle = typeof lifestyleArticles.$inferSelect;
 
@@ -468,7 +489,10 @@ export const people = pgTable("people", {
   contactId: varchar("contact_id"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`),
-});
+}, (t) => ({
+  // upsertPerson looks up by full_name (+ region) once per extracted person.
+  fullNameIdx: index("idx_people_full_name").on(t.fullName),
+}));
 
 export type Person = typeof people.$inferSelect;
 

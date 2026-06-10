@@ -51,6 +51,20 @@ async function validateSessionToken(token: string | undefined): Promise<boolean>
   return new Date(sessions[0].expiresAt) > new Date();
 }
 
+async function isAuthenticated(req: Request): Promise<boolean> {
+  return validateSessionToken(req.cookies?.[SESSION_COOKIE]);
+}
+
+// Passkey registration is open ONLY for first-use setup (zero credentials).
+// Once the owner is enrolled, new devices may be registered only by an already
+// authenticated session — otherwise any internet visitor could self-enroll and
+// gain a full session (auth bypass).
+async function registrationAllowed(req: Request): Promise<boolean> {
+  const count = await getCredentialCount();
+  if (count === 0) return true;
+  return isAuthenticated(req);
+}
+
 // Auth middleware - protect /api/* except /api/auth/* and /api/telegram-webhook
 async function authMiddleware(req: Request, res: Response, next: NextFunction) {
   // Skip auth routes, telegram webhook, and browser ingest
@@ -80,7 +94,7 @@ const updateLeadStatusSchema = z.object({
 const updateSettingsSchema = z.object({
   interestFilterPrompt: z.string().min(1, "Interest filter prompt cannot be empty").optional(),
   regions: z.array(z.string()).min(1).optional(),
-  sourceTiers: z.record(z.string()).optional(),
+  sourceTiers: z.record(z.enum(["tier1", "tier2", "tier3"])).optional(),
   summaryLength: z.enum(["brief", "detailed", "actionable"]).optional(),
   scanFrequency: z.enum(["hourly", "daily", "weekly", "manual"]).optional(),
   emailFrequency: z.enum(["hourly", "daily", "weekly"]).optional(),
@@ -212,6 +226,9 @@ export async function registerRoutes(
 
   app.post("/api/auth/register-options", async (req, res) => {
     try {
+      if (!(await registrationAllowed(req))) {
+        return res.status(403).json({ error: "Registration is closed: owner already enrolled" });
+      }
       const existingCreds = await db.select().from(webauthnCredentials);
       const options = await generateRegistrationOptions({
         rpName: RP_NAME,
@@ -238,6 +255,9 @@ export async function registerRoutes(
 
   app.post("/api/auth/register-verify", async (req, res) => {
     try {
+      if (!(await registrationAllowed(req))) {
+        return res.status(403).json({ error: "Registration is closed: owner already enrolled" });
+      }
       const { body: regResponse, deviceName } = req.body;
       // Find matching challenge
       let matchedChallenge: string | undefined;
@@ -586,6 +606,13 @@ export async function registerRoutes(
   // Telegram webhook endpoint - receives updates pushed by Telegram
   app.post("/api/telegram-webhook", async (req, res) => {
     try {
+      // Verify the request came from Telegram (only when a secret is configured;
+      // see setWebhook, which registers the same secret_token).
+      const webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
+      if (webhookSecret && req.headers["x-telegram-bot-api-secret-token"] !== webhookSecret) {
+        return res.status(401).json({ error: "Invalid webhook secret" });
+      }
+
       const update = req.body as TelegramUpdate;
 
       if (!update || !update.update_id) {
@@ -974,6 +1001,14 @@ export async function registerRoutes(
   // Browser ingest endpoint for Mac Mini lifestyle scraper
   app.post("/api/browser-ingest", async (req, res) => {
     try {
+      // Shared-secret gate (only enforced when BROWSER_INGEST_SECRET is set).
+      // This endpoint is unauthenticated by design (called by the browser
+      // extension), so without a secret anyone could inject articles.
+      const ingestSecret = process.env.BROWSER_INGEST_SECRET;
+      if (ingestSecret && req.headers["x-ingest-secret"] !== ingestSecret) {
+        return res.status(401).json({ error: "Invalid ingest secret" });
+      }
+
       const { slug, articles } = req.body;
       if (!slug || !Array.isArray(articles)) {
         return res.status(400).json({ error: "slug and articles array required" });

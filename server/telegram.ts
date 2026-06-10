@@ -196,6 +196,12 @@ export async function setWebhook(webhookUrl: string): Promise<boolean> {
     body: JSON.stringify({
       url: webhookUrl,
       allowed_updates: ['message', 'callback_query'],
+      // When configured, Telegram echoes this back in the
+      // X-Telegram-Bot-Api-Secret-Token header so the webhook can verify
+      // that incoming updates genuinely originate from Telegram.
+      ...(process.env.TELEGRAM_WEBHOOK_SECRET
+        ? { secret_token: process.env.TELEGRAM_WEBHOOK_SECRET }
+        : {}),
     }),
   });
 

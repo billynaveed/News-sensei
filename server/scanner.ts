@@ -8,7 +8,7 @@ import { enrichSavedLead, formatEnrichmentForSavedLead } from "./founder-enrichm
 import { passesInterestFilter, extractPrimaryCompany, isPublicCompany, checkDuplication } from "./pipeline-stages";
 import { validateSeaAnchor } from "./sea-guard";
 import { log } from "./log";
-import type { InsertLead, PriorityLevel, SourceTier, SourceSearched, ArticleProcessed, ScrapingBeeDebugEntry } from "@shared/schema";
+import type { InsertLead, PriorityLevel, SourceTier, FetchMethod, SourceSearched, ArticleProcessed, ScrapingBeeDebugEntry } from "@shared/schema";
 
 const SCRAPINGBEE_API_KEY = process.env.SCRAPINGBEE_API_KEY;
 
@@ -1006,7 +1006,7 @@ KEY RULE: There must be a specific named person (founder, entrepreneur, family o
           region: article.region,
           status: "success",
           reason: `${deepResult.leadData.priorityLevel} priority (score ${deepResult.leadData.priorityScore}), enriched=${!!enrichResult?.founderBio}`,
-          fetchMethod: contentResult.fetchMethod || article.fetchMethod,
+          fetchMethod: (contentResult.fetchMethod || article.fetchMethod) as FetchMethod | undefined,
         });
 
       } catch (error) {

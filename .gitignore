@@ -5,3 +5,19 @@ server/public
 vite.config.ts.*
 *.tar.gz
 .env
+.env.*
+!.env.example
+
+# Local data / backups (never commit)
+*.db
+*.sqlite
+*.backup
+backups/
+
+# Scratch / experiment artifacts
+.tmux-session
+model-comparison-results.txt
+model-comparison-summary.md
+gemma4-local-test-results.json
+stage1-gemma4-test.json
+migration-report.md

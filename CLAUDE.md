@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 News-sensei is a private banker lead intelligence tool that scans Southeast Asian news sources for wealth-related events (IPOs, M&A, funding rounds, exits) to identify potential client acquisition opportunities. The system uses AI to extract company/founder information, assigns priority scores, and sends alerts via email or Telegram.
 
-**Tech Stack:** React 18 + TypeScript + Express + PostgreSQL + Drizzle ORM + OpenAI GPT-4o + shadcn/ui
+**Tech Stack:** React 18 + TypeScript + Express + PostgreSQL + Drizzle ORM + shadcn/ui. LLMs are called through an OpenRouter-style gateway (OpenAI SDK + `AI_INTEGRATIONS_OPENAI_BASE_URL`): `google/gemini-2.5-flash-lite` for scanning/extraction, `anthropic/claude-sonnet-4` for enrichment/research/IPO. (No GPT-4o.)
 
 ## Development Commands
 
@@ -31,7 +31,8 @@ npm run db:push
 
 Required environment variables (see `.env.example`):
 - `DATABASE_URL` - PostgreSQL connection string
-- `AI_INTEGRATIONS_OPENAI_API_KEY` - OpenAI API key for lead extraction (gpt-4o model)
+- `AI_INTEGRATIONS_OPENAI_API_KEY` - API key for the LLM gateway (lead extraction uses gemini-2.5-flash-lite)
+- `AI_INTEGRATIONS_OPENAI_BASE_URL` - **required** gateway base URL (OpenRouter-style); all LLM calls route through it
 - `PORT` - Server port (defaults to 5000)
 
 Optional:
@@ -78,12 +79,13 @@ shared/          Shared types + database schema
 1. Scanner (`scanner.ts`) orchestrates the scan
 2. Adapters (`adapters.ts`) fetch articles via RSS/Google News/ScrapingBee
 3. Deduplication by normalized URL (removes utm_*, ref params, standardizes to HTTPS)
-4. AI extraction (`extractLeadInfo`) uses GPT-4o to analyze each article
+4. AI extraction uses a multi-stage pipeline (`pipeline-stages.ts` / `scanner.ts`) on gemini-2.5-flash-lite to analyze each article
 5. Results stored in `leads` table with priority scoring
 6. Notifications sent via Telegram/email to configured recipients
 
 **3. Database Schema Key Tables**
-- `leads` - Main data model: articles with AI-extracted companies, founders, investors, priority scores
+> **v2 cutover:** the live schema (`shared/schema.ts`) now maps its `leads` object to the physical `leads_v2` table and `savedLeads` to `saved_leads_v2` (unified news + lifestyle + IPO). `shared/schema-v2.ts` is a parked draft imported by nothing — do not `db:push` it. Table names below are the Drizzle object names.
+- `leads` - Main data model (physical table `leads_v2`): articles with AI-extracted companies, founders, investors, priority scores
 - `settings` - User preferences: keywords, regions, email/Telegram config, global scanning toggles
 - `sources` - News sources with domain, tier, active status
 - `rss_feeds` - RSS feed subcategories linked to sources (foreign key: sourceId)
@@ -123,7 +125,7 @@ shared/          Shared types + database schema
 - Automatic cleanup of old scan logs based on `logRetentionDays` setting (defaults to 2 days)
 
 ### AI Extraction
-- Model: gpt-4o via OpenAI API
+- Model: `google/gemini-2.5-flash-lite` via the gateway (enrichment/research/IPO use `anthropic/claude-sonnet-4`)
 - Extracts: company names, founder names, investors, keywords, priority score (1-100)
 - Priority levels: high (70+), medium (40-69), low (<40)
 - Summary length configurable: brief (1-2 sentences), detailed (paragraph), actionable (with recommendations)

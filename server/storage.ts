@@ -133,12 +133,20 @@ export class DatabaseStorage implements IStorage {
     const weekStart = new Date(todayStart);
     weekStart.setDate(weekStart.getDate() - 7);
 
-    const allLeads = await db.select().from(leads).where(ne(leads.status, "dismissed"));
-    
+    // Aggregate in SQL rather than pulling the whole leads table into memory.
+    const [row] = await db
+      .select({
+        today: sql<number>`count(*) filter (where ${leads.createdAt} >= ${todayStart})`,
+        thisWeek: sql<number>`count(*) filter (where ${leads.createdAt} >= ${weekStart})`,
+        highPriority: sql<number>`count(*) filter (where ${leads.priorityLevel} = 'high')`,
+      })
+      .from(leads)
+      .where(ne(leads.status, "dismissed"));
+
     return {
-      today: allLeads.filter(l => new Date(l.createdAt) >= todayStart).length,
-      thisWeek: allLeads.filter(l => new Date(l.createdAt) >= weekStart).length,
-      highPriority: allLeads.filter(l => l.priorityLevel === "high").length,
+      today: Number(row?.today ?? 0),
+      thisWeek: Number(row?.thisWeek ?? 0),
+      highPriority: Number(row?.highPriority ?? 0),
     };
   }
 
@@ -406,17 +414,14 @@ export class DatabaseStorage implements IStorage {
 
   // Saved Leads methods
   async getAllSavedLeads(): Promise<(SavedLead & { lead: Lead })[]> {
-    const savedLeadsData = await db.select().from(savedLeads).orderBy(desc(savedLeads.savedAt));
+    // Single JOIN instead of 1 + N per-row getLeadById lookups.
+    const rows = await db
+      .select({ saved: savedLeads, lead: leads })
+      .from(savedLeads)
+      .innerJoin(leads, eq(savedLeads.leadId, leads.id))
+      .orderBy(desc(savedLeads.savedAt));
 
-    const result = [];
-    for (const saved of savedLeadsData) {
-      const lead = await this.getLeadById(saved.leadId);
-      if (lead) {
-        result.push({ ...saved, lead });
-      }
-    }
-
-    return result;
+    return rows.map((r) => ({ ...r.saved, lead: r.lead }));
   }
 
   async getSavedLeadById(id: string): Promise<(SavedLead & { lead: Lead }) | undefined> {

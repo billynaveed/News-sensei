@@ -43,5 +43,7 @@ integrations = ["javascript_openai_ai_integrations:2.0.0", "sendgrid:1.0.0", "ja
 
 [userenv]
 
+# Secrets must NOT live here (this file is committed to git). Set TELEGRAM_BOT_TOKEN
+# in Replit Secrets / .env instead. The previously committed token is in git
+# history and MUST be rotated via BotFather (see remaining-work notes).
 [userenv.shared]
-TELEGRAM_BOT_TOKEN = "8026368730:AAFRUUtLkCsXhxZ6TUfyDjaIkReQaqx1jjI"

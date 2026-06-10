@@ -20,7 +20,6 @@ import {
 import { storage } from "./storage";
 
 const parser = new Parser({ timeout: 10000 });
-const insecureParser = new Parser({ timeout: 10000, requestOptions: { rejectUnauthorized: false } });
 
 const TAVILY_API_KEY = process.env.TAVILY_API_KEY;
 // Per-scan-run budget for Tavily extracts (full-text fallback on Cloudflare-blocked
@@ -101,7 +100,7 @@ function stripHtml(html: string): string {
 async function fetchGoogleNewsArticles(source: typeof lifestyleSources.$inferSelect) {
   const query = encodeURIComponent(`site:${new URL(source.baseUrl).hostname} luxury OR billionaire OR founder OR ceo OR wedding OR gala`);
   const url = `https://news.google.com/rss/search?q=${query}&hl=en-US&gl=US&ceid=US:en`;
-  const useParser = source.baseUrl.includes("buro247.sg") ? insecureParser : parser;
+  const useParser = parser;
   const feed = await useParser.parseURL(url);
   return (feed.items || []).slice(0, 10).map((item) => ({
     sourceId: source.id,
@@ -116,7 +115,7 @@ async function fetchGoogleNewsArticles(source: typeof lifestyleSources.$inferSel
 
 async function fetchRssArticles(source: typeof lifestyleSources.$inferSelect) {
   if (!source.feedUrl) return [];
-  const useParser = source.baseUrl.includes("buro247.sg") ? insecureParser : parser;
+  const useParser = parser;
   // Premium magazines 403 here (Cloudflare). We don't fight that on the feed —
   // the decoupled Google News path (fetchGoogleNewsArticles) covers those sources.
   const feed = await useParser.parseURL(source.feedUrl);
@@ -320,7 +319,47 @@ Schema:
   return parsed;
 }
 
+/**
+ * SSRF guard: only allow http(s) fetches to public hosts. Article URLs can
+ * originate from the unauthenticated browser-ingest endpoint, so a server-side
+ * fetch must not be steerable to loopback / private / link-local / cloud-metadata
+ * addresses. (Hostnames that resolve to private IPs via DNS rebinding are not
+ * covered here — see remaining-work notes for pinned-resolution hardening.)
+ */
+function isPublicHttpUrl(rawUrl: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".internal") || host.endsWith(".local")) {
+    return false;
+  }
+  // IPv4 literals in private / loopback / link-local / unspecified ranges.
+  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    if (a === 0 || a === 10 || a === 127) return false;
+    if (a === 169 && b === 254) return false;            // link-local + cloud metadata (169.254.169.254)
+    if (a === 172 && b >= 16 && b <= 31) return false;   // 172.16.0.0/12
+    if (a === 192 && b === 168) return false;            // 192.168.0.0/16
+    if (a >= 224) return false;                          // multicast / reserved
+  }
+  // IPv6 loopback / unique-local / link-local.
+  if (host === "::1" || host === "::" || host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe80")) {
+    return false;
+  }
+  return true;
+}
+
 async function fetchFullText(url: string) {
+  if (!isPublicHttpUrl(url)) {
+    log(`[lifestyle] blocked non-public fetch target: ${url}`, "lifestyle");
+    return "";
+  }
   try {
     const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36" }, signal: AbortSignal.timeout(8000) });
     if (res.ok) {
