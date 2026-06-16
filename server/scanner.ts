@@ -1,4 +1,4 @@
-import OpenAI from "openai";
+import { openai } from "./openai-client";
 import { storage } from "./storage";
 import { sendLeadAlertEmail } from "./sendgrid";
 import { sendLeadAlertTelegram } from "./telegram";
@@ -11,11 +11,6 @@ import { log } from "./log";
 import type { InsertLead, PriorityLevel, SourceTier, FetchMethod, SourceSearched, ArticleProcessed, ScrapingBeeDebugEntry } from "@shared/schema";
 
 const SCRAPINGBEE_API_KEY = process.env.SCRAPINGBEE_API_KEY;
-
-const openai = new OpenAI({
-  apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
-  baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
-});
 
 // ============================================================================
 // Pipeline Stages 1-4 (imported from pipeline-stages.ts)

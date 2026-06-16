@@ -1,4 +1,4 @@
-import OpenAI from "openai";
+import { openai } from "./openai-client";
 import { log } from "./log";
 import { stripJsonFences } from "./json-utils";
 import {
@@ -9,10 +9,6 @@ import {
   calculateSearchConfidence,
 } from "./web-search";
 
-const openai = new OpenAI({
-  apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
-  baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
-});
 
 export interface FounderEnrichmentResult {
   founderName: string;

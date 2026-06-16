@@ -1,5 +1,5 @@
 import Parser from "rss-parser";
-import OpenAI from "openai";
+import { openai } from "./openai-client";
 import { tavily } from "@tavily/core";
 import * as cheerio from "cheerio";
 import { stripJsonFences } from "./json-utils";
@@ -55,10 +55,6 @@ async function fetchViaTavily(url: string): Promise<string | null> {
     return null;
   }
 }
-const openai = new OpenAI({
-  apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
-  baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
-});
 
 const MODEL = "google/gemini-2.5-flash-lite";
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || process.env.TELEGRAM_LIFESTYLE_CHAT_ID;

@@ -1,16 +1,11 @@
 import * as cheerio from "cheerio";
-import OpenAI from "openai";
+import { openai } from "./openai-client";
 import { db } from "./db";
 import { ipoFilings, type InsertIpoFiling, type IpoExchange, type IpoFiling } from "@shared/schema";
 import { eq, and, desc, isNull } from "drizzle-orm";
 import { sendTelegramMessage } from "./telegram";
 import { storage } from "./storage";
 import { stripJsonFences } from "./json-utils";
-
-const openai = new OpenAI({
-  apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
-  baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
-});
 
 // ---------------------------------------------------------------------------
 // HKEX Scrapers

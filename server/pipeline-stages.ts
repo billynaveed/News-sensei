@@ -1,17 +1,9 @@
 import OpenAI from "openai";
+import { openai } from "./openai-client";
 import { storage } from "./storage";
 import { log } from "./log";
 import type { RawArticle } from "./adapters";
 import { stripJsonFences } from "./json-utils";
-
-// ============================================================================
-// OpenAI Client
-// ============================================================================
-
-const openai = new OpenAI({
-  apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
-  baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
-});
 
 // Local gemma4 on Mac Mini via Ollama (free but slow).
 // Disabled by default — Mac Mini was decommissioned 2026-05-18, ROADMAP §P0.

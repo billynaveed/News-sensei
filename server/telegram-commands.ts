@@ -4,13 +4,9 @@ import { formatFounderEnrichment, formatCompanyEnrichment, formatSavedLeadEnrich
 import { performResearch, formatResearchTelegram, checkRateLimit, recordRateLimit, type ResearchResult } from './research';
 import { storage } from './storage';
 import type { Settings } from '@shared/schema';
-import OpenAI from 'openai';
+import { openai } from './openai-client';
 import { stripJsonFences } from './json-utils';
 
-const openai = new OpenAI({
-  apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
-  baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
-});
 
 // Store research results temporarily for saving
 interface PendingResearch {

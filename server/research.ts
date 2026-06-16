@@ -5,17 +5,13 @@
  * into a UHNW private banking dossier.
  */
 
-import OpenAI from "openai";
+import { openai } from "./openai-client";
 import { storage } from "./storage";
 import { db } from "./db";
 import { researchCache } from "@shared/schema";
 import { eq, and, gt, ilike, or, sql } from "drizzle-orm";
 import { stripJsonFences } from "./json-utils";
 
-const openai = new OpenAI({
-  apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
-  baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
-});
 
 const BRAVE_API_KEY = process.env.BRAVE_API_KEY;
 
