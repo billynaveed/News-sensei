@@ -9,6 +9,7 @@ import "./sea-guard.test";
 import "./normalize-url.test";
 import "./ssrf-guard.test";
 import "./lead-scoring.test";
+import "./prefilter.test";
 import { summary } from "./harness";
 
 const failed = summary("All suites");

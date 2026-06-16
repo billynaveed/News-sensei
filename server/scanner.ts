@@ -8,8 +8,9 @@ import { enrichSavedLead, formatEnrichmentForSavedLead } from "./founder-enrichm
 import { passesInterestFilter, extractPrimaryCompany, isPublicCompany, checkDuplication } from "./pipeline-stages";
 import { validateSeaAnchor } from "./sea-guard";
 import { priorityLevelFor } from "./lead-scoring";
+import { matchesBusinessPrefilter } from "./prefilter";
 import { log } from "./log";
-import type { InsertLead, PriorityLevel, SourceTier, FetchMethod, SourceSearched, ArticleProcessed, ScrapingBeeDebugEntry } from "@shared/schema";
+import type { InsertLead, PriorityLevel, SourceTier, FetchMethod, SourceSearched, ArticleProcessed, ScrapingBeeDebugEntry, Settings } from "@shared/schema";
 
 const SCRAPINGBEE_API_KEY = process.env.SCRAPINGBEE_API_KEY;
 
@@ -589,6 +590,188 @@ export function getScanProgress(scanId: string): ScanProgress | undefined {
   return scanProgress.get(scanId);
 }
 
+const DEFAULT_INTEREST_FILTER_PROMPT = `You are a lead intelligence filter for a private banker focused on ultra-high-net-worth individuals. Determine if this article describes a wealth event relevant to private banking prospecting.
+
+RELEVANT (pass these):
+- IPOs or listings of specific private companies
+- Large funding rounds (Series B+) with named founders
+- Major exits/acquisitions where a specific individual or private company receives significant proceeds
+- New ventures by wealthy founders or entrepreneurs
+- Wealth transfers, inheritance, or family office activity involving named individuals
+- Significant stake sales by named individuals
+
+REJECT (filter these out):
+- Government-to-government trade deals, bilateral agreements, or diplomatic economic pacts (e.g. "Country X signs $38B deal with Country Y")
+- Macro-economic news (GDP, inflation, interest rates, trade policy)
+- Public company stock price movements, analyst ratings, or earnings reports
+- General industry trends without a specific bankable individual or private company
+- Political news, elections, geopolitics
+- Regulatory announcements unless they directly create a liquidity event for a named individual
+
+KEY RULE: There must be a specific named person (founder, entrepreneur, family office principal) or a specific private company that could become a private banking client. If the article only mentions governments, public institutions, or unnamed "companies", reject it.`;
+
+/** Which per-scan skip counter (if any) an article outcome should increment. */
+type SkipCounter = "interestFiltered" | "noCompanySkipped" | "publicCompaniesFiltered" | "duplicatesSkipped";
+
+interface ArticleOutcome {
+  /** The scan-log entry for this article (always present, exactly one per article). */
+  processed: ArticleProcessed;
+  /** Skip counter to bump, if this article was filtered out. */
+  bump?: SkipCounter;
+  /** The created lead, if the article produced one (already persisted). */
+  lead?: InsertLead;
+  /** Whether enrichment added founder bio or company description (for enrichedCount). */
+  enriched?: boolean;
+  /** Error message to append to the scan's error list, if the pipeline threw. */
+  error?: string;
+}
+
+/**
+ * Runs one article through the full pipeline (pre-filter → S1 interest →
+ * S2 company → S3 public → S4 dedup → S5 content → S6 analysis → S7 enrichment),
+ * persisting a lead on success. Returns a structured outcome the scan loop uses
+ * to update counters/logs — extracted from scanForLeads so each stage is legible
+ * and the orchestration stays flat. Behavior is identical to the prior inline loop.
+ */
+async function processArticle(
+  article: RawArticle,
+  filterPrompt: string,
+  settings: Settings,
+): Promise<ArticleOutcome> {
+  const base = {
+    headline: article.headline,
+    source: article.source,
+    region: article.region,
+    fetchMethod: article.fetchMethod,
+  };
+
+  // --- Pre-check 0: Cheap keyword pre-filter (no API call) ---
+  if (!matchesBusinessPrefilter(article)) {
+    return { processed: { ...base, status: "skipped", reason: "Pre-filter: no business keywords found" } };
+  }
+
+  // --- Pre-check 1: URL dedup (free, no API call) ---
+  const existingLead = await storage.getLeadByUrl(article.url);
+  if (existingLead) {
+    return {
+      processed: { ...base, status: "skipped", reason: "Duplicate - URL already in database" },
+      bump: "duplicatesSkipped",
+    };
+  }
+
+  try {
+    // --- Stage 1: Interest Filter (cheap 256-token call) ---
+    const interestResult = await passesInterestFilter(article, filterPrompt, settings.regions);
+    if (!interestResult.passes) {
+      return {
+        processed: { ...base, status: "skipped", reason: `S1 Interest filter: ${interestResult.reason}` },
+        bump: "interestFiltered",
+      };
+    }
+
+    // --- Stage 2: Extract Primary Company ---
+    const companyResult = await extractPrimaryCompany(article);
+    if (!companyResult.companyName) {
+      return {
+        processed: { ...base, status: "skipped", reason: "S2 No company identified" },
+        bump: "noCompanySkipped",
+      };
+    }
+    const companyName = companyResult.companyName;
+
+    // --- Stage 3: Public Company Filter ---
+    const publicResult = await isPublicCompany(companyName, article.headline);
+    if (publicResult.isPublic) {
+      return {
+        processed: { ...base, status: "skipped", reason: `S3 Public company filtered: ${publicResult.reason}` },
+        bump: "publicCompaniesFiltered",
+      };
+    }
+
+    // --- Stage 4a: In-database company+story dedup (last 7 days) ---
+    const recentLeads = await storage.getRecentLeadsByCompany(companyName, 7);
+    if (recentLeads && recentLeads.length > 0) {
+      return {
+        processed: { ...base, status: "skipped", reason: `S4a Already have ${recentLeads.length} lead(s) about ${companyName} from past 7 days` },
+        bump: "duplicatesSkipped",
+      };
+    }
+
+    // --- Stage 4b: Smart Deduplication (against saved leads) ---
+    const dedupResult = await checkDuplication(companyName, article.headline, article.content.slice(0, 500));
+    if (dedupResult.isDuplicate) {
+      return {
+        processed: { ...base, status: "skipped", reason: `S4b Duplicate: ${dedupResult.reason}` },
+        bump: "duplicatesSkipped",
+      };
+    }
+
+    // --- Stage 5: Full Article Content (Tier 1 only, uses ScrapingBee) ---
+    const sourceTier = article.sourceTier || "tier3";
+    const contentResult = await fetchFullArticleContent(article, sourceTier as SourceTier);
+    const fullContent = contentResult.fullContent;
+
+    // --- Stage 6: Deep Analysis ---
+    const deepResult = await deepAnalyzeArticle(article, fullContent, settings.regions);
+    if (!deepResult) {
+      return { processed: { ...base, status: "skipped", reason: "S6 Deep analysis rejected (not relevant or error)" } };
+    }
+
+    // --- Stage 7: Enrichment via Tavily/Brave web search ---
+    let enrichResult: EnrichmentResult | null = null;
+    try {
+      const founderNames = deepResult.leadData.founderNames || [];
+      const companyNames = deepResult.leadData.companyNames || [companyName];
+      const region = article.region || settings.regions[0] || "Singapore";
+      enrichResult = await enrichLeadWithWebSearch(companyNames, founderNames, region);
+    } catch (enrichError) {
+      const msg = enrichError instanceof Error ? enrichError.message : "Unknown";
+      log(`[Pipeline S7] Enrichment failed for ${companyName}: ${msg}`, "pipeline");
+      // Non-fatal — save lead without enrichment
+    }
+    const enriched = !!(enrichResult?.founderBio || enrichResult?.companyDescription);
+
+    // --- Build pipeline reasoning for transparency ---
+    const pipelineReasoning = [
+      `S1 Interest: PASS (${interestResult.reason || 'relevant'})`,
+      `S2 Company: ${companyName}`,
+      `S3 Public: NO (${publicResult.reason || 'private company'})`,
+      `S4 Dedup: PASS (new event)`,
+      `S6 Analysis: ${deepResult.leadData.priorityLevel} priority (score ${deepResult.leadData.priorityScore})${deepResult.wealthAngle ? ` — ${deepResult.wealthAngle}` : ''}`,
+      enrichResult?.founderBio ? `S7 Enrichment: founder bio found` : `S7 Enrichment: no additional data`,
+    ].join('\n');
+
+    // --- Save lead with enrichment data ---
+    const lead = {
+      ...deepResult.leadData,
+      founderLinkedInUrl: enrichResult?.founderLinkedInUrl || null,
+      founderBio: enrichResult?.founderBio || null,
+      companyDescription: enrichResult?.companyDescription || null,
+      fetchMethod: contentResult.fetchMethod || article.fetchMethod,
+      pipelineReasoning,
+    };
+
+    await storage.createLead(lead as InsertLead);
+
+    return {
+      processed: {
+        ...base,
+        status: "success",
+        reason: `${deepResult.leadData.priorityLevel} priority (score ${deepResult.leadData.priorityScore}), enriched=${!!enrichResult?.founderBio}`,
+        fetchMethod: (contentResult.fetchMethod || article.fetchMethod) as FetchMethod | undefined,
+      },
+      lead: lead as InsertLead,
+      enriched,
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
+    return {
+      processed: { ...base, status: "error", reason: errorMessage },
+      error: `Error processing "${article.headline}": ${errorMessage}`,
+    };
+  }
+}
+
 export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: number; matchesFound: number; newLeads: number; duplicatesSkipped: number; scanId: string }> {
   const currentScanId = scanId || crypto.randomUUID();
   const startTime = Date.now();
@@ -701,26 +884,6 @@ export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: 
       message: `Found ${uniqueArticles.length} unique articles after dedup, processing...`
     });
 
-    const DEFAULT_INTEREST_FILTER_PROMPT = `You are a lead intelligence filter for a private banker focused on ultra-high-net-worth individuals. Determine if this article describes a wealth event relevant to private banking prospecting.
-
-RELEVANT (pass these):
-- IPOs or listings of specific private companies
-- Large funding rounds (Series B+) with named founders
-- Major exits/acquisitions where a specific individual or private company receives significant proceeds
-- New ventures by wealthy founders or entrepreneurs
-- Wealth transfers, inheritance, or family office activity involving named individuals
-- Significant stake sales by named individuals
-
-REJECT (filter these out):
-- Government-to-government trade deals, bilateral agreements, or diplomatic economic pacts (e.g. "Country X signs $38B deal with Country Y")
-- Macro-economic news (GDP, inflation, interest rates, trade policy)
-- Public company stock price movements, analyst ratings, or earnings reports
-- General industry trends without a specific bankable individual or private company
-- Political news, elections, geopolitics
-- Regulatory announcements unless they directly create a liquidity event for a named individual
-
-KEY RULE: There must be a specific named person (founder, entrepreneur, family office principal) or a specific private company that could become a private banking client. If the article only mentions governments, public institutions, or unnamed "companies", reject it.`;
-
     const filterPrompt = settings.interestFilterPrompt || DEFAULT_INTEREST_FILTER_PROMPT;
 
     for (let i = 0; i < uniqueArticles.length; i++) {
@@ -735,211 +898,17 @@ KEY RULE: There must be a specific named person (founder, entrepreneur, family o
         message: `[${i+1}/${uniqueArticles.length}] Processing: ${article.headline.substring(0, 50)}...`
       });
 
-      // --- Pre-check 0: Cheap keyword pre-filter (no API call) ---
-      // Only send articles to the AI pipeline if they contain at least one business-relevant keyword.
-      // This prevents sports, politics, weather etc. from burning API tokens.
-      const PREFILTER_KEYWORDS = [
-        'ipo', 'listing', 'funding', 'series a', 'series b', 'series c', 'series d',
-        'acquisition', 'merger', 'acquire', 'buyout', 'takeover', 'stake', 'divestiture',
-        'valuation', 'unicorn', 'billion', 'million', 'investment', 'investor', 'venture',
-        'private equity', 'family office', 'wealth', 'high net worth', 'hnw', 'uhnw',
-        'founder', 'entrepreneur', 'startup', 'fintech', 'proptech', 'biotech',
-        'exit', 'spac', 'prospectus', 'debut', 'bourse', 'stock exchange',
-        'fund', 'capital', 'raise', 'raised', 'backed', 'bankable',
-        'sgx', 'hkex', 'idx', 'pse', 'catalist', 'mainboard', 'gem board',
-        'real estate', 'property', 'conglomerate', 'tycoon', 'magnate', 'mogul',
-        'succession', 'inheritance', 'trust', 'endowment', 'philanthropy',
-        'private bank', 'asset management', 'hedge fund',
-        'expansion', 'headquarter', 'relocat', 'launch',
-        'revenue', 'profit', 'earnings', 'growth', 'deal', 'partnership',
-      ];
-      const articleText = `${article.headline} ${article.content}`.toLowerCase();
-      const matchesPrefilter = PREFILTER_KEYWORDS.some(kw => articleText.includes(kw));
-      if (!matchesPrefilter) {
-        articlesProcessed.push({
-          headline: article.headline,
-          source: article.source,
-          region: article.region,
-          status: "skipped",
-          reason: "Pre-filter: no business keywords found",
-          fetchMethod: article.fetchMethod,
-        });
-        continue;
-      }
-
-      // --- Pre-check 1: URL dedup (free, no API call) ---
-      const existingLead = await storage.getLeadByUrl(article.url);
-      if (existingLead) {
-        duplicatesSkipped++;
-        articlesProcessed.push({
-          headline: article.headline,
-          source: article.source,
-          region: article.region,
-          status: "skipped",
-          reason: "Duplicate - URL already in database",
-          fetchMethod: article.fetchMethod,
-        });
-        continue;
-      }
-
-      try {
-        // --- Stage 1: Interest Filter (cheap 256-token call) ---
-        const interestResult = await passesInterestFilter(article, filterPrompt, settings.regions);
-        if (!interestResult.passes) {
-          interestFiltered++;
-          articlesProcessed.push({
-            headline: article.headline,
-            source: article.source,
-            region: article.region,
-            status: "skipped",
-            reason: `S1 Interest filter: ${interestResult.reason}`,
-            fetchMethod: article.fetchMethod,
-          });
-          continue;
-        }
-
-        // --- Stage 2: Extract Primary Company ---
-        const companyResult = await extractPrimaryCompany(article);
-        if (!companyResult.companyName) {
-          noCompanySkipped++;
-          articlesProcessed.push({
-            headline: article.headline,
-            source: article.source,
-            region: article.region,
-            status: "skipped",
-            reason: "S2 No company identified",
-            fetchMethod: article.fetchMethod,
-          });
-          continue;
-        }
-
-        const companyName = companyResult.companyName;
-
-        // --- Stage 3: Public Company Filter ---
-        const publicResult = await isPublicCompany(companyName, article.headline);
-        if (publicResult.isPublic) {
-          publicCompaniesFiltered++;
-          articlesProcessed.push({
-            headline: article.headline,
-            source: article.source,
-            region: article.region,
-            status: "skipped",
-            reason: `S3 Public company filtered: ${publicResult.reason}`,
-            fetchMethod: article.fetchMethod,
-          });
-          continue;
-        }
-
-        // --- Stage 4a: In-database company+story dedup ---
-        // Check if we already have a lead about this company from the last 7 days
-        const recentLeads = await storage.getRecentLeadsByCompany(companyName, 7);
-        if (recentLeads && recentLeads.length > 0) {
-          duplicatesSkipped++;
-          articlesProcessed.push({
-            headline: article.headline,
-            source: article.source,
-            region: article.region,
-            status: "skipped",
-            reason: `S4a Already have ${recentLeads.length} lead(s) about ${companyName} from past 7 days`,
-            fetchMethod: article.fetchMethod,
-          });
-          continue;
-        }
-
-        // --- Stage 4b: Smart Deduplication (against saved leads) ---
-        const dedupResult = await checkDuplication(companyName, article.headline, article.content.slice(0, 500));
-        if (dedupResult.isDuplicate) {
-          duplicatesSkipped++;
-          articlesProcessed.push({
-            headline: article.headline,
-            source: article.source,
-            region: article.region,
-            status: "skipped",
-            reason: `S4b Duplicate: ${dedupResult.reason}`,
-            fetchMethod: article.fetchMethod,
-          });
-          continue;
-        }
-
-        // --- Stage 5: Full Article Content (Tier 1 only, uses ScrapingBee) ---
-        const sourceTier = article.sourceTier || "tier3";
-        const contentResult = await fetchFullArticleContent(article, sourceTier as SourceTier);
-        const fullContent = contentResult.fullContent;
-
-        // --- Stage 6: Deep Analysis (replaces extractLeadInfo) ---
-        const deepResult = await deepAnalyzeArticle(article, fullContent, settings.regions);
-        if (!deepResult) {
-          articlesProcessed.push({
-            headline: article.headline,
-            source: article.source,
-            region: article.region,
-            status: "skipped",
-            reason: "S6 Deep analysis rejected (not relevant or error)",
-            fetchMethod: article.fetchMethod,
-          });
-          continue;
-        }
-
-        // --- Stage 7: Enrichment via Tavily/Brave web search ---
-        let enrichResult: EnrichmentResult | null = null;
-        try {
-          const founderNames = deepResult.leadData.founderNames || [];
-          const companyNames = deepResult.leadData.companyNames || [companyName];
-          const region = article.region || settings.regions[0] || "Singapore";
-          enrichResult = await enrichLeadWithWebSearch(companyNames, founderNames, region);
-          if (enrichResult.founderBio || enrichResult.companyDescription) {
-            enrichedCount++;
-          }
-        } catch (enrichError) {
-          const msg = enrichError instanceof Error ? enrichError.message : "Unknown";
-          log(`[Pipeline S7] Enrichment failed for ${companyName}: ${msg}`, "pipeline");
-          // Non-fatal — save lead without enrichment
-        }
-
-        // --- Build pipeline reasoning for transparency ---
-        const pipelineReasoning = [
-          `S1 Interest: PASS (${interestResult.reason || 'relevant'})`,
-          `S2 Company: ${companyName}`,
-          `S3 Public: NO (${publicResult.reason || 'private company'})`,
-          `S4 Dedup: PASS (new event)`,
-          `S6 Analysis: ${deepResult.leadData.priorityLevel} priority (score ${deepResult.leadData.priorityScore})${deepResult.wealthAngle ? ` — ${deepResult.wealthAngle}` : ''}`,
-          enrichResult?.founderBio ? `S7 Enrichment: founder bio found` : `S7 Enrichment: no additional data`,
-        ].join('\n');
-
-        // --- Save lead with enrichment data ---
-        const lead = {
-          ...deepResult.leadData,
-          founderLinkedInUrl: enrichResult?.founderLinkedInUrl || null,
-          founderBio: enrichResult?.founderBio || null,
-          companyDescription: enrichResult?.companyDescription || null,
-          fetchMethod: contentResult.fetchMethod || article.fetchMethod,
-          pipelineReasoning,
-        };
-
-        await storage.createLead(lead as InsertLead);
-        createdLeads.push(lead as InsertLead);
+      const outcome = await processArticle(article, filterPrompt, settings);
+      articlesProcessed.push(outcome.processed);
+      if (outcome.error) errors.push(outcome.error);
+      if (outcome.bump === "interestFiltered") interestFiltered++;
+      else if (outcome.bump === "noCompanySkipped") noCompanySkipped++;
+      else if (outcome.bump === "publicCompaniesFiltered") publicCompaniesFiltered++;
+      else if (outcome.bump === "duplicatesSkipped") duplicatesSkipped++;
+      if (outcome.lead) {
+        createdLeads.push(outcome.lead);
         newLeads++;
-
-        articlesProcessed.push({
-          headline: article.headline,
-          source: article.source,
-          region: article.region,
-          status: "success",
-          reason: `${deepResult.leadData.priorityLevel} priority (score ${deepResult.leadData.priorityScore}), enriched=${!!enrichResult?.founderBio}`,
-          fetchMethod: (contentResult.fetchMethod || article.fetchMethod) as FetchMethod | undefined,
-        });
-
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : "Unknown error";
-        errors.push(`Error processing "${article.headline}": ${errorMessage}`);
-        articlesProcessed.push({
-          headline: article.headline,
-          source: article.source,
-          region: article.region,
-          status: "error",
-          reason: errorMessage,
-          fetchMethod: article.fetchMethod,
-        });
+        if (outcome.enriched) enrichedCount++;
       }
     }
 
