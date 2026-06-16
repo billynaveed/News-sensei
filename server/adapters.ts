@@ -655,7 +655,7 @@ export interface ScanningOptions {
  * Normalizes a URL for deduplication by standardizing protocol, removing
  * tracking parameters, and stripping hash fragments.
  */
-function normalizeUrl(url: string): string {
+export function normalizeUrl(url: string): string {
   try {
     const parsed = new URL(url);
     parsed.protocol = "https:";

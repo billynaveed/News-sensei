@@ -17,6 +17,7 @@
  */
 
 import { validateSeaAnchor, type SeaAnchorInput } from "../server/sea-guard";
+import { check } from "./harness";
 
 interface Case {
   name: string;
@@ -196,37 +197,16 @@ const cases: Case[] = [
   },
 ];
 
-let passed = 0;
-let failed = 0;
-const failures: string[] = [];
-
 for (const c of cases) {
   const r = validateSeaAnchor(c.input);
   const passOk = r.passes === c.expectPass;
   const reasonOk = c.expectReasonContains
     ? r.reason.toLowerCase().includes(c.expectReasonContains.toLowerCase())
     : true;
-  const ok = passOk && reasonOk;
-  const tag = ok ? "PASS" : "FAIL";
   const verdict = r.passes ? "PASS" : "REJECT";
-  console.log(`[${tag}] ${c.name}`);
-  console.log(`        guard verdict: ${verdict} — ${r.reason}`);
-  if (ok) {
-    passed++;
-  } else {
-    failed++;
-    failures.push(
-      `${c.name}\n  expected ${c.expectPass ? "PASS" : "REJECT"} containing "${c.expectReasonContains ?? ""}"\n  got      ${verdict} — ${r.reason}`
-    );
-  }
+  check(
+    `sea-guard: ${c.name}`,
+    passOk && reasonOk,
+    `expected ${c.expectPass ? "PASS" : "REJECT"} containing "${c.expectReasonContains ?? ""}", got ${verdict} — ${r.reason}`,
+  );
 }
-
-console.log("");
-console.log(`SEA guard regression: ${passed} passed, ${failed} failed`);
-if (failed > 0) {
-  console.log("");
-  console.log("Failures:");
-  for (const f of failures) console.log(`  - ${f}`);
-  process.exit(1);
-}
-process.exit(0);

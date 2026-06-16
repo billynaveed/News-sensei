@@ -7,6 +7,7 @@ import { stripJsonFences } from "./json-utils";
 import { enrichSavedLead, formatEnrichmentForSavedLead } from "./founder-enrichment";
 import { passesInterestFilter, extractPrimaryCompany, isPublicCompany, checkDuplication } from "./pipeline-stages";
 import { validateSeaAnchor } from "./sea-guard";
+import { priorityLevelFor } from "./lead-scoring";
 import { log } from "./log";
 import type { InsertLead, PriorityLevel, SourceTier, FetchMethod, SourceSearched, ArticleProcessed, ScrapingBeeDebugEntry } from "@shared/schema";
 
@@ -392,8 +393,7 @@ Extract and return JSON:
     }
 
     const priorityScore: number = extracted.priorityScore ?? 50;
-    const priorityLevel: PriorityLevel =
-      priorityScore >= 70 ? "high" : priorityScore >= 40 ? "medium" : "low";
+    const priorityLevel: PriorityLevel = priorityLevelFor(priorityScore);
 
     const leadData: Partial<InsertLead> = {
       headline: article.headline,
