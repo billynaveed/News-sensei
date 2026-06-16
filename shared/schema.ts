@@ -72,8 +72,8 @@ export const leads = pgTable("leads_v2", {
   sourceUrlIdx: index("idx_leads_v2_source_url").on(t.sourceUrl),
   statusIdx: index("idx_leads_v2_status").on(t.status),
   categoryIdx: index("idx_leads_v2_category").on(t.category),
-  priorityScoreIdx: index("idx_leads_v2_priority_score").on(t.priorityScore),
-  publishedAtIdx: index("idx_leads_v2_published_at").on(t.publishedAt),
+  priorityScoreIdx: index("idx_leads_v2_priority_score").on(t.priorityScore.desc()),
+  publishedAtIdx: index("idx_leads_v2_published_at").on(t.publishedAt.desc()),
 }));
 
 export const insertLeadSchema = createInsertSchema(leads).omit({
@@ -491,7 +491,8 @@ export const people = pgTable("people", {
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`),
 }, (t) => ({
   // upsertPerson looks up by full_name (+ region) once per extracted person.
-  fullNameIdx: index("idx_people_full_name").on(t.fullName),
+  // Matches the existing live index name so db:push stays a no-op here.
+  fullNameIdx: index("idx_people_name").on(t.fullName),
 }));
 
 export type Person = typeof people.$inferSelect;
