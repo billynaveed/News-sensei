@@ -67,5 +67,6 @@ npm run db:push # apply shared/schema.ts to the database
 
 The live schema is **`shared/schema.ts`**. Its Drizzle objects map to the unified
 `*_v2` physical tables — e.g. the `leads` object is `pgTable("leads_v2", ...)` and
-`savedLeads` is `saved_leads_v2`. `shared/schema-v2.ts` is a **parked design draft**
-that is imported by nothing; do not run `db:push` against it. See ROADMAP.md.
+`savedLeads` is `saved_leads_v2`. (A parked `schema-v2.ts` design draft used to sit
+alongside it; it was imported by nothing and has been removed — see git history if
+the full v2 unification is ever revived.) See ROADMAP.md.

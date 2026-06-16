@@ -31,6 +31,18 @@ app.use(express.urlencoded({ extended: false }));
 export { log } from "./log";
 import { log } from "./log";
 
+// Surface background async failures that would otherwise vanish. The scanner,
+// scheduler, and bot all run fire-and-forget promises; without these a rejected
+// promise or thrown error disappears (or crashes the process with no log).
+process.on("unhandledRejection", (reason) => {
+  log(`Unhandled promise rejection: ${reason instanceof Error ? reason.stack : String(reason)}`, "error");
+});
+process.on("uncaughtException", (err) => {
+  log(`Uncaught exception: ${err instanceof Error ? err.stack : String(err)}`, "error");
+  // Process state is undefined after this — exit so the supervisor restarts clean.
+  process.exit(1);
+});
+
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;

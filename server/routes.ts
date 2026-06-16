@@ -18,7 +18,7 @@ import { generateRegistrationOptions, verifyRegistrationResponse, generateAuthen
 import type { LeadStatus, IpoExchange } from "@shared/schema";
 import { webauthnCredentials, authSessions, lifestyleSources, lifestyleArticles, lifestyleScrapeLog } from "@shared/schema";
 import { db } from "./db";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, sql } from "drizzle-orm";
 import { getRecentLifestyleLeads, scanLifestylePipeline } from "./lifestyle-scanner";
 
 // WebAuthn configuration. Host-specific values come from env so the app is
@@ -159,6 +159,18 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
+  // Liveness/readiness probe. Unauthenticated and not under /api, so it
+  // bypasses authMiddleware; pings the DB so monitors can tell "listening but
+  // DB down" from healthy. Registered first, before the catch-all/static route.
+  app.get("/healthz", async (_req, res) => {
+    try {
+      await db.execute(sql`select 1`);
+      res.json({ status: "ok", db: "ok", uptime: process.uptime() });
+    } catch {
+      res.status(503).json({ status: "degraded", db: "down", uptime: process.uptime() });
+    }
+  });
+
   // Ensure saved_leads table exists
   try {
     const created = await ensureSavedLeadsTable();

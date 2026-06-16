@@ -84,7 +84,7 @@ shared/          Shared types + database schema
 6. Notifications sent via Telegram/email to configured recipients
 
 **3. Database Schema Key Tables**
-> **v2 cutover:** the live schema (`shared/schema.ts`) now maps its `leads` object to the physical `leads_v2` table and `savedLeads` to `saved_leads_v2` (unified news + lifestyle + IPO). `shared/schema-v2.ts` is a parked draft imported by nothing — do not `db:push` it. Table names below are the Drizzle object names.
+> **v2 cutover:** the live schema (`shared/schema.ts`) now maps its `leads` object to the physical `leads_v2` table and `savedLeads` to `saved_leads_v2` (unified news + lifestyle + IPO). (The former parked `schema-v2.ts` draft was imported by nothing and has been deleted.) Table names below are the Drizzle object names.
 - `leads` - Main data model (physical table `leads_v2`): articles with AI-extracted companies, founders, investors, priority scores
 - `settings` - User preferences: keywords, regions, email/Telegram config, global scanning toggles
 - `sources` - News sources with domain, tier, active status
