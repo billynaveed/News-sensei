@@ -21,10 +21,11 @@ import { db } from "./db";
 import { eq, desc } from "drizzle-orm";
 import { getRecentLifestyleLeads, scanLifestylePipeline } from "./lifestyle-scanner";
 
-// WebAuthn configuration
-const RP_NAME = "Sensei";
-const RP_ID = "77.42.84.43.nip.io";
-const ORIGIN = "https://news-sensei.77.42.84.43.nip.io";
+// WebAuthn configuration. Host-specific values come from env so the app is
+// deployable anywhere; the defaults preserve the current VPS host.
+const RP_NAME = process.env.WEBAUTHN_RP_NAME || "Sensei";
+const RP_ID = process.env.WEBAUTHN_RP_ID || "77.42.84.43.nip.io";
+const ORIGIN = process.env.WEBAUTHN_ORIGIN || "https://news-sensei.77.42.84.43.nip.io";
 const SESSION_COOKIE = "ns_auth";
 const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
