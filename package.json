@@ -8,6 +8,7 @@
     "build": "tsx script/build.ts",
     "start": "NODE_ENV=production node dist/index.cjs",
     "check": "tsc",
+    "lint": "eslint server shared",
     "test": "tsx tests/run.ts",
     "db:push": "drizzle-kit push",
     "migrate:saved-leads": "tsx server/migrate-saved-leads.ts"
@@ -85,6 +86,7 @@
     "zod-validation-error": "^3.5.4"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.4",
     "@tailwindcss/typography": "^0.5.15",
     "@tailwindcss/vite": "^4.1.18",
     "@types/express": "4.17.21",
@@ -97,10 +99,13 @@
     "autoprefixer": "^10.4.20",
     "drizzle-kit": "^0.31.8",
     "esbuild": "^0.25.0",
+    "eslint": "^9.39.4",
+    "globals": "^17.6.0",
     "postcss": "^8.4.47",
     "tailwindcss": "^3.4.17",
     "tsx": "^4.20.5",
     "typescript": "5.6.3",
+    "typescript-eslint": "^8.61.1",
     "vite": "^7.3.0"
   },
   "overrides": {
