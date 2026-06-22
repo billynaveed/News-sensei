@@ -1,8 +1,8 @@
-import { eq, desc, gte, and, ne, sql, lt } from "drizzle-orm";
+import { eq, desc, gte, and, ne, sql, lt, notInArray } from "drizzle-orm";
 import { db } from "./db";
 import {
   users, leads, settings, sources, scanLogs, rssFeeds, savedLeads, scannedUrls,
-  telegramRouting,
+  telegramRouting, lifestyleArticles, researchCache, lifestyleScrapeLog,
   DEFAULT_INTEREST_FILTER_PROMPT,
   type User, type InsertUser,
   type Lead, type InsertLead, type LeadStatus,
@@ -56,6 +56,7 @@ export interface IStorage {
   hasScannedUrl(urlHash: string): Promise<boolean>;
   recordScannedUrl(url: string, sourceName: string): Promise<void>;
   cleanupOldScannedUrls(retentionDays: number): Promise<number>;
+  pruneOldData(retentionDays: number): Promise<{ leads: number; lifestyleArticles: number; researchCache: number; scrapeLog: number }>;
 
   // Saved Leads
   getAllSavedLeads(): Promise<(SavedLead & { lead: Lead })[]>;
@@ -371,6 +372,49 @@ export class DatabaseStorage implements IStorage {
     }
 
     return oldLogs.length;
+  }
+
+  /**
+   * Data-retention prune: deletes rows older than `retentionDays` from the
+   * unbounded tables. SAVED leads are exempt — a lead the user saved is never
+   * deleted, regardless of age (also guarded by saved_leads_v2's cascade FK).
+   * Returns per-table delete counts for logging.
+   */
+  async pruneOldData(retentionDays: number): Promise<{ leads: number; lifestyleArticles: number; researchCache: number; scrapeLog: number }> {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - retentionDays);
+
+    // leads_v2: old AND not saved (status check + not referenced by saved_leads_v2).
+    const deletedLeads = await db
+      .delete(leads)
+      .where(and(
+        lt(leads.createdAt, cutoff),
+        ne(leads.status, "saved"),
+        notInArray(leads.id, db.select({ id: savedLeads.leadId }).from(savedLeads)),
+      ))
+      .returning({ id: leads.id });
+
+    const deletedLifestyle = await db
+      .delete(lifestyleArticles)
+      .where(lt(lifestyleArticles.createdAt, cutoff))
+      .returning({ id: lifestyleArticles.id });
+
+    const deletedResearch = await db
+      .delete(researchCache)
+      .where(lt(researchCache.createdAt, cutoff))
+      .returning({ id: researchCache.id });
+
+    const deletedScrapeLog = await db
+      .delete(lifestyleScrapeLog)
+      .where(lt(lifestyleScrapeLog.startedAt, cutoff))
+      .returning({ id: lifestyleScrapeLog.id });
+
+    return {
+      leads: deletedLeads.length,
+      lifestyleArticles: deletedLifestyle.length,
+      researchCache: deletedResearch.length,
+      scrapeLog: deletedScrapeLog.length,
+    };
   }
 
   async hasScannedUrl(urlHash: string): Promise<boolean> {

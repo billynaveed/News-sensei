@@ -9,6 +9,11 @@ let dailyTask: ScheduledTask | null = null;
 let weeklyTask: ScheduledTask | null = null;
 let ipoTask: ScheduledTask | null = null;
 let lifestyleTask: ScheduledTask | null = null;
+let retentionTask: ScheduledTask | null = null;
+
+// Data-retention window (days). Rows older than this are pruned daily; saved
+// leads are always exempt. Tunable via DATA_RETENTION_DAYS.
+const DATA_RETENTION_DAYS = parseInt(process.env.DATA_RETENTION_DAYS || "180", 10);
 
 /**
  * Starts the scan scheduler based on current settings
@@ -18,6 +23,18 @@ export async function startScheduler(): Promise<void> {
 
   // Stop any existing tasks
   stopScheduler();
+
+  // Daily data-retention prune at 03:15. Scheduled independently of scan
+  // frequency (even in "manual" mode) so unbounded tables don't grow forever.
+  retentionTask = cron.schedule('15 3 * * *', async () => {
+    try {
+      const r = await storage.pruneOldData(DATA_RETENTION_DAYS);
+      console.log(`[retention] pruned >${DATA_RETENTION_DAYS}d: ${r.leads} leads (saved exempt), ${r.lifestyleArticles} lifestyle articles, ${r.researchCache} research-cache, ${r.scrapeLog} scrape-log rows`);
+    } catch (error) {
+      console.error('[retention] prune failed:', error);
+    }
+  });
+  console.log(`Data-retention scheduler started (daily 03:15, ${DATA_RETENTION_DAYS}-day window)`);
 
   const settings = await storage.getSettings();
   if (!settings) {
@@ -132,6 +149,10 @@ export function stopScheduler(): void {
   if (lifestyleTask) {
     lifestyleTask.stop();
     lifestyleTask = null;
+  }
+  if (retentionTask) {
+    retentionTask.stop();
+    retentionTask = null;
   }
 }
 
