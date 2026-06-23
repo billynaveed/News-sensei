@@ -383,7 +383,7 @@ function StatsCard({ title, value, icon: Icon, trend }: { title: string; value: 
 
 export default function Dashboard() {
   const [filters, setFilters] = useState<FilterState>({
-    publishedDays: "2",
+    publishedDays: "30",
     region: "all",
     sourceTier: "all",
     priority: "all",
@@ -602,7 +602,7 @@ export default function Dashboard() {
                         <SelectItem value="all">All Time</SelectItem>
                       </SelectContent>
                     </Select>
-                    {(filters.region !== "all" || filters.sourceTier !== "all" || filters.priority !== "all" || filters.status !== "active" || filters.publishedDays !== "2") && (
+                    {(filters.region !== "all" || filters.sourceTier !== "all" || filters.priority !== "all" || filters.status !== "active" || filters.publishedDays !== "30") && (
                       <Button 
                         variant="ghost" 
                         size="sm"
@@ -690,7 +690,7 @@ export default function Dashboard() {
             <Clock className="h-12 w-12 text-muted-foreground mb-4" />
             <h3 className="text-lg font-semibold mb-2">No leads found</h3>
             <p className="text-muted-foreground max-w-md">
-              {filters.status !== "active" || filters.region !== "all" || filters.sourceTier !== "all" || filters.priority !== "all" || filters.publishedDays !== "2"
+              {filters.status !== "active" || filters.region !== "all" || filters.sourceTier !== "all" || filters.priority !== "all" || filters.publishedDays !== "30"
                 ? "Try adjusting your filters or click 'Scan Now' to fetch new articles."
                 : "Click 'Scan Now' to start scanning for wealth-related news articles."}
             </p>
