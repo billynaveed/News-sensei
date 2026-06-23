@@ -6,7 +6,8 @@ import { storage } from "./storage";
 import { sendTestEmail, sendLeadAlertEmail } from "./sendgrid";
 import { sendTestTelegramMessage, getTelegramUpdates, type TelegramUpdate } from "./telegram";
 import { handleUpdate as handleTelegramUpdate } from "./telegram-bot";
-import { scanForLeads, getScanProgress } from "./scanner";
+import { scanForLeads, getScanProgress, enrichLeadWithWebSearch } from "./scanner";
+import { ensureLeadFeedbackTable } from "./ensure-lead-feedback-table";
 import { migrateSavedLeads } from "./migrate-saved-leads";
 import { ensureSavedLeadsTable } from "./ensure-saved-leads-table";
 import { enrichSavedLead, formatEnrichmentForSavedLead } from "./founder-enrichment";
@@ -180,6 +181,13 @@ export async function registerRoutes(
     }
   } catch (error) {
     console.error("Error ensuring saved_leads table:", error);
+  }
+
+  // Ensure lead_feedback table exists
+  try {
+    await ensureLeadFeedbackTable();
+  } catch (error) {
+    console.error("Error ensuring lead_feedback table:", error);
   }
 
   // Ensure ipo_filings table exists
@@ -509,6 +517,61 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error updating lead:", error);
       res.status(500).json({ error: "Failed to update lead" });
+    }
+  });
+
+  // Feedback on a lead. "bad" feedback is stored (with a snapshot for training)
+  // and the lead is dismissed so it leaves the feed; recent bad feedback is fed
+  // back into the scan filter prompts (see feedback-prompt.ts).
+  app.post("/api/leads/:id/feedback", async (req, res) => {
+    try {
+      const { rating, reason, note } = req.body ?? {};
+      if (rating !== "bad" && rating !== "good") {
+        return res.status(400).json({ error: "rating must be 'bad' or 'good'" });
+      }
+      const lead = await storage.getLeadById(req.params.id);
+      const fb = await storage.createLeadFeedback({
+        leadId: req.params.id,
+        rating,
+        reason: typeof reason === "string" ? reason.slice(0, 80) : null,
+        note: typeof note === "string" ? note.slice(0, 500) : null,
+        headline: lead?.headline ?? null,
+        category: lead?.category ?? null,
+        region: lead?.region ?? null,
+        companyNames: lead?.companyNames ?? null,
+        founderNames: lead?.founderNames ?? null,
+      });
+      if (rating === "bad" && lead) {
+        await storage.updateLeadStatus(req.params.id, "dismissed");
+      }
+      res.json({ ok: true, id: fb.id });
+    } catch (error) {
+      console.error("Error saving lead feedback:", error);
+      res.status(500).json({ error: "Failed to save feedback" });
+    }
+  });
+
+  // Manual on-demand enrichment for a feed lead (founder bio / LinkedIn / company
+  // description via web search). Lifestyle leads don't get this during scan.
+  app.post("/api/leads/:id/enrich", async (req, res) => {
+    try {
+      const lead = await storage.getLeadById(req.params.id);
+      if (!lead) return res.status(404).json({ error: "Lead not found" });
+      const result = await enrichLeadWithWebSearch(
+        lead.companyNames || [],
+        lead.founderNames || [],
+        lead.region || "Singapore",
+      );
+      const updated = await storage.updateLead(req.params.id, {
+        founderLinkedInUrl: result.founderLinkedInUrl,
+        founderBio: result.founderBio,
+        companyDescription: result.companyDescription,
+        enrichmentData: result.enrichmentData,
+      });
+      res.json(updated);
+    } catch (error) {
+      console.error("Error enriching lead:", error);
+      res.status(500).json({ error: "Enrichment failed" });
     }
   });
 

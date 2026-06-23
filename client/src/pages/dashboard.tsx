@@ -23,7 +23,18 @@ import {
   DollarSign,
   Lightbulb,
   ChevronRight,
+  ThumbsDown,
+  Sparkles,
+  Loader2,
 } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Card, CardContent, CardHeader, CardFooter } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -93,7 +104,26 @@ function formatKeyFinancials(financials: KeyFinancials): string {
   return parts.join(" | ");
 }
 
-function LeadCard({ lead, onUpdateStatus }: { lead: Lead; onUpdateStatus: (id: string, status: LeadStatus) => void }) {
+const BAD_REASONS: { value: string; label: string }[] = [
+  { value: "not_region", label: "Not in target region" },
+  { value: "public_company", label: "Public company" },
+  { value: "not_wealth_event", label: "Not a wealth event" },
+  { value: "not_uhnw", label: "Not UHNW / notable" },
+  { value: "duplicate", label: "Duplicate / old" },
+  { value: "other", label: "Other / just bad" },
+];
+
+function LeadCard({ lead, onUpdateStatus, onFeedback, onEnrich }: {
+  lead: Lead;
+  onUpdateStatus: (id: string, status: LeadStatus) => void;
+  onFeedback: (id: string, reason: string) => void;
+  onEnrich: (id: string) => Promise<void>;
+}) {
+  const [enriching, setEnriching] = useState(false);
+  const handleEnrich = async () => {
+    setEnriching(true);
+    try { await onEnrich(lead.id); } finally { setEnriching(false); }
+  };
   const priorityClass = priorityColors[lead.priorityLevel];
   const tierClass = tierColors[lead.sourceTier];
   const hasKeyFinancials = lead.keyFinancials &&
@@ -304,22 +334,62 @@ function LeadCard({ lead, onUpdateStatus }: { lead: Lead; onUpdateStatus: (id: s
             </TooltipTrigger>
             <TooltipContent>{lead.status === "contacted" ? "Already contacted" : "Mark as contacted"}</TooltipContent>
           </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleEnrich}
+                disabled={enriching}
+                className="text-violet-600 dark:text-violet-400"
+                data-testid={`button-enrich-${lead.id}`}
+              >
+                {enriching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                {enriching ? "Enriching..." : "Enrich"}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Find founder bio / company info via web search</TooltipContent>
+          </Tooltip>
         </div>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => onUpdateStatus(lead.id, "dismissed")}
-              className="text-red-600 dark:text-red-400"
-              data-testid={`button-dismiss-${lead.id}`}
-            >
-              <X className="h-4 w-4" />
-              Dismiss
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Hide this lead</TooltipContent>
-        </Tooltip>
+        <div className="flex items-center gap-1">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-amber-600 dark:text-amber-400"
+                data-testid={`button-feedback-${lead.id}`}
+              >
+                <ThumbsDown className="h-4 w-4" />
+                Bad lead
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuLabel>Why is this a bad lead?</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              {BAD_REASONS.map((r) => (
+                <DropdownMenuItem key={r.value} onClick={() => onFeedback(lead.id, r.value)}>
+                  {r.label}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => onUpdateStatus(lead.id, "dismissed")}
+                className="text-red-600 dark:text-red-400"
+                data-testid={`button-dismiss-${lead.id}`}
+              >
+                <X className="h-4 w-4" />
+                Dismiss
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Hide this lead</TooltipContent>
+          </Tooltip>
+        </div>
       </CardFooter>
     </Card>
   );
@@ -459,6 +529,21 @@ export default function Dashboard() {
     }
   };
 
+  const handleFeedback = (id: string, reason: string) => {
+    // Optimistically drop the card; the server stores feedback + dismisses it,
+    // and recent "bad" feedback sharpens the next scan's filter.
+    queryClient.setQueryData<Lead[]>(["/api/leads"], (old) =>
+      old?.map((l) => (l.id === id ? { ...l, status: "dismissed" as LeadStatus } : l)) || []
+    );
+    apiRequest("POST", `/api/leads/${id}/feedback`, { rating: "bad", reason })
+      .finally(() => queryClient.invalidateQueries({ queryKey: ["/api/leads"] }));
+  };
+
+  const handleEnrich = async (id: string) => {
+    await apiRequest("POST", `/api/leads/${id}/enrich`, {});
+    await queryClient.invalidateQueries({ queryKey: ["/api/leads"] });
+  };
+
   // First filter by basic criteria
   const baseFilteredLeads = leads?.filter((lead) => {
     // Status filter - saved and dismissed articles are excluded from active feed
@@ -479,36 +564,36 @@ export default function Dashboard() {
     return true;
   }) || [];
 
-  // Filter out duplicate companies - keep only highest tier source for each company
+  // Collapse duplicates: per company AND per founder, keep only the best lead
+  // (highest source tier, then highest priority score). This merges multiple
+  // articles about the same person/company into one card.
   const tierPriority: Record<SourceTier, number> = { tier1: 1, tier2: 2, tier3: 3 };
-  const companyBestLead = new Map<string, Lead>();
-  
+  const entityBestLead = new Map<string, Lead>();
+
+  const isBetter = (candidate: Lead, existing: Lead) => {
+    const ct = tierPriority[candidate.sourceTier];
+    const et = tierPriority[existing.sourceTier];
+    if (ct < et) return true;
+    return ct === et && candidate.priorityScore > existing.priorityScore;
+  };
+
   baseFilteredLeads.forEach((lead) => {
-    lead.companyNames.forEach((company) => {
-      const normalizedCompany = company.toLowerCase().trim();
-      const existing = companyBestLead.get(normalizedCompany);
-      if (!existing) {
-        companyBestLead.set(normalizedCompany, lead);
-      } else {
-        // Keep the one with higher tier (lower number = higher tier)
-        const existingTier = tierPriority[existing.sourceTier];
-        const currentTier = tierPriority[lead.sourceTier];
-        if (currentTier < existingTier) {
-          companyBestLead.set(normalizedCompany, lead);
-        } else if (currentTier === existingTier && lead.priorityScore > existing.priorityScore) {
-          // Same tier, keep higher priority score
-          companyBestLead.set(normalizedCompany, lead);
-        }
-      }
+    const keys = [
+      ...lead.companyNames.map((c) => `co:${c.toLowerCase().trim()}`),
+      ...lead.founderNames.map((f) => `fo:${f.toLowerCase().trim()}`),
+    ].filter((k) => k.length > 3); // drop empty-name keys
+    keys.forEach((key) => {
+      const existing = entityBestLead.get(key);
+      if (!existing || isBetter(lead, existing)) entityBestLead.set(key, lead);
     });
   });
 
-  // Get unique lead IDs that should be shown (leads that are the "best" for at least one company)
-  const bestLeadIds = new Set(Array.from(companyBestLead.values()).map(l => l.id));
-  
-  // Also include leads with no company names
+  // A lead shows if it's the best for at least one of its entities.
+  const bestLeadIds = new Set(Array.from(entityBestLead.values()).map((l) => l.id));
+
   const filteredLeads = baseFilteredLeads.filter((lead) => {
-    if (lead.companyNames.length === 0) return true;
+    // No company AND no founder => can't dedup, always show.
+    if (lead.companyNames.length === 0 && lead.founderNames.length === 0) return true;
     return bestLeadIds.has(lead.id);
   }).sort((a, b) => {
     if (a.priorityScore !== b.priorityScore) {
@@ -716,9 +801,11 @@ export default function Dashboard() {
                   exit={{ opacity: 0, x: -100, transition: { duration: 0.2 } }}
                   transition={{ duration: 0.2 }}
                 >
-                  <LeadCard 
-                    lead={lead} 
+                  <LeadCard
+                    lead={lead}
                     onUpdateStatus={handleUpdateStatus}
+                    onFeedback={handleFeedback}
+                    onEnrich={handleEnrich}
                   />
                 </motion.div>
               ))}

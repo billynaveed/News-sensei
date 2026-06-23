@@ -2,7 +2,7 @@ import { eq, desc, gte, and, ne, sql, lt, notInArray } from "drizzle-orm";
 import { db } from "./db";
 import {
   users, leads, settings, sources, scanLogs, rssFeeds, savedLeads, scannedUrls,
-  telegramRouting, lifestyleArticles, researchCache, lifestyleScrapeLog,
+  telegramRouting, lifestyleArticles, researchCache, lifestyleScrapeLog, leadFeedback,
   DEFAULT_INTEREST_FILTER_PROMPT,
   type User, type InsertUser,
   type Lead, type InsertLead, type LeadStatus,
@@ -11,7 +11,8 @@ import {
   type RssFeed, type InsertRssFeed,
   type ScanLog, type InsertScanLog,
   type SavedLead, type InsertSavedLead,
-  type ScannedUrl
+  type ScannedUrl,
+  type LeadFeedback, type InsertLeadFeedback
 } from "@shared/schema";
 
 export interface IStorage {
@@ -57,6 +58,9 @@ export interface IStorage {
   recordScannedUrl(url: string, sourceName: string): Promise<void>;
   cleanupOldScannedUrls(retentionDays: number): Promise<number>;
   pruneOldData(retentionDays: number): Promise<{ leads: number; lifestyleArticles: number; researchCache: number; scrapeLog: number }>;
+  updateLead(id: string, updates: Partial<InsertLead>): Promise<Lead | undefined>;
+  createLeadFeedback(fb: InsertLeadFeedback): Promise<LeadFeedback>;
+  getRecentBadFeedback(category: string | null, limit?: number): Promise<LeadFeedback[]>;
 
   // Saved Leads
   getAllSavedLeads(): Promise<(SavedLead & { lead: Lead })[]>;
@@ -123,6 +127,14 @@ export class DatabaseStorage implements IStorage {
   async updateLeadStatus(id: string, status: LeadStatus): Promise<Lead | undefined> {
     const [lead] = await db.update(leads)
       .set({ status })
+      .where(eq(leads.id, id))
+      .returning();
+    return lead || undefined;
+  }
+
+  async updateLead(id: string, updates: Partial<InsertLead>): Promise<Lead | undefined> {
+    const [lead] = await db.update(leads)
+      .set(updates)
       .where(eq(leads.id, id))
       .returning();
     return lead || undefined;
@@ -415,6 +427,19 @@ export class DatabaseStorage implements IStorage {
       researchCache: deletedResearch.length,
       scrapeLog: deletedScrapeLog.length,
     };
+  }
+
+  async createLeadFeedback(fb: InsertLeadFeedback): Promise<LeadFeedback> {
+    const [row] = await db.insert(leadFeedback).values(fb).returning();
+    return row;
+  }
+
+  // Recent "bad" feedback, used as negative examples in the scan filter prompts.
+  async getRecentBadFeedback(category: string | null, limit = 15): Promise<LeadFeedback[]> {
+    const where = category
+      ? and(eq(leadFeedback.rating, "bad"), eq(leadFeedback.category, category))
+      : eq(leadFeedback.rating, "bad");
+    return db.select().from(leadFeedback).where(where).orderBy(desc(leadFeedback.createdAt)).limit(limit);
   }
 
   async hasScannedUrl(urlHash: string): Promise<boolean> {

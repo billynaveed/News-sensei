@@ -582,3 +582,31 @@ export const lifestyleScrapeLog = pgTable("lifestyle_scrape_log", {
 });
 
 export type LifestyleScrapeLog = typeof lifestyleScrapeLog.$inferSelect;
+
+// User feedback on leads — drives the auto-improving filter loop. Recent "bad"
+// rows are injected into the scan filter prompts as negative examples. We snapshot
+// headline/company/founder so an example survives the lead being deleted/pruned.
+// Physical table is ui_lead_feedback (a legacy postgres-owned `lead_feedback`
+// table from the parked v2 draft exists and can't be altered by the app role).
+export const leadFeedback = pgTable("ui_lead_feedback", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  leadId: varchar("lead_id"),
+  rating: text("rating").notNull().$type<"bad" | "good">(),
+  reason: text("reason"),
+  note: text("note"),
+  headline: text("headline"),
+  category: text("category"),
+  region: text("region"),
+  companyNames: text("company_names").array(),
+  founderNames: text("founder_names").array(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+
+export const insertLeadFeedbackSchema = createInsertSchema(leadFeedback).omit({
+  id: true,
+  createdAt: true,
+}).extend({
+  rating: z.enum(["bad", "good"]),
+});
+export type InsertLeadFeedback = z.infer<typeof insertLeadFeedbackSchema>;
+export type LeadFeedback = typeof leadFeedback.$inferSelect;

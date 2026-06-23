@@ -9,6 +9,7 @@ import { passesInterestFilter, extractPrimaryCompany, isPublicCompany, checkDupl
 import { validateSeaAnchor } from "./sea-guard";
 import { priorityLevelFor } from "./lead-scoring";
 import { matchesBusinessPrefilter } from "./prefilter";
+import { buildNegativeExamplesBlock } from "./feedback-prompt";
 import { log } from "./log";
 import type { InsertLead, PriorityLevel, SourceTier, FetchMethod, SourceSearched, ArticleProcessed, ScrapingBeeDebugEntry, Settings } from "@shared/schema";
 
@@ -884,7 +885,9 @@ export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: 
       message: `Found ${uniqueArticles.length} unique articles after dedup, processing...`
     });
 
-    const filterPrompt = settings.interestFilterPrompt || DEFAULT_INTEREST_FILTER_PROMPT;
+    // Append user-flagged false positives so each thumbs-down sharpens the filter.
+    const filterPrompt = (settings.interestFilterPrompt || DEFAULT_INTEREST_FILTER_PROMPT)
+      + await buildNegativeExamplesBlock("news");
 
     for (let i = 0; i < uniqueArticles.length; i++) {
       const article = uniqueArticles[i];

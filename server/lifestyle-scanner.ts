@@ -10,6 +10,7 @@ import { sendTelegramMessage } from "./telegram";
 import { validateSeaAnchor } from "./sea-guard";
 import { priorityLevelFor } from "./lead-scoring";
 import { isPublicHttpUrl } from "./url-safety";
+import { buildNegativeExamplesBlock } from "./feedback-prompt";
 import {
   lifestyleSources,
   lifestyleArticles,
@@ -162,7 +163,7 @@ async function upsertCompany(name: string, articleUrl: string) {
   return createdRows[0];
 }
 
-export async function classifyLifestyleArticle(article: typeof lifestyleArticles.$inferSelect | typeof lifestyleArticles.$inferInsert) {
+export async function classifyLifestyleArticle(article: typeof lifestyleArticles.$inferSelect | typeof lifestyleArticles.$inferInsert, negativeExamples = "") {
   const prompt = `You are filtering luxury/society magazine content for a UHNW private banker.
 Return JSON only.
 
@@ -181,6 +182,7 @@ ACCEPT (relevant=true) these categories:
 - Property buyers, art collectors, philanthropists
 - Rich list features, wealth profiles, family office/succession/wealth transfer articles
 - Investors, board members, or executives with identifiable net worth
+${negativeExamples}
 
 Return:
 {
@@ -406,10 +408,11 @@ export async function scanLifestylePipeline() {
     }
   }
 
+  const lifestyleNegatives = await buildNegativeExamplesBlock("lifestyle");
   const pending = await db.select().from(lifestyleArticles).where(eq(lifestyleArticles.status, "pending")).orderBy(desc(lifestyleArticles.createdAt)).limit(100);
   for (const article of pending) {
     try {
-      const decision = await classifyLifestyleArticle(article);
+      const decision = await classifyLifestyleArticle(article, lifestyleNegatives);
       const confidence = decision.confidence <= 1 ? decision.confidence * 100 : decision.confidence;
       if (!decision.relevant || confidence < 60) {
         await db.update(lifestyleArticles).set({ status: "filtered_out", filterReason: decision.reason, filterConfidence: Math.round(confidence), eventType: decision.eventType, updatedAt: new Date() }).where(eq(lifestyleArticles.id, article.id));
@@ -474,14 +477,32 @@ export async function syncLifestyleToLeads(): Promise<{ synced: number; skipped:
       const score = article.relevanceScore || 60;
       const priorityLevel = priorityLevelFor(score);
 
+      // Carry the extracted people/companies onto the feed lead so cards show
+      // who/what they're about and the dashboard can dedup by them.
+      const persons = await db
+        .select({ id: people.id, name: people.fullName })
+        .from(lifestyleLeadPeople)
+        .innerJoin(people, eq(lifestyleLeadPeople.personId, people.id))
+        .where(eq(lifestyleLeadPeople.lifestyleLeadId, article.id));
+      const founderNames = [...new Set(persons.map((p) => p.name).filter(Boolean))];
+      let companyNames: string[] = [];
+      if (persons.length > 0) {
+        const comps = await db
+          .select({ name: companies.name })
+          .from(peopleCompanies)
+          .innerJoin(companies, eq(peopleCompanies.companyId, companies.id))
+          .where(inArray(peopleCompanies.personId, persons.map((p) => p.id)));
+        companyNames = [...new Set(comps.map((c) => c.name).filter(Boolean))];
+      }
+
       await storage.createLead({
         headline: article.headline || article.title || "Untitled",
         sourceUrl: article.url,
         sourceName: source.name,
         sourceTier: "tier3",
         publishedAt: article.publishedAt || article.createdAt,
-        companyNames: [],
-        founderNames: [],
+        companyNames,
+        founderNames,
         investors: [],
         aiSummary: article.summary || article.bankerAngle || article.snippet || "",
         matchedKeywords: [article.eventType || "lifestyle"],
