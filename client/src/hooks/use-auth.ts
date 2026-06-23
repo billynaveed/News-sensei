@@ -19,7 +19,7 @@ export function useAuth() {
       const res = await fetch("/api/auth/status");
       const data = await res.json();
       setState({
-        isAuthenticated: data.isAuthenticated || !data.isSetup,
+        isAuthenticated: !!data.isAuthenticated,
         isSetup: data.isSetup,
         isLoading: false,
       });
@@ -64,10 +64,23 @@ export function useAuth() {
     return result.verified;
   }, []);
 
+  const loginWithPassword = useCallback(async (password: string) => {
+    const res = await fetch("/api/auth/password-login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
+    if (res.ok) {
+      setState((s) => ({ ...s, isAuthenticated: true }));
+      return true;
+    }
+    return false;
+  }, []);
+
   const logout = useCallback(async () => {
     await fetch("/api/auth/logout", { method: "POST" });
     setState((s) => ({ ...s, isAuthenticated: false }));
   }, []);
 
-  return { ...state, register, authenticate, logout };
+  return { ...state, register, authenticate, loginWithPassword, logout };
 }

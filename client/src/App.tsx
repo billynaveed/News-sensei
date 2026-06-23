@@ -38,22 +38,15 @@ function App() {
     "--sidebar-width-icon": "3rem",
   };
 
-  const { isAuthenticated, isSetup, isLoading, authenticate, register } = useAuth();
+  const { isAuthenticated, isLoading, loginWithPassword } = useAuth();
 
   if (isLoading) {
     return <div className="flex h-screen items-center justify-center bg-zinc-950" />;
   }
 
-  // Show lock screen if credentials exist but not authenticated
-  // If no credentials (not setup), allow through (first-use)
+  // Password gate: require a valid session (obtained via the password screen).
   if (!isAuthenticated) {
-    return (
-      <LockScreen
-        isSetup={isSetup}
-        onAuthenticate={authenticate}
-        onRegister={register}
-      />
-    );
+    return <LockScreen onPasswordLogin={loginWithPassword} />;
   }
 
   return (

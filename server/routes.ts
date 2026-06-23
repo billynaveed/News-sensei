@@ -28,6 +28,10 @@ const RP_ID = process.env.WEBAUTHN_RP_ID || "77.42.84.43.nip.io";
 const ORIGIN = process.env.WEBAUTHN_ORIGIN || "https://news-sensei.77.42.84.43.nip.io";
 const SESSION_COOKIE = "ns_auth";
 const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+// Simple shared-password gate. Override via APP_PASSWORD. The session cookie set
+// on success persists ~1 year, so the password is entered once per device.
+const APP_PASSWORD = process.env.APP_PASSWORD || "openup";
+const PASSWORD_SESSION_MAX_AGE_MS = 365 * 24 * 60 * 60 * 1000; // 1 year
 
 // In-memory challenge store (challenge -> timestamp)
 const challengeStore = new Map<string, number>();
@@ -76,10 +80,7 @@ async function authMiddleware(req: Request, res: Response, next: NextFunction) {
   if (!req.path.startsWith("/api/")) {
     return next();
   }
-  // If no credentials registered, allow all (first-use setup)
-  const count = await getCredentialCount();
-  if (count === 0) return next();
-  // Check session cookie
+  // Require a valid session for everything else (obtained via password login).
   const token = req.cookies?.[SESSION_COOKIE];
   const valid = await validateSessionToken(token);
   if (!valid) {
@@ -234,6 +235,30 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error checking auth status:", error);
       res.status(500).json({ error: "Failed to check auth status" });
+    }
+  });
+
+  // Simple password login: on the right password, mint a long-lived session.
+  app.post("/api/auth/password-login", async (req, res) => {
+    try {
+      const { password } = req.body ?? {};
+      if (typeof password !== "string" || password !== APP_PASSWORD) {
+        return res.status(401).json({ error: "Incorrect password" });
+      }
+      const token = crypto.randomBytes(32).toString("hex");
+      const expiresAt = new Date(Date.now() + PASSWORD_SESSION_MAX_AGE_MS);
+      await db.insert(authSessions).values({ token, expiresAt });
+      res.cookie(SESSION_COOKIE, token, {
+        httpOnly: true,
+        secure: true,
+        sameSite: "strict",
+        maxAge: PASSWORD_SESSION_MAX_AGE_MS,
+        path: "/",
+      });
+      res.json({ ok: true });
+    } catch (error) {
+      console.error("Error in password login:", error);
+      res.status(500).json({ error: "Login failed" });
     }
   });
 

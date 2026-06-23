@@ -1,22 +1,22 @@
-import { useState } from "react";
-import { Fingerprint, Loader2 } from "lucide-react";
+import { useState, type FormEvent } from "react";
+import { Lock, Loader2 } from "lucide-react";
 
 interface LockScreenProps {
-  isSetup: boolean;
-  onAuthenticate: () => Promise<boolean>;
-  onRegister: () => Promise<boolean>;
+  onPasswordLogin: (password: string) => Promise<boolean>;
 }
 
-export function LockScreen({ isSetup, onAuthenticate, onRegister }: LockScreenProps) {
+export function LockScreen({ onPasswordLogin }: LockScreenProps) {
+  const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const handleAction = async () => {
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault();
     setLoading(true);
     setError(null);
     try {
-      const success = isSetup ? await onAuthenticate() : await onRegister();
-      if (!success) setError("Authentication failed. Please try again.");
+      const success = await onPasswordLogin(password);
+      if (!success) setError("Incorrect password. Please try again.");
     } catch (e: any) {
       setError(e?.message || "Something went wrong.");
     } finally {
@@ -26,37 +26,34 @@ export function LockScreen({ isSetup, onAuthenticate, onRegister }: LockScreenPr
 
   return (
     <div className="fixed inset-0 z-[9999] flex flex-col items-center justify-center bg-zinc-950">
-      <div className="flex flex-col items-center gap-8 px-6 text-center">
-        <div className="text-3xl font-bold tracking-tight text-white">
-          Sensei
-        </div>
-        <div className="text-zinc-500 text-sm">
-          {isSetup ? "Authentication required" : "Set up biometric access"}
-        </div>
+      <form
+        onSubmit={handleSubmit}
+        className="flex w-full max-w-xs flex-col items-center gap-6 px-6 text-center"
+      >
+        <Lock className="h-12 w-12 text-blue-400" />
+        <div className="text-3xl font-bold tracking-tight text-white">Sensei</div>
+        <div className="text-sm text-zinc-500">Enter password to continue</div>
+
+        <input
+          type="password"
+          autoFocus
+          autoComplete="current-password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="Password"
+          className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-center text-white placeholder-zinc-600 focus:border-blue-500 focus:outline-none"
+        />
 
         <button
-          onClick={handleAction}
-          disabled={loading}
-          className="group flex flex-col items-center gap-4 rounded-2xl border border-zinc-800 bg-zinc-900 px-12 py-8 transition-all hover:border-zinc-600 hover:bg-zinc-800 active:scale-95 disabled:opacity-50"
+          type="submit"
+          disabled={loading || !password}
+          className="flex w-full items-center justify-center rounded-lg bg-blue-600 px-4 py-3 text-sm font-medium text-white transition-all hover:bg-blue-500 active:scale-95 disabled:opacity-50"
         >
-          {loading ? (
-            <Loader2 className="h-16 w-16 text-blue-400 animate-spin" />
-          ) : (
-            <Fingerprint className="h-16 w-16 text-blue-400 transition-transform group-hover:scale-110" />
-          )}
-          <span className="text-sm font-medium text-zinc-300">
-            {loading
-              ? "Verifying..."
-              : isSetup
-                ? "Unlock with Face ID"
-                : "Set up Face ID"}
-          </span>
+          {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : "Unlock"}
         </button>
 
-        {error && (
-          <div className="text-sm text-red-400 max-w-xs">{error}</div>
-        )}
-      </div>
+        {error && <div className="max-w-xs text-sm text-red-400">{error}</div>}
+      </form>
     </div>
   );
 }
