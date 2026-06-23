@@ -10,6 +10,7 @@ import { validateSeaAnchor } from "./sea-guard";
 import { priorityLevelFor } from "./lead-scoring";
 import { matchesBusinessPrefilter } from "./prefilter";
 import { buildNegativeExamplesBlock } from "./feedback-prompt";
+import { linkLeadFoundersToContacts } from "./contacts";
 import { log } from "./log";
 import type { InsertLead, PriorityLevel, SourceTier, FetchMethod, SourceSearched, ArticleProcessed, ScrapingBeeDebugEntry, Settings } from "@shared/schema";
 
@@ -753,6 +754,14 @@ async function processArticle(
     };
 
     await storage.createLead(lead as InsertLead);
+
+    // Surface the founders as contacts (non-fatal).
+    await linkLeadFoundersToContacts(
+      deepResult.leadData.founderNames || [],
+      deepResult.leadData.companyNames || [companyName],
+      article.region,
+      article.url,
+    ).catch(() => {});
 
     return {
       processed: {

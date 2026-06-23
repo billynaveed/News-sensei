@@ -61,6 +61,7 @@ export interface IStorage {
   updateLead(id: string, updates: Partial<InsertLead>): Promise<Lead | undefined>;
   createLeadFeedback(fb: InsertLeadFeedback): Promise<LeadFeedback>;
   getRecentBadFeedback(category: string | null, limit?: number): Promise<LeadFeedback[]>;
+  getFeedbackInsights(): Promise<{ total: number; byReason: { reason: string; count: number }[]; recent: LeadFeedback[] }>;
 
   // Saved Leads
   getAllSavedLeads(): Promise<(SavedLead & { lead: Lead })[]>;
@@ -432,6 +433,22 @@ export class DatabaseStorage implements IStorage {
   async createLeadFeedback(fb: InsertLeadFeedback): Promise<LeadFeedback> {
     const [row] = await db.insert(leadFeedback).values(fb).returning();
     return row;
+  }
+
+  // Insights for the feedback view: totals, reason breakdown, recent items.
+  async getFeedbackInsights(): Promise<{ total: number; byReason: { reason: string; count: number }[]; recent: LeadFeedback[] }> {
+    const recent = await db.select().from(leadFeedback).where(eq(leadFeedback.rating, "bad")).orderBy(desc(leadFeedback.createdAt)).limit(50);
+    const byReasonRows = await db
+      .select({ reason: leadFeedback.reason, count: sql<number>`count(*)::int` })
+      .from(leadFeedback)
+      .where(eq(leadFeedback.rating, "bad"))
+      .groupBy(leadFeedback.reason);
+    const [totalRow] = await db.select({ n: sql<number>`count(*)::int` }).from(leadFeedback).where(eq(leadFeedback.rating, "bad"));
+    return {
+      total: Number(totalRow?.n ?? 0),
+      byReason: byReasonRows.map((r) => ({ reason: r.reason ?? "unspecified", count: Number(r.count) })).sort((a, b) => b.count - a.count),
+      recent,
+    };
   }
 
   // Recent "bad" feedback, used as negative examples in the scan filter prompts.

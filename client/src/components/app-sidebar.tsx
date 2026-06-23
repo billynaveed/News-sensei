@@ -1,4 +1,4 @@
-import { LayoutDashboard, Settings, Activity, TrendingUp, BookmarkCheck, Bug, Building2, Sparkles, Users } from "lucide-react";
+import { LayoutDashboard, Settings, Activity, TrendingUp, BookmarkCheck, Bug, Building2, Sparkles, Users, MessageSquareWarning } from "lucide-react";
 import { Link, useLocation, useSearch } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -52,6 +52,11 @@ const menuItems = [
     title: "Lifestyle Leads",
     url: "/lifestyle-leads",
     icon: Sparkles,
+  },
+  {
+    title: "Feedback",
+    url: "/feedback",
+    icon: MessageSquareWarning,
   },
 ];
 

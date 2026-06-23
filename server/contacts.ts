@@ -11,6 +11,7 @@ import {
   contactMeta,
   lifestyleArticles,
   lifestyleLeadPeople,
+  leads,
   type Person,
 } from "@shared/schema";
 
@@ -88,6 +89,28 @@ export async function updateContactMeta(
     .where(eq(contactMeta.personId, personId));
   const [row] = await db.select().from(contactMeta).where(eq(contactMeta.personId, personId));
   return row;
+}
+
+/**
+ * Turn a news lead's founders into contacts: upsert a person per founder and
+ * link the company. Article linkage is by name-match (leads.founderNames), so
+ * the lead shows up under the contact automatically. Non-fatal by design.
+ */
+export async function linkLeadFoundersToContacts(
+  founderNames: string[],
+  companyNames: string[],
+  region: string | null | undefined,
+  sourceUrl: string,
+) {
+  for (const name of founderNames || []) {
+    if (!name || name.trim().length < 2) continue;
+    try {
+      const person = await upsertPersonByName(name, { source: sourceUrl, location: region ?? null });
+      for (const c of companyNames || []) await linkCompany(person.id, c, sourceUrl);
+    } catch (e) {
+      log(`[contacts] failed to link founder "${name}": ${e instanceof Error ? e.message : e}`, "contacts");
+    }
+  }
 }
 
 /** Create a contact by typed name (active by default). */
@@ -173,7 +196,8 @@ export async function listContacts(status: string, search?: string, limit = 200)
            cm.remind_at     AS "remindAt",
            cm.notes,
            (SELECT array_agg(DISTINCT c.name) FROM people_companies pc JOIN companies c ON c.id = pc.company_id WHERE pc.person_id = p.id) AS companies,
-           (SELECT count(*) FROM lifestyle_lead_people llp WHERE llp.person_id = p.id)::int AS "articleCount"
+           ((SELECT count(*) FROM lifestyle_lead_people llp WHERE llp.person_id = p.id)
+            + (SELECT count(*) FROM leads_v2 l WHERE l.founder_names @> ARRAY[p.full_name]))::int AS "articleCount"
     FROM people p
     LEFT JOIN contact_meta cm ON cm.person_id = p.id
     WHERE p.merged_into_id IS NULL AND ${statusCond} ${searchCond}
@@ -206,11 +230,32 @@ export async function getContactArticles(personId: number) {
     .orderBy(desc(lifestyleArticles.publishedAt))
     .limit(50);
 
-  const [p] = await db.select({ sources: people.sources }).from(people).where(eq(people.id, personId));
+  const [p] = await db.select({ fullName: people.fullName, sources: people.sources }).from(people).where(eq(people.id, personId));
+
+  // News leads that name this person as a founder.
+  const newsLeads = p?.fullName
+    ? await db
+        .select({
+          url: leads.sourceUrl,
+          headline: leads.headline,
+          title: leads.headline,
+          summary: leads.aiSummary,
+          eventType: leads.category,
+          publishedAt: leads.publishedAt,
+        })
+        .from(leads)
+        .where(sql`${leads.founderNames} @> ARRAY[${p.fullName}]::text[]`)
+        .orderBy(desc(leads.publishedAt))
+        .limit(50)
+    : [];
+
   const seen = new Set(articles.map((a) => a.url));
+  const news = newsLeads.filter((n) => !seen.has(n.url)).map((n) => ({ ...n, eventType: n.eventType || "news" }));
+  news.forEach((n) => seen.add(n.url));
+
   const extraSources = (p?.sources ?? [])
     .filter((u) => u && u !== "manual" && !seen.has(u))
     .map((u) => ({ url: u, headline: u, title: u, summary: null as string | null, eventType: "source", publishedAt: null as Date | null }));
 
-  return [...articles, ...extraSources];
+  return [...articles, ...news, ...extraSources];
 }

@@ -584,6 +584,16 @@ export async function registerRoutes(
     }
   });
 
+  // Feedback insights — what's been flagged and how it's shaping the filter.
+  app.get("/api/feedback", async (_req, res) => {
+    try {
+      res.json(await storage.getFeedbackInsights());
+    } catch (error) {
+      console.error("Error fetching feedback insights:", error);
+      res.status(500).json({ error: "Failed to fetch feedback" });
+    }
+  });
+
   // ---- Contacts (person-centric layer over the people table) ----
   app.get("/api/contacts/due-count", async (_req, res) => {
     try { res.json({ count: await countDueContacts() }); }
