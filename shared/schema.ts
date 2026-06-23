@@ -610,3 +610,20 @@ export const insertLeadFeedbackSchema = createInsertSchema(leadFeedback).omit({
 });
 export type InsertLeadFeedback = z.infer<typeof insertLeadFeedbackSchema>;
 export type LeadFeedback = typeof leadFeedback.$inferSelect;
+
+// Contact lifecycle layered over the (possibly superuser-owned) people table.
+// Kept as a separate app-role-owned table keyed by personId so we never need to
+// ALTER people. status: active (default) | saved | deleted; remindAt drives the
+// "remind me later" queue; email is the eventual scrape target.
+export const contactMeta = pgTable("contact_meta", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  personId: integer("person_id").notNull().unique(),
+  email: text("email"),
+  status: text("status").notNull().$type<"active" | "saved" | "deleted">().default("active"),
+  remindAt: timestamp("remind_at"),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+export type ContactMeta = typeof contactMeta.$inferSelect;
+export type ContactStatus = "active" | "saved" | "deleted";

@@ -8,6 +8,8 @@ import { sendTestTelegramMessage, getTelegramUpdates, type TelegramUpdate } from
 import { handleUpdate as handleTelegramUpdate } from "./telegram-bot";
 import { scanForLeads, getScanProgress, enrichLeadWithWebSearch } from "./scanner";
 import { ensureLeadFeedbackTable } from "./ensure-lead-feedback-table";
+import { ensureContactMetaTable } from "./ensure-contact-meta-table";
+import { listContacts, getContactArticles, updateContactMeta, createContactByName, createContactsFromLink, countDueContacts } from "./contacts";
 import { migrateSavedLeads } from "./migrate-saved-leads";
 import { ensureSavedLeadsTable } from "./ensure-saved-leads-table";
 import { enrichSavedLead, formatEnrichmentForSavedLead } from "./founder-enrichment";
@@ -188,6 +190,13 @@ export async function registerRoutes(
     await ensureLeadFeedbackTable();
   } catch (error) {
     console.error("Error ensuring lead_feedback table:", error);
+  }
+
+  // Ensure contact_meta table exists
+  try {
+    await ensureContactMetaTable();
+  } catch (error) {
+    console.error("Error ensuring contact_meta table:", error);
   }
 
   // Ensure ipo_filings table exists
@@ -572,6 +581,75 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error enriching lead:", error);
       res.status(500).json({ error: "Enrichment failed" });
+    }
+  });
+
+  // ---- Contacts (person-centric layer over the people table) ----
+  app.get("/api/contacts/due-count", async (_req, res) => {
+    try { res.json({ count: await countDueContacts() }); }
+    catch { res.json({ count: 0 }); }
+  });
+
+  app.get("/api/contacts", async (req, res) => {
+    try {
+      const status = typeof req.query.status === "string" ? req.query.status : "active";
+      const search = typeof req.query.search === "string" ? req.query.search : undefined;
+      res.json(await listContacts(status, search));
+    } catch (error) {
+      console.error("Error listing contacts:", error);
+      res.status(500).json({ error: "Failed to list contacts" });
+    }
+  });
+
+  app.get("/api/contacts/:id/articles", async (req, res) => {
+    try {
+      const personId = parseInt(req.params.id, 10);
+      if (!Number.isFinite(personId)) return res.status(400).json({ error: "Invalid id" });
+      res.json(await getContactArticles(personId));
+    } catch (error) {
+      console.error("Error fetching contact articles:", error);
+      res.status(500).json({ error: "Failed to fetch articles" });
+    }
+  });
+
+  app.patch("/api/contacts/:id", async (req, res) => {
+    try {
+      const personId = parseInt(req.params.id, 10);
+      if (!Number.isFinite(personId)) return res.status(400).json({ error: "Invalid id" });
+      const { status, email, remindInDays, remindAt, notes } = req.body ?? {};
+      const fields: { status?: string; email?: string | null; remindAt?: Date | null; notes?: string | null } = {};
+      if (status === "active" || status === "saved" || status === "deleted") fields.status = status;
+      if (typeof email === "string") fields.email = email.trim() || null;
+      if (typeof notes === "string") fields.notes = notes;
+      if (remindAt === null) fields.remindAt = null;
+      else if (typeof remindAt === "string") fields.remindAt = new Date(remindAt);
+      else if (typeof remindInDays === "number" && remindInDays > 0) fields.remindAt = new Date(Date.now() + remindInDays * 86400000);
+      res.json(await updateContactMeta(personId, fields));
+    } catch (error) {
+      console.error("Error updating contact:", error);
+      res.status(500).json({ error: "Failed to update contact" });
+    }
+  });
+
+  app.post("/api/contacts", async (req, res) => {
+    try {
+      const { name } = req.body ?? {};
+      if (typeof name !== "string" || name.trim().length < 2) return res.status(400).json({ error: "name required" });
+      res.json(await createContactByName(name.trim()));
+    } catch (error) {
+      console.error("Error creating contact:", error);
+      res.status(500).json({ error: "Failed to create contact" });
+    }
+  });
+
+  app.post("/api/contacts/from-link", async (req, res) => {
+    try {
+      const { url } = req.body ?? {};
+      if (typeof url !== "string" || !/^https?:\/\//i.test(url)) return res.status(400).json({ error: "valid http(s) url required" });
+      res.json(await createContactsFromLink(url.trim()));
+    } catch (error) {
+      console.error("Error creating contacts from link:", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : "Failed" });
     }
   });
 

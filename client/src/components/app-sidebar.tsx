@@ -1,4 +1,4 @@
-import { LayoutDashboard, Settings, Activity, TrendingUp, BookmarkCheck, Bug, Building2, Sparkles } from "lucide-react";
+import { LayoutDashboard, Settings, Activity, TrendingUp, BookmarkCheck, Bug, Building2, Sparkles, Users } from "lucide-react";
 import { Link, useLocation, useSearch } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -22,6 +22,11 @@ const menuItems = [
     title: "Dashboard",
     url: "/",
     icon: LayoutDashboard,
+  },
+  {
+    title: "Contacts",
+    url: "/contacts",
+    icon: Users,
   },
   {
     title: "Settings",
