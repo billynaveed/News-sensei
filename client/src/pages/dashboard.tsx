@@ -26,7 +26,22 @@ import {
   ThumbsDown,
   Sparkles,
   Loader2,
+  ChevronLeft,
 } from "lucide-react";
+
+// Page numbers to show: first, last, current ±1, with "..." gaps.
+function pageWindow(current: number, total: number): (number | "...")[] {
+  const set = new Set<number>([0, total - 1, current, current - 1, current + 1]);
+  const sorted = [...set].filter((p) => p >= 0 && p < total).sort((a, b) => a - b);
+  const out: (number | "...")[] = [];
+  let prev = -1;
+  for (const p of sorted) {
+    if (p - prev > 1) out.push("...");
+    out.push(p);
+    prev = p;
+  }
+  return out;
+}
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -523,6 +538,8 @@ export default function Dashboard() {
   });
 
   const [statsExpanded, setStatsExpanded] = useState(false);
+  const [page, setPage] = useState(0);
+  const PAGE_SIZE = 20;
 
   const { data: leads, isLoading: leadsLoading } = useQuery<Lead[]>({
     queryKey: ["/api/leads"],
@@ -571,7 +588,18 @@ export default function Dashboard() {
     mutationFn: async (leadId: string) => {
       await apiRequest("POST", "/api/saved-leads", { leadId });
     },
-    onSuccess: () => {
+    onMutate: async (leadId) => {
+      await queryClient.cancelQueries({ queryKey: ["/api/leads"] });
+      const previousLeads = queryClient.getQueryData<Lead[]>(["/api/leads"]);
+      queryClient.setQueryData<Lead[]>(["/api/leads"], (old) =>
+        old?.map((l) => (l.id === leadId ? { ...l, status: "saved" as LeadStatus } : l)) || []
+      );
+      return { previousLeads };
+    },
+    onError: (_e, _v, ctx) => {
+      if (ctx?.previousLeads) queryClient.setQueryData(["/api/leads"], ctx.previousLeads);
+    },
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/leads"] });
       queryClient.invalidateQueries({ queryKey: ["/api/saved-leads"] });
     },
@@ -612,6 +640,11 @@ export default function Dashboard() {
   };
 
   const handleMute = (names: string[]) => {
+    // Optimistically add to the muted set so the feed hides matching cards now.
+    queryClient.setQueryData<{ fullName: string }[]>(["/api/founders/muted"], (old) => [
+      ...(old ?? []),
+      ...names.map((fullName) => ({ fullName })),
+    ]);
     apiRequest("POST", "/api/founders/mute", { names }).finally(() => {
       queryClient.invalidateQueries({ queryKey: ["/api/leads"] });
       queryClient.invalidateQueries({ queryKey: ["/api/founders/muted"] });
@@ -644,6 +677,11 @@ export default function Dashboard() {
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Jump back to page 1 whenever the filters change the result set.
+  useEffect(() => {
+    setPage(0);
+  }, [filters.status, filters.region, filters.sourceTier, filters.priority, filters.publishedDays]);
 
   // First filter by basic criteria
   const baseFilteredLeads = leads?.filter((lead) => {
@@ -711,8 +749,13 @@ export default function Dashboard() {
     return new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime();
   });
 
-  // Keep the keyboard-shortcut target in sync with the current top card.
-  topLeadRef.current = filteredLeads[0];
+  // Pagination — 20 cards per page (also keeps re-renders cheap, so actions feel instant).
+  const totalPages = Math.max(1, Math.ceil(filteredLeads.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages - 1);
+  const pageLeads = filteredLeads.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
+
+  // Keyboard shortcuts act on the top card of the current page.
+  topLeadRef.current = pageLeads[0];
 
   return (
     <div className="flex flex-col h-full">
@@ -902,9 +945,10 @@ export default function Dashboard() {
             </Button>
           </div>
         ) : (
+          <>
           <div className="grid grid-cols-1 gap-4">
             <AnimatePresence mode="popLayout">
-              {filteredLeads.map((lead, idx) => (
+              {pageLeads.map((lead, idx) => (
                 <motion.div
                   key={lead.id}
                   layout
@@ -925,6 +969,33 @@ export default function Dashboard() {
               ))}
             </AnimatePresence>
           </div>
+          {totalPages > 1 && (
+            <div className="flex flex-wrap items-center justify-center gap-1 pt-4" data-testid="pagination">
+              <Button variant="outline" size="sm" disabled={safePage === 0} onClick={() => setPage((p) => Math.max(0, p - 1))} data-testid="page-prev">
+                <ChevronLeft className="h-4 w-4" /> Prev
+              </Button>
+              {pageWindow(safePage, totalPages).map((pg, i) =>
+                pg === "..." ? (
+                  <span key={`gap-${i}`} className="px-1 text-muted-foreground">…</span>
+                ) : (
+                  <Button
+                    key={pg}
+                    variant={pg === safePage ? "default" : "outline"}
+                    size="sm"
+                    className="min-w-9"
+                    onClick={() => setPage(pg)}
+                    data-testid={`page-${pg}`}
+                  >
+                    {pg + 1}
+                  </Button>
+                )
+              )}
+              <Button variant="outline" size="sm" disabled={safePage >= totalPages - 1} onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))} data-testid="page-next">
+                Next <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
+          )}
+          </>
         )}
       </div>
     </div>
