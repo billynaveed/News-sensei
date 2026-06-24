@@ -10,6 +10,7 @@
     "check": "tsc",
     "lint": "eslint server shared",
     "test": "tsx tests/run.ts",
+    "smoke": "node scripts/smoke.mjs",
     "db:push": "drizzle-kit push",
     "migrate:saved-leads": "tsx server/migrate-saved-leads.ts"
   },
