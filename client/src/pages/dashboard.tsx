@@ -337,8 +337,8 @@ function LeadCard({ lead, isTop, onUpdateStatus, onFeedback, onEnrich, onMute }:
           <span>{lead.region}</span>
         </div>
       </CardContent>
-      <CardFooter className="flex items-center justify-between gap-2 pt-0">
-        <div className="flex items-center gap-2">
+      <CardFooter className="flex flex-wrap items-center justify-between gap-2 pt-0">
+        <div className="flex flex-wrap items-center gap-2">
           {/* Hide save button for update leads (already saved via related lead) */}
           {!lead.isUpdate && (
             <Tooltip>
@@ -395,7 +395,7 @@ function LeadCard({ lead, isTop, onUpdateStatus, onFeedback, onEnrich, onMute }:
             <TooltipContent>Find founder bio / company info via web search</TooltipContent>
           </Tooltip>
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex flex-wrap items-center gap-1">
           {lead.founderNames.length > 0 && (
             <Popover open={muteOpen} onOpenChange={openMute}>
               <PopoverTrigger asChild>
