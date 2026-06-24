@@ -552,6 +552,12 @@ export async function registerRoutes(
       });
       if (rating === "bad" && lead) {
         await storage.updateLeadStatus(req.params.id, "dismissed");
+        // "Not in target region" is a geo verdict on the PEOPLE — honor it by
+        // muting the founders so all their leads (now and future) disappear.
+        if (reason === "not_region") {
+          const names = (lead.founderNames ?? []).filter(Boolean) as string[];
+          if (names.length > 0) await muteByNames(names);
+        }
       }
       res.json({ ok: true, id: fb.id });
     } catch (error) {
