@@ -136,10 +136,10 @@ function LeadCard({ lead, onUpdateStatus, onFeedback, onEnrich, onMute }: {
   };
   const openMute = (open: boolean) => {
     setMuteOpen(open);
-    if (open) setMuteChecked(Object.fromEntries(lead.founderNames.map((f) => [f, true])));
+    if (open) setMuteChecked(Object.fromEntries(lead.founderNames.filter(Boolean).map((f) => [f, true])));
   };
   const submitMute = () => {
-    const names = lead.founderNames.filter((f) => muteChecked[f]);
+    const names = lead.founderNames.filter((f) => f && muteChecked[f]);
     if (names.length > 0) onMute(names);
     setMuteOpen(false);
   };
@@ -229,7 +229,7 @@ function LeadCard({ lead, onUpdateStatus, onFeedback, onEnrich, onMute }: {
               <div>
                 <div className="text-xs text-muted-foreground uppercase tracking-wide font-medium mb-0.5">Founders</div>
                 <div className="flex flex-wrap gap-1">
-                  {lead.founderNames.map((f) => (
+                  {lead.founderNames.filter(Boolean).map((f) => (
                     <Badge key={f} variant="secondary" size="sm">{f}</Badge>
                   ))}
                 </div>
@@ -389,7 +389,7 @@ function LeadCard({ lead, onUpdateStatus, onFeedback, onEnrich, onMute }: {
                   They'll stop appearing in leads — unless an article also names a founder you haven't muted.
                 </p>
                 <div className="mt-3 space-y-2">
-                  {lead.founderNames.map((f) => (
+                  {lead.founderNames.filter(Boolean).map((f) => (
                     <label key={f} className="flex items-center gap-2 text-sm">
                       <Checkbox checked={!!muteChecked[f]} onCheckedChange={(v) => setMuteChecked((s) => ({ ...s, [f]: !!v }))} />
                       <span>{f}</span>
@@ -616,12 +616,11 @@ export default function Dashboard() {
   const baseFilteredLeads = leads?.filter((lead) => {
     // Muted founders: hide the lead only if EVERY founder is muted (a lead that
     // also names an un-muted founder still shows).
-    if (
-      lead.founderNames.length > 0 &&
-      mutedSet.size > 0 &&
-      lead.founderNames.every((f) => mutedSet.has(f.toLowerCase().trim()))
-    ) {
-      return false;
+    if (mutedSet.size > 0) {
+      const named = (lead.founderNames ?? []).filter(Boolean);
+      if (named.length > 0 && named.every((f) => mutedSet.has(f.toLowerCase().trim()))) {
+        return false;
+      }
     }
     // Status filter - saved and dismissed articles are excluded from active feed
     if (filters.status === "active" && (lead.status === "dismissed" || lead.status === "saved")) return false;
@@ -656,8 +655,8 @@ export default function Dashboard() {
 
   baseFilteredLeads.forEach((lead) => {
     const keys = [
-      ...lead.companyNames.map((c) => `co:${c.toLowerCase().trim()}`),
-      ...lead.founderNames.map((f) => `fo:${f.toLowerCase().trim()}`),
+      ...lead.companyNames.filter(Boolean).map((c) => `co:${c.toLowerCase().trim()}`),
+      ...lead.founderNames.filter(Boolean).map((f) => `fo:${f.toLowerCase().trim()}`),
     ].filter((k) => k.length > 3); // drop empty-name keys
     keys.forEach((key) => {
       const existing = entityBestLead.get(key);
