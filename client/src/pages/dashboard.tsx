@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useSearch, Link } from "wouter";
 import { format } from "date-fns";
@@ -120,8 +120,9 @@ const BAD_REASONS: { value: string; label: string }[] = [
   { value: "other", label: "Other / just bad" },
 ];
 
-function LeadCard({ lead, onUpdateStatus, onFeedback, onEnrich, onMute }: {
+function LeadCard({ lead, isTop, onUpdateStatus, onFeedback, onEnrich, onMute }: {
   lead: Lead;
+  isTop?: boolean;
   onUpdateStatus: (id: string, status: LeadStatus) => void;
   onFeedback: (id: string, reason: string) => void;
   onEnrich: (id: string) => Promise<void>;
@@ -149,10 +150,15 @@ function LeadCard({ lead, onUpdateStatus, onFeedback, onEnrich, onMute }: {
     (lead.keyFinancials.fundingAmount || lead.keyFinancials.valuation || lead.keyFinancials.dealValue);
 
   return (
-    <Card className="group" data-testid={`lead-card-${lead.id}`}>
+    <Card className={`group ${isTop ? "ring-2 ring-primary/60 ring-offset-1" : ""}`} data-testid={`lead-card-${lead.id}`}>
       <CardHeader className="flex flex-row items-start justify-between gap-4 pb-3">
         <div className="flex-1 min-w-0 space-y-2">
           <div className="flex items-center gap-2 flex-wrap">
+            {isTop && (
+              <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary" title="Keyboard shortcuts act on this card">
+                ⌨ D·S·B·E·M
+              </span>
+            )}
             <Badge variant="outline" className={tierClass} size="sm">
               {tierLabels[lead.sourceTier]}
             </Badge>
@@ -612,6 +618,33 @@ export default function Dashboard() {
     });
   };
 
+  // Keyboard shortcuts act on the highlighted TOP card (d/s/b/e/m). After an
+  // action the card drops out and the next slides up, for fast triage. The
+  // top lead is held in a ref so the listener is mounted once.
+  const topLeadRef = useRef<Lead | undefined>(undefined);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      const top = topLeadRef.current;
+      if (!top) return;
+      const k = e.key.toLowerCase();
+      if (k === "d") { handleUpdateStatus(top.id, "dismissed"); e.preventDefault(); }
+      else if (k === "s") { handleUpdateStatus(top.id, "saved"); e.preventDefault(); }
+      else if (k === "b") { handleFeedback(top.id, "other"); e.preventDefault(); }
+      else if (k === "e") { void handleEnrich(top.id); e.preventDefault(); }
+      else if (k === "m") {
+        const names = (top.founderNames ?? []).filter(Boolean) as string[];
+        if (names.length) handleMute(names);
+        e.preventDefault();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // First filter by basic criteria
   const baseFilteredLeads = leads?.filter((lead) => {
     // Muted founders: hide the lead only if EVERY founder is muted (a lead that
@@ -677,6 +710,9 @@ export default function Dashboard() {
     }
     return new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime();
   });
+
+  // Keep the keyboard-shortcut target in sync with the current top card.
+  topLeadRef.current = filteredLeads[0];
 
   return (
     <div className="flex flex-col h-full">
@@ -868,7 +904,7 @@ export default function Dashboard() {
         ) : (
           <div className="grid gap-4">
             <AnimatePresence mode="popLayout">
-              {filteredLeads.map((lead) => (
+              {filteredLeads.map((lead, idx) => (
                 <motion.div
                   key={lead.id}
                   layout
@@ -879,6 +915,7 @@ export default function Dashboard() {
                 >
                   <LeadCard
                     lead={lead}
+                    isTop={idx === 0}
                     onUpdateStatus={handleUpdateStatus}
                     onFeedback={handleFeedback}
                     onEnrich={handleEnrich}
