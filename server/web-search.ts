@@ -114,7 +114,7 @@ async function searchWithBrave(
  * Core web search function with retry logic and circuit breaker.
  * Uses Tavily if configured, otherwise falls back to Brave Search.
  */
-async function searchWeb(
+export async function searchWeb(
   query: string,
   options: SearchOptions = {}
 ): Promise<TavilySearchResponse | null> {
@@ -152,22 +152,23 @@ async function searchWeb(
     try {
       const tvly = tavily({ apiKey: TAVILY_API_KEY });
 
-      const searchParams: any = {
-        query,
+      // @tavily/core signature is search(query: string, options) — passing a
+      // single object made Tavily receive the whole object as `query` (422).
+      const searchOptions: any = {
         searchDepth,
         maxResults,
         includeAnswer,
       };
 
-      if (timeRange) searchParams.timeRange = timeRange;
-      if (country) searchParams.country = country;
-      if (includeDomains) searchParams.includeDomains = includeDomains;
-      if (excludeDomains) searchParams.excludeDomains = excludeDomains;
+      if (timeRange) searchOptions.timeRange = timeRange;
+      if (country) searchOptions.country = country;
+      if (includeDomains) searchOptions.includeDomains = includeDomains;
+      if (excludeDomains) searchOptions.excludeDomains = excludeDomains;
 
       console.info(`[Web Search] Query: "${query}" (attempt ${attempt + 1}/${maxRetries})`);
 
       const response = await Promise.race([
-        tvly.search(searchParams),
+        tvly.search(query, searchOptions),
         new Promise((_, reject) =>
           setTimeout(() => reject(new Error("Search timeout")), 10000)
         ),
