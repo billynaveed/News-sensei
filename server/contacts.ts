@@ -113,6 +113,19 @@ export async function linkLeadFoundersToContacts(
   }
 }
 
+/** Mute people by name so their leads stop appearing (unless co-named with a
+ * non-muted founder). Upserts the person and sets contact_meta status='muted'. */
+export async function muteByNames(names: string[]): Promise<number> {
+  let n = 0;
+  for (const name of names || []) {
+    if (!name || name.trim().length < 2) continue;
+    const person = await upsertPersonByName(name, { source: "mute" });
+    await updateContactMeta(person.id, { status: "muted" });
+    n++;
+  }
+  return n;
+}
+
 /** Create a contact by typed name (active by default). */
 export async function createContactByName(name: string) {
   const person = await upsertPersonByName(name, { source: "manual" });
@@ -173,11 +186,13 @@ export async function listContacts(status: string, search?: string, limit = 200)
   const statusCond =
     status === "saved"
       ? sql`cm.status = 'saved'`
-      : status === "deleted"
-        ? sql`cm.status = 'deleted'`
-        : status === "due"
-          ? sql`cm.status IS DISTINCT FROM 'deleted' AND cm.remind_at IS NOT NULL AND cm.remind_at <= now()`
-          : sql`(cm.status IS NULL OR cm.status = 'active')`;
+      : status === "muted"
+        ? sql`cm.status = 'muted'`
+        : status === "deleted"
+          ? sql`cm.status = 'deleted'`
+          : status === "due"
+            ? sql`cm.status IS DISTINCT FROM 'deleted' AND cm.remind_at IS NOT NULL AND cm.remind_at <= now()`
+            : sql`(cm.status IS NULL OR cm.status = 'active')`;
   const searchCond = search ? sql`AND p.full_name ILIKE ${"%" + search + "%"}` : sql``;
 
   const result = await db.execute(sql`

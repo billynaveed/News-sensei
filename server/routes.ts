@@ -9,7 +9,7 @@ import { handleUpdate as handleTelegramUpdate } from "./telegram-bot";
 import { scanForLeads, getScanProgress, enrichLeadWithWebSearch } from "./scanner";
 import { ensureLeadFeedbackTable } from "./ensure-lead-feedback-table";
 import { ensureContactMetaTable } from "./ensure-contact-meta-table";
-import { listContacts, getContactArticles, updateContactMeta, createContactByName, createContactsFromLink, countDueContacts } from "./contacts";
+import { listContacts, getContactArticles, updateContactMeta, createContactByName, createContactsFromLink, countDueContacts, muteByNames } from "./contacts";
 import { migrateSavedLeads } from "./migrate-saved-leads";
 import { ensureSavedLeadsTable } from "./ensure-saved-leads-table";
 import { enrichSavedLead, formatEnrichmentForSavedLead } from "./founder-enrichment";
@@ -649,6 +649,30 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error creating contact:", error);
       res.status(500).json({ error: "Failed to create contact" });
+    }
+  });
+
+  // Mute founders by name (from a lead card). Their leads stop appearing unless
+  // co-named with a non-muted founder. GET returns the muted list (for the
+  // Muted view and the feed's client-side filter).
+  app.post("/api/founders/mute", async (req, res) => {
+    try {
+      const { names } = req.body ?? {};
+      if (!Array.isArray(names) || names.length === 0) return res.status(400).json({ error: "names[] required" });
+      const muted = await muteByNames(names.filter((n) => typeof n === "string"));
+      res.json({ muted });
+    } catch (error) {
+      console.error("Error muting founders:", error);
+      res.status(500).json({ error: "Failed to mute" });
+    }
+  });
+
+  app.get("/api/founders/muted", async (_req, res) => {
+    try {
+      res.json(await listContacts("muted"));
+    } catch (error) {
+      console.error("Error listing muted founders:", error);
+      res.status(500).json({ error: "Failed to list muted" });
     }
   });
 

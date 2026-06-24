@@ -24,7 +24,7 @@ const menuItems = [
     icon: LayoutDashboard,
   },
   {
-    title: "Contacts",
+    title: "Founders",
     url: "/contacts",
     icon: Users,
   },

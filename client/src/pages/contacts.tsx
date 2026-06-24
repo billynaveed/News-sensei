@@ -47,7 +47,7 @@ type Contact = {
   mentionCount: number | null;
   sources: string[] | null;
   email: string | null;
-  status: "active" | "saved" | "deleted";
+  status: "active" | "saved" | "deleted" | "muted";
   remindAt: string | null;
   notes: string | null;
   companies: string[] | null;
@@ -64,9 +64,10 @@ type ContactArticle = {
 };
 
 const STATUS_TABS = [
-  { value: "active", label: "Active" },
-  { value: "saved", label: "Saved" },
+  { value: "active", label: "All" },
+  { value: "saved", label: "Contacts" },
   { value: "due", label: "Reminders" },
+  { value: "muted", label: "Muted" },
   { value: "deleted", label: "Deleted" },
 ];
 
@@ -117,6 +118,8 @@ function ContactCard({
   const location = [contact.city, contact.region, contact.nationality].filter(Boolean)[0] || null;
   const isSaved = contact.status === "saved";
   const isDeleted = contact.status === "deleted";
+  const isMuted = contact.status === "muted";
+  const showLifecycle = !isDeleted && !isMuted;
 
   return (
     <Card data-testid={`contact-${contact.id}`}>
@@ -126,6 +129,7 @@ function ContactCard({
             <div className="flex items-center gap-2">
               <h3 className="truncate text-base font-semibold">{contact.fullName}</h3>
               {isSaved && <Badge variant="secondary" size="sm">Saved</Badge>}
+              {isMuted && <Badge variant="outline" size="sm" className="text-zinc-500">Muted</Badge>}
               {contact.remindAt && (
                 <Badge variant="outline" size="sm" className="text-amber-600 dark:text-amber-400">
                   <Clock className="mr-1 h-3 w-3" />
@@ -160,7 +164,7 @@ function ContactCard({
 
         {/* actions */}
         <div className="mt-3 flex flex-wrap items-center gap-1">
-          {!isDeleted && (
+          {showLifecycle && (
             <Button
               variant="ghost"
               size="sm"
@@ -172,7 +176,7 @@ function ContactCard({
               {isSaved ? "Saved" : "Save"}
             </Button>
           )}
-          {!isDeleted && (
+          {showLifecycle && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" size="sm" className="text-amber-600 dark:text-amber-400" data-testid={`contact-remind-${contact.id}`}>
@@ -196,6 +200,12 @@ function ContactCard({
                 )}
               </DropdownMenuContent>
             </DropdownMenu>
+          )}
+          {isMuted && (
+            <Button variant="ghost" size="sm" onClick={() => onPatch(contact.id, { status: "active" })} data-testid={`contact-unmute-${contact.id}`}>
+              <RotateCcw className="h-4 w-4" />
+              Unmute
+            </Button>
           )}
           {isDeleted ? (
             <Button variant="ghost" size="sm" onClick={() => onPatch(contact.id, { status: "active" })} data-testid={`contact-restore-${contact.id}`}>
@@ -269,10 +279,11 @@ export default function ContactsPage() {
       <div className="mx-auto max-w-4xl space-y-4 p-4 md:p-6">
         <div className="flex items-center gap-2">
           <Users className="h-6 w-6 text-primary" />
-          <h1 className="text-2xl font-bold tracking-tight">Contacts</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Founders</h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          One card per person. Articles that mention them are linked underneath. Save, snooze, or remove a contact.
+          One card per person. <strong>All</strong> = every founder seen; <strong>Contacts</strong> = the ones you saved;
+          <strong> Muted</strong> = hidden from your leads (unmute to bring them back). Articles are linked under each.
         </p>
 
         {/* add row */}

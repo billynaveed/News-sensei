@@ -35,6 +35,13 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { Checkbox } from "@/components/ui/checkbox";
+import { BellOff } from "lucide-react";
 import { Card, CardContent, CardHeader, CardFooter } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -113,16 +120,28 @@ const BAD_REASONS: { value: string; label: string }[] = [
   { value: "other", label: "Other / just bad" },
 ];
 
-function LeadCard({ lead, onUpdateStatus, onFeedback, onEnrich }: {
+function LeadCard({ lead, onUpdateStatus, onFeedback, onEnrich, onMute }: {
   lead: Lead;
   onUpdateStatus: (id: string, status: LeadStatus) => void;
   onFeedback: (id: string, reason: string) => void;
   onEnrich: (id: string) => Promise<void>;
+  onMute: (names: string[]) => void;
 }) {
   const [enriching, setEnriching] = useState(false);
+  const [muteOpen, setMuteOpen] = useState(false);
+  const [muteChecked, setMuteChecked] = useState<Record<string, boolean>>({});
   const handleEnrich = async () => {
     setEnriching(true);
     try { await onEnrich(lead.id); } finally { setEnriching(false); }
+  };
+  const openMute = (open: boolean) => {
+    setMuteOpen(open);
+    if (open) setMuteChecked(Object.fromEntries(lead.founderNames.map((f) => [f, true])));
+  };
+  const submitMute = () => {
+    const names = lead.founderNames.filter((f) => muteChecked[f]);
+    if (names.length > 0) onMute(names);
+    setMuteOpen(false);
   };
   const priorityClass = priorityColors[lead.priorityLevel];
   const tierClass = tierColors[lead.sourceTier];
@@ -208,8 +227,12 @@ function LeadCard({ lead, onUpdateStatus, onFeedback, onEnrich }: {
             <div className="flex items-start gap-2">
               <User className="h-4 w-4 text-muted-foreground mt-0.5 flex-shrink-0" />
               <div>
-                <div className="text-xs text-muted-foreground uppercase tracking-wide font-medium mb-0.5">Key People</div>
-                <div className="text-sm font-medium">{lead.founderNames.join(", ")}</div>
+                <div className="text-xs text-muted-foreground uppercase tracking-wide font-medium mb-0.5">Founders</div>
+                <div className="flex flex-wrap gap-1">
+                  {lead.founderNames.map((f) => (
+                    <Badge key={f} variant="secondary" size="sm">{f}</Badge>
+                  ))}
+                </div>
               </div>
             </div>
           )}
@@ -352,6 +375,39 @@ function LeadCard({ lead, onUpdateStatus, onFeedback, onEnrich }: {
           </Tooltip>
         </div>
         <div className="flex items-center gap-1">
+          {lead.founderNames.length > 0 && (
+            <Popover open={muteOpen} onOpenChange={openMute}>
+              <PopoverTrigger asChild>
+                <Button variant="ghost" size="sm" className="text-zinc-600 dark:text-zinc-300" data-testid={`button-mute-${lead.id}`}>
+                  <BellOff className="h-4 w-4" />
+                  Mute
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-64">
+                <div className="text-sm font-medium">Mute founders</div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  They'll stop appearing in leads — unless an article also names a founder you haven't muted.
+                </p>
+                <div className="mt-3 space-y-2">
+                  {lead.founderNames.map((f) => (
+                    <label key={f} className="flex items-center gap-2 text-sm">
+                      <Checkbox checked={!!muteChecked[f]} onCheckedChange={(v) => setMuteChecked((s) => ({ ...s, [f]: !!v }))} />
+                      <span>{f}</span>
+                    </label>
+                  ))}
+                </div>
+                <Button
+                  size="sm"
+                  className="mt-3 w-full"
+                  onClick={submitMute}
+                  disabled={!lead.founderNames.some((f) => muteChecked[f])}
+                  data-testid={`button-mute-submit-${lead.id}`}
+                >
+                  Mute selected
+                </Button>
+              </PopoverContent>
+            </Popover>
+          )}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -466,6 +522,11 @@ export default function Dashboard() {
     queryKey: ["/api/leads"],
   });
 
+  const { data: mutedFounders } = useQuery<{ fullName: string }[]>({
+    queryKey: ["/api/founders/muted"],
+  });
+  const mutedSet = new Set((mutedFounders ?? []).map((m) => (m.fullName || "").toLowerCase().trim()));
+
   const { data: stats } = useQuery<{ today: number; thisWeek: number; highPriority: number }>({
     queryKey: ["/api/leads/stats"],
   });
@@ -544,8 +605,24 @@ export default function Dashboard() {
     await queryClient.invalidateQueries({ queryKey: ["/api/leads"] });
   };
 
+  const handleMute = (names: string[]) => {
+    apiRequest("POST", "/api/founders/mute", { names }).finally(() => {
+      queryClient.invalidateQueries({ queryKey: ["/api/leads"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/founders/muted"] });
+    });
+  };
+
   // First filter by basic criteria
   const baseFilteredLeads = leads?.filter((lead) => {
+    // Muted founders: hide the lead only if EVERY founder is muted (a lead that
+    // also names an un-muted founder still shows).
+    if (
+      lead.founderNames.length > 0 &&
+      mutedSet.size > 0 &&
+      lead.founderNames.every((f) => mutedSet.has(f.toLowerCase().trim()))
+    ) {
+      return false;
+    }
     // Status filter - saved and dismissed articles are excluded from active feed
     if (filters.status === "active" && (lead.status === "dismissed" || lead.status === "saved")) return false;
     if (filters.status === "contacted" && lead.status !== "contacted") return false;
@@ -806,6 +883,7 @@ export default function Dashboard() {
                     onUpdateStatus={handleUpdateStatus}
                     onFeedback={handleFeedback}
                     onEnrich={handleEnrich}
+                    onMute={handleMute}
                   />
                 </motion.div>
               ))}
