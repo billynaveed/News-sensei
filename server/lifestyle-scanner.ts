@@ -11,6 +11,7 @@ import { validateSeaAnchor } from "./sea-guard";
 import { priorityLevelFor } from "./lead-scoring";
 import { isPublicHttpUrl } from "./url-safety";
 import { buildNegativeExamplesBlock } from "./feedback-prompt";
+import { foundersKeepLead } from "./founder-geo";
 import {
   lifestyleSources,
   lifestyleArticles,
@@ -493,6 +494,17 @@ export async function syncLifestyleToLeads(): Promise<{ synced: number; skipped:
           .innerJoin(companies, eq(peopleCompanies.companyId, companies.id))
           .where(inArray(peopleCompanies.personId, persons.map((p) => p.id)));
         companyNames = [...new Set(comps.map((c) => c.name).filter(Boolean))];
+      }
+
+      // Founder geography: ask the model where the person lives. Don't surface a
+      // lead whose people are all confidently outside the target regions.
+      const geoCheck = await foundersKeepLead(founderNames, companyNames);
+      if (!geoCheck.keep) {
+        await db.update(lifestyleArticles)
+          .set({ status: "filtered_out", filterReason: `geo (founder): ${geoCheck.reason}`.slice(0, 500), updatedAt: new Date() })
+          .where(eq(lifestyleArticles.id, article.id));
+        skipped++;
+        continue;
       }
 
       await storage.createLead({

@@ -11,6 +11,7 @@ import { priorityLevelFor } from "./lead-scoring";
 import { matchesBusinessPrefilter } from "./prefilter";
 import { buildNegativeExamplesBlock } from "./feedback-prompt";
 import { linkLeadFoundersToContacts } from "./contacts";
+import { foundersKeepLead } from "./founder-geo";
 import { log } from "./log";
 import type { InsertLead, PriorityLevel, SourceTier, FetchMethod, SourceSearched, ArticleProcessed, ScrapingBeeDebugEntry, Settings } from "@shared/schema";
 
@@ -717,6 +718,15 @@ async function processArticle(
     const deepResult = await deepAnalyzeArticle(article, fullContent, settings.regions);
     if (!deepResult) {
       return { processed: { ...base, status: "skipped", reason: "S6 Deep analysis rejected (not relevant or error)" } };
+    }
+
+    // --- Stage 6b: Founder geography (ask the model where the person lives) ---
+    const geoCheck = await foundersKeepLead(
+      deepResult.leadData.founderNames || [],
+      deepResult.leadData.companyNames || [companyName],
+    );
+    if (!geoCheck.keep) {
+      return { processed: { ...base, status: "skipped", reason: `S6b Geo: ${geoCheck.reason}` }, bump: "interestFiltered" };
     }
 
     // --- Stage 7: Enrichment via Tavily/Brave web search ---
