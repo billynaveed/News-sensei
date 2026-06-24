@@ -198,6 +198,27 @@ export function validateSeaAnchor(input: SeaAnchorInput): SeaAnchorResult {
     };
   }
 
+  // Founder-geography override. An Asian *source* does not make a foreign person
+  // relevant — always check where the founders are from. If every named founder
+  // has a location and NONE is in a Target Region, reject founder/event-based
+  // claims. (company_hq / operational_centre stay company-anchored, and
+  // founder_roots can legitimately apply to a foreign-based person with SEA
+  // roots, so those are evaluated by their own branches below.)
+  const locatedFounders = (input.founderLocations ?? []).filter((f) => normaliseLocation(f?.location));
+  if (
+    locatedFounders.length > 0 &&
+    !locatedFounders.some((f) => matchSeaTerm(f?.location ?? "")) &&
+    (evidenceType === "founder_base" || evidenceType === "wealth_event")
+  ) {
+    return {
+      passes: false,
+      reason:
+        `All named founders are based outside the Target Regions ` +
+        `(${locatedFounders.map((f) => f?.location).join("; ")}); ` +
+        `an Asian source / a "${evidenceType}" claim doesn't override founder geography.`,
+    };
+  }
+
   // For evidence types that name a concrete location, we re-verify the
   // location actually contains a SEA term. This catches LLM hallucinations
   // where the model claims "company_hq" but the hqLocation is "London".

@@ -195,6 +195,24 @@ const cases: Case[] = [
       llmRegionRelevance: true,
     },
   },
+  {
+    // Asian-source article about US billionaires (Michael Dell / Larry Ellison):
+    // the founder-geography override must reject regardless of the wealth_event claim.
+    name: "US founders, wealth_event claim — founder geography overrides Asian source",
+    expectPass: false,
+    expectReasonContains: "outside the Target Regions",
+    input: {
+      hqLocation: null,
+      founderLocations: [
+        { name: "Michael Dell", location: "Austin, Texas, USA" },
+        { name: "Larry Ellison", location: "Florida, USA" },
+      ],
+      seaEvidenceType: "wealth_event",
+      seaEvidenceText: "Dell overtakes Ellison in the billionaire ranks",
+      disqualifyingSignals: [],
+      llmRegionRelevance: true,
+    },
+  },
 ];
 
 for (const c of cases) {

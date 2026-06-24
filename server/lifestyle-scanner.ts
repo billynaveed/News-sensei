@@ -226,7 +226,7 @@ Mainland China, Japan, Korea, India, the US/UK/EU and Australia are OUT of targe
 For the PRIMARY individual, report where they are based and what anchors them (if any) to a Target Region:
 - founder_locations: array of {"name": "...", "location": "City, Country | null"} — the person's current base, as stated/implied in the article.
 - hq_location: "City, Country | null" — HQ of their main company.
-- sea_evidence_type: one of "company_hq" | "founder_base" | "founder_roots" | "operational_centre" | "wealth_event" | "none". Use "none" if the only tie to Asia is a SEA publisher, a SEA investor/backer, or vague "Asia expansion".
+- sea_evidence_type: one of "company_hq" | "founder_base" | "founder_roots" | "operational_centre" | "wealth_event" | "none". Use "none" if the only tie to Asia is a SEA publisher, a SEA investor/backer, or vague "Asia expansion". CRITICAL: always report where the PERSON is from — an Asian outlet covering a US/European/Chinese/Japanese person does NOT make them in-region. If the primary person is based outside the Target Regions and has no roots there, set this to "none".
 - sea_evidence_text: a passage from the article (15+ chars) naming a specific Target Region city/country that supports sea_evidence_type. Empty string if none.
 
 Schema:
