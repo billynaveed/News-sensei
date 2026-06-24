@@ -221,18 +221,18 @@ function LeadCard({ lead, isTop, onUpdateStatus, onFeedback, onEnrich, onMute }:
       <CardContent className="space-y-4 pt-0">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {lead.companyNames.length > 0 && (
-            <div className="flex items-start gap-2">
+            <div className="flex items-start gap-2 min-w-0">
               <Building2 className="h-4 w-4 text-muted-foreground mt-0.5 flex-shrink-0" />
-              <div>
+              <div className="min-w-0">
                 <div className="text-xs text-muted-foreground uppercase tracking-wide font-medium mb-0.5">Companies</div>
-                <div className="text-sm font-medium">{lead.companyNames.join(", ")}</div>
+                <div className="text-sm font-medium break-words">{lead.companyNames.join(", ")}</div>
               </div>
             </div>
           )}
           {lead.founderNames.length > 0 && (
-            <div className="flex items-start gap-2">
+            <div className="flex items-start gap-2 min-w-0">
               <User className="h-4 w-4 text-muted-foreground mt-0.5 flex-shrink-0" />
-              <div>
+              <div className="min-w-0">
                 <div className="text-xs text-muted-foreground uppercase tracking-wide font-medium mb-0.5">Founders</div>
                 <div className="flex flex-wrap gap-1">
                   {lead.founderNames.filter(Boolean).map((f) => (
@@ -243,17 +243,17 @@ function LeadCard({ lead, isTop, onUpdateStatus, onFeedback, onEnrich, onMute }:
             </div>
           )}
           {lead.investors && lead.investors.length > 0 && (
-            <div className="flex items-start gap-2">
+            <div className="flex items-start gap-2 min-w-0">
               <Briefcase className="h-4 w-4 text-muted-foreground mt-0.5 flex-shrink-0" />
-              <div>
+              <div className="min-w-0">
                 <div className="text-xs text-muted-foreground uppercase tracking-wide font-medium mb-0.5">Investors</div>
-                <div className="text-sm">{lead.investors.join(", ")}</div>
+                <div className="text-sm break-words">{lead.investors.join(", ")}</div>
               </div>
             </div>
           )}
-          <div className="flex items-start gap-2">
+          <div className="flex items-start gap-2 min-w-0">
             <Calendar className="h-4 w-4 text-muted-foreground mt-0.5 flex-shrink-0" />
-            <div>
+            <div className="min-w-0">
               <div className="text-xs text-muted-foreground uppercase tracking-wide font-medium mb-0.5">Published</div>
               <div className="text-sm">{format(new Date(lead.publishedAt), "MMM d, yyyy 'at' h:mm a")}</div>
             </div>
@@ -877,7 +877,7 @@ export default function Dashboard() {
 
       <div className="flex-1 overflow-auto p-6">
         {leadsLoading ? (
-          <div className="grid gap-4">
+          <div className="grid grid-cols-1 gap-4">
             {[...Array(3)].map((_, i) => (
               <LeadCardSkeleton key={i} />
             ))}
@@ -902,7 +902,7 @@ export default function Dashboard() {
             </Button>
           </div>
         ) : (
-          <div className="grid gap-4">
+          <div className="grid grid-cols-1 gap-4">
             <AnimatePresence mode="popLayout">
               {filteredLeads.map((lead, idx) => (
                 <motion.div
