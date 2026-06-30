@@ -80,7 +80,7 @@ export default function IpoFilingsPage() {
             <div>
               <h1 className="text-2xl font-bold">IPO Filings</h1>
               <p className="text-sm text-muted-foreground">
-                New listings from HKEX and SGX exchanges
+                New listings from SGX, IDX and PSE exchanges
               </p>
             </div>
           </div>
@@ -91,9 +91,10 @@ export default function IpoFilingsPage() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Exchanges</SelectItem>
-                <SelectItem value="hkex_main">HKEX Main Board</SelectItem>
-                <SelectItem value="hkex_gem">HKEX GEM</SelectItem>
+                {/* HKEX disabled for now */}
                 <SelectItem value="sgx">SGX</SelectItem>
+                <SelectItem value="idx">IDX</SelectItem>
+                <SelectItem value="pse">PSE</SelectItem>
               </SelectContent>
             </Select>
             <Button

@@ -546,8 +546,10 @@ export async function scanForIpoFilings(): Promise<{
 
   // Scrape all sources
   const sources: { name: string; fn: () => Promise<InsertIpoFiling[]> }[] = [
-    { name: "HKEX Main Board", fn: () => scrapeHkex("Main-Board") },
-    { name: "HKEX GEM", fn: () => scrapeHkex("GEM") },
+    // HKEX disabled for now (too noisy with mainland China listings) — re-enable
+    // by uncommenting the two lines below.
+    // { name: "HKEX Main Board", fn: () => scrapeHkex("Main-Board") },
+    // { name: "HKEX GEM", fn: () => scrapeHkex("GEM") },
     { name: "SGX", fn: scrapeSgx },
     { name: "IDX", fn: scrapeIdx },
     { name: "PSE", fn: scrapePse },
