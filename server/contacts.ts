@@ -18,7 +18,7 @@ import {
 const MODEL = "google/gemini-2.5-flash-lite";
 
 /** Find an un-merged person by name, or create one. Updates lastMentionedAt. */
-async function upsertPersonByName(
+export async function upsertPersonByName(
   fullName: string,
   extra?: { location?: string | null; source?: string | null; nationality?: string | null },
 ): Promise<Person> {

@@ -1,4 +1,4 @@
-import { pgTable, text, varchar, integer, serial, timestamp, boolean, json, jsonb, real, index } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, serial, timestamp, boolean, json, jsonb, real, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { sql } from "drizzle-orm";
@@ -627,3 +627,73 @@ export const contactMeta = pgTable("contact_meta", {
 });
 export type ContactMeta = typeof contactMeta.$inferSelect;
 export type ContactStatus = "active" | "saved" | "deleted";
+
+// ---------------------------------------------------------------------------
+// Families + blocked persons (coverage conflicts). All four tables are
+// app-role-owned (ensure-families-tables.ts) and keyed to people.id so we
+// never ALTER the superuser-owned people table. Blocks are ALWAYS applied by
+// a human — research agents only propose trees, never block.
+// ---------------------------------------------------------------------------
+
+// researchStatus doubles as the research-agent queue:
+// pending → researching → done | failed | needs_review. "manual" families
+// (created by hand) are skipped by the agent.
+export const families = pgTable("families", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  country: text("country"),
+  primaryCompanies: text("primary_companies").array(),
+  description: text("description"),
+  patriarchPersonId: integer("patriarch_person_id"),
+  netWorthEstimate: text("net_worth_estimate"),
+  researchStatus: text("research_status").notNull().default("manual"),
+  researchAttempts: integer("research_attempts").notNull().default(0),
+  researchedAt: timestamp("researched_at"),
+  confidence: text("confidence"),
+  sourceUrls: text("source_urls").array(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+export type Family = typeof families.$inferSelect;
+
+// A person can belong to two families (marriage), hence a junction.
+export const familyMembers = pgTable("family_members", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  familyId: varchar("family_id").notNull(),
+  personId: integer("person_id").notNull(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (t) => ({
+  memberUnique: uniqueIndex("family_members_family_person_uq").on(t.familyId, t.personId),
+}));
+export type FamilyMember = typeof familyMembers.$inferSelect;
+
+// Canonical directions: parent→child ("parent"), spouse (either direction),
+// sibling only when parents are unknown (else derived from shared parents).
+export const familyRelationships = pgTable("family_relationships", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  familyId: varchar("family_id").notNull(),
+  fromPersonId: integer("from_person_id").notNull(),
+  toPersonId: integer("to_person_id").notNull(),
+  type: text("type").notNull().$type<"parent" | "spouse" | "sibling">(),
+  confidence: text("confidence"),
+  sourceUrl: text("source_url"),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (t) => ({
+  relUnique: uniqueIndex("family_rel_uq").on(t.fromPersonId, t.toPersonId, t.type),
+}));
+export type FamilyRelationship = typeof familyRelationships.$inferSelect;
+
+// origin "direct" = Billy blocked this person; "propagated" = blocked because
+// originPersonId was (child blocked ⇒ parents blocked for sure). Unblocking a
+// direct block cascade-deletes its propagated rows.
+export const personBlocks = pgTable("person_blocks", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  personId: integer("person_id").notNull().unique(),
+  reason: text("reason"),
+  coveredBy: text("covered_by"),
+  origin: text("origin").notNull().$type<"direct" | "propagated">().default("direct"),
+  originPersonId: integer("origin_person_id"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+export type PersonBlock = typeof personBlocks.$inferSelect;

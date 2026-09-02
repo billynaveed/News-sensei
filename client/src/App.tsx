@@ -17,6 +17,8 @@ import IpoFilingsPage from "@/pages/ipo-filings";
 import LifestyleLeadsPage from "@/pages/lifestyle-leads";
 import ContactsPage from "@/pages/contacts";
 import FeedbackPage from "@/pages/feedback";
+import FamiliesPage from "@/pages/families";
+import FamilyDetailPage from "@/pages/family-detail";
 import NotFound from "@/pages/not-found";
 
 function Router() {
@@ -24,6 +26,8 @@ function Router() {
     <Switch>
       <Route path="/" component={Dashboard} />
       <Route path="/contacts" component={ContactsPage} />
+      <Route path="/families" component={FamiliesPage} />
+      <Route path="/families/:id" component={FamilyDetailPage} />
       <Route path="/feedback" component={FeedbackPage} />
       <Route path="/saved-leads" component={SavedLeadsPage} />
       <Route path="/settings" component={SettingsPage} />

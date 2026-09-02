@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, memo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useSearch, Link } from "wouter";
 import { format } from "date-fns";
@@ -27,7 +27,18 @@ import {
   Sparkles,
   Loader2,
   ChevronLeft,
+  Ban,
 } from "lucide-react";
+
+// Blocked (coverage-conflict) person info, keyed by lowercase name/alias.
+type BlockedInfo = {
+  personId: number;
+  coveredBy: string | null;
+  reason: string | null;
+  origin: "direct" | "propagated";
+  originName: string | null;
+  familyId: string | null;
+};
 
 // Page numbers to show: first, last, current ±1, with "..." gaps.
 function pageWindow(current: number, total: number): (number | "...")[] {
@@ -135,13 +146,14 @@ const BAD_REASONS: { value: string; label: string }[] = [
   { value: "other", label: "Other / just bad" },
 ];
 
-function LeadCard({ lead, isTop, onUpdateStatus, onFeedback, onEnrich, onMute }: {
+const LeadCard = memo(function LeadCard({ lead, isTop, onUpdateStatus, onFeedback, onEnrich, onMute, blockedMap }: {
   lead: Lead;
   isTop?: boolean;
   onUpdateStatus: (id: string, status: LeadStatus) => void;
   onFeedback: (id: string, reason: string) => void;
   onEnrich: (id: string) => Promise<void>;
-  onMute: (names: string[]) => void;
+  onMute: (id: string, names: string[]) => void;
+  blockedMap: Map<string, BlockedInfo>;
 }) {
   const [enriching, setEnriching] = useState(false);
   const [muteOpen, setMuteOpen] = useState(false);
@@ -156,7 +168,7 @@ function LeadCard({ lead, isTop, onUpdateStatus, onFeedback, onEnrich, onMute }:
   };
   const submitMute = () => {
     const names = lead.founderNames.filter((f) => f && muteChecked[f]);
-    if (names.length > 0) onMute(names);
+    if (names.length > 0) onMute(lead.id, names);
     setMuteOpen(false);
   };
   const priorityClass = priorityColors[lead.priorityLevel];
@@ -250,9 +262,30 @@ function LeadCard({ lead, isTop, onUpdateStatus, onFeedback, onEnrich, onMute }:
               <div className="min-w-0">
                 <div className="text-xs text-muted-foreground uppercase tracking-wide font-medium mb-0.5">Founders</div>
                 <div className="flex flex-wrap gap-1">
-                  {lead.founderNames.filter(Boolean).map((f) => (
-                    <Badge key={f} variant="secondary" size="sm">{f}</Badge>
-                  ))}
+                  {lead.founderNames.filter(Boolean).map((f) => {
+                    const blocked = blockedMap.get(f.toLowerCase().trim());
+                    if (!blocked) return <Badge key={f} variant="secondary" size="sm">{f}</Badge>;
+                    const why =
+                      blocked.origin === "propagated" && blocked.originName
+                        ? `Blocked — ${blocked.originName} is covered${blocked.coveredBy ? ` by ${blocked.coveredBy}` : ""}`
+                        : `Blocked${blocked.coveredBy ? ` — covered by ${blocked.coveredBy}` : " — covered elsewhere"}`;
+                    const badge = (
+                      <Badge
+                        key={f}
+                        size="sm"
+                        title={why}
+                        className="gap-1 bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20 hover:bg-red-500/20"
+                        data-testid={`badge-blocked-${lead.id}-${f}`}
+                      >
+                        <Ban className="h-3 w-3" /> {f}
+                      </Badge>
+                    );
+                    return blocked.familyId ? (
+                      <Link key={f} href={`/families/${blocked.familyId}`}>{badge}</Link>
+                    ) : (
+                      badge
+                    );
+                  })}
                 </div>
               </div>
             </div>
@@ -407,7 +440,7 @@ function LeadCard({ lead, isTop, onUpdateStatus, onFeedback, onEnrich, onMute }:
               <PopoverContent align="end" className="w-64">
                 <div className="text-sm font-medium">Mute founders</div>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  They'll stop appearing in leads — unless an article also names a founder you haven't muted.
+                  This story is dismissed, and muted founders stop appearing in future leads — unless an article also names a founder you haven't muted.
                 </p>
                 <div className="mt-3 space-y-2">
                   {lead.founderNames.filter(Boolean).map((f) => (
@@ -470,7 +503,7 @@ function LeadCard({ lead, isTop, onUpdateStatus, onFeedback, onEnrich, onMute }:
       </CardFooter>
     </Card>
   );
-}
+});
 
 function LeadCardSkeleton() {
   return (
@@ -548,7 +581,26 @@ export default function Dashboard() {
   const { data: mutedFounders } = useQuery<{ fullName: string }[]>({
     queryKey: ["/api/founders/muted"],
   });
-  const mutedSet = new Set((mutedFounders ?? []).map((m) => (m.fullName || "").toLowerCase().trim()));
+  const mutedSet = useMemo(
+    () => new Set((mutedFounders ?? []).map((m) => (m.fullName || "").toLowerCase().trim())),
+    [mutedFounders],
+  );
+
+  // Blocked (coverage-conflict) people: leads stay visible but their names get
+  // a ⛔ badge linking to the family page. Aliases match too.
+  const { data: blockedPersons } = useQuery<(BlockedInfo & { fullName: string; aliases: string[] | null })[]>({
+    queryKey: ["/api/founders/blocked"],
+  });
+  const blockedMap = useMemo(() => {
+    const map = new Map<string, BlockedInfo>();
+    for (const b of blockedPersons ?? []) {
+      for (const name of [b.fullName, ...(b.aliases ?? [])]) {
+        const key = (name || "").toLowerCase().trim();
+        if (key) map.set(key, b);
+      }
+    }
+    return map;
+  }, [blockedPersons]);
 
   const { data: stats } = useQuery<{ today: number; thisWeek: number; highPriority: number }>({
     queryKey: ["/api/leads/stats"],
@@ -578,8 +630,9 @@ export default function Dashboard() {
         queryClient.setQueryData(["/api/leads"], context.previousLeads);
       }
     },
+    // On success the optimistic cache already matches the server (status is the
+    // only field that changed) — don't re-download the whole 3 MB leads list.
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/leads"] });
       queryClient.invalidateQueries({ queryKey: ["/api/leads/stats"] });
     },
   });
@@ -600,7 +653,6 @@ export default function Dashboard() {
       if (ctx?.previousLeads) queryClient.setQueryData(["/api/leads"], ctx.previousLeads);
     },
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/leads"] });
       queryClient.invalidateQueries({ queryKey: ["/api/saved-leads"] });
     },
   });
@@ -615,41 +667,56 @@ export default function Dashboard() {
     },
   });
 
-  const handleUpdateStatus = (id: string, status: LeadStatus) => {
+  const handleUpdateStatus = useCallback((id: string, status: LeadStatus) => {
     if (status === "saved") {
       // Use the new saved leads API
       saveMutation.mutate(id);
     } else {
       updateStatusMutation.mutate({ id, status });
     }
-  };
+  }, [saveMutation.mutate, updateStatusMutation.mutate]);
 
-  const handleFeedback = (id: string, reason: string) => {
+  const handleFeedback = useCallback((id: string, reason: string) => {
     // Optimistically drop the card; the server stores feedback + dismisses it,
     // and recent "bad" feedback sharpens the next scan's filter.
     queryClient.setQueryData<Lead[]>(["/api/leads"], (old) =>
       old?.map((l) => (l.id === id ? { ...l, status: "dismissed" as LeadStatus } : l)) || []
     );
     apiRequest("POST", `/api/leads/${id}/feedback`, { rating: "bad", reason })
-      .finally(() => queryClient.invalidateQueries({ queryKey: ["/api/leads"] }));
-  };
+      .then(() => {
+        // "not_region" also mutes the lead's founders server-side.
+        if (reason === "not_region") queryClient.invalidateQueries({ queryKey: ["/api/founders/muted"] });
+      })
+      .catch(() => queryClient.invalidateQueries({ queryKey: ["/api/leads"] }));
+  }, []);
 
-  const handleEnrich = async (id: string) => {
-    await apiRequest("POST", `/api/leads/${id}/enrich`, {});
-    await queryClient.invalidateQueries({ queryKey: ["/api/leads"] });
-  };
+  const handleEnrich = useCallback(async (id: string) => {
+    // Patch just the enriched lead into the cache — no full-list refetch.
+    const res = await apiRequest("POST", `/api/leads/${id}/enrich`, {});
+    const updated: Lead = await res.json();
+    queryClient.setQueryData<Lead[]>(["/api/leads"], (old) =>
+      old?.map((l) => (l.id === id ? { ...l, ...updated } : l)) || []
+    );
+  }, []);
 
-  const handleMute = (names: string[]) => {
+  const handleMute = useCallback((id: string, names: string[]) => {
     // Optimistically add to the muted set so the feed hides matching cards now.
+    // Muting never changes lead rows, so the leads list is NOT refetched — the
+    // filtering is client-side off this set.
     queryClient.setQueryData<{ fullName: string }[]>(["/api/founders/muted"], (old) => [
       ...(old ?? []),
       ...names.map((fullName) => ({ fullName })),
     ]);
-    apiRequest("POST", "/api/founders/mute", { names }).finally(() => {
-      queryClient.invalidateQueries({ queryKey: ["/api/leads"] });
+    apiRequest("POST", "/api/founders/mute", { names }).catch(() => {
+      // Roll back to server truth if the mute didn't stick.
       queryClient.invalidateQueries({ queryKey: ["/api/founders/muted"] });
     });
-  };
+    // Also dismiss the story the mute came from. The muted-set filter only hides
+    // a card when EVERY founder on it is muted, so a partial mute would
+    // otherwise leave the card sitting there with no visible effect. Future
+    // articles naming the un-muted founder still appear.
+    updateStatusMutation.mutate({ id, status: "dismissed" });
+  }, [updateStatusMutation.mutate]);
 
   // Keyboard shortcuts act on the highlighted TOP card (d/s/b/e/m). After an
   // action the card drops out and the next slides up, for fast triage. The
@@ -669,7 +736,7 @@ export default function Dashboard() {
       else if (k === "e") { void handleEnrich(top.id); e.preventDefault(); }
       else if (k === "m") {
         const names = (top.founderNames ?? []).filter(Boolean) as string[];
-        if (names.length) handleMute(names);
+        if (names.length) handleMute(top.id, names);
         e.preventDefault();
       }
     };
@@ -683,6 +750,9 @@ export default function Dashboard() {
     setPage(0);
   }, [filters.status, filters.region, filters.sourceTier, filters.priority, filters.publishedDays]);
 
+  // Filter → dedupe → sort is memoized: it walks the full leads list, so it
+  // must not re-run on unrelated re-renders (popover open, page change, …).
+  const filteredLeads = useMemo(() => {
   // First filter by basic criteria
   const baseFilteredLeads = leads?.filter((lead) => {
     // Muted founders: hide the lead only if EVERY founder is muted (a lead that
@@ -738,7 +808,7 @@ export default function Dashboard() {
   // A lead shows if it's the best for at least one of its entities.
   const bestLeadIds = new Set(Array.from(entityBestLead.values()).map((l) => l.id));
 
-  const filteredLeads = baseFilteredLeads.filter((lead) => {
+  return baseFilteredLeads.filter((lead) => {
     // No company AND no founder => can't dedup, always show.
     if (lead.companyNames.length === 0 && lead.founderNames.length === 0) return true;
     return bestLeadIds.has(lead.id);
@@ -748,6 +818,7 @@ export default function Dashboard() {
     }
     return new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime();
   });
+  }, [leads, mutedSet, filters]);
 
   // Pagination — 20 cards per page (also keeps re-renders cheap, so actions feel instant).
   const totalPages = Math.max(1, Math.ceil(filteredLeads.length / PAGE_SIZE));
@@ -964,6 +1035,7 @@ export default function Dashboard() {
                     onFeedback={handleFeedback}
                     onEnrich={handleEnrich}
                     onMute={handleMute}
+                    blockedMap={blockedMap}
                   />
                 </motion.div>
               ))}

@@ -9,6 +9,20 @@ import { handleUpdate as handleTelegramUpdate } from "./telegram-bot";
 import { scanForLeads, getScanProgress, enrichLeadWithWebSearch } from "./scanner";
 import { ensureLeadFeedbackTable } from "./ensure-lead-feedback-table";
 import { ensureContactMetaTable } from "./ensure-contact-meta-table";
+import { ensureFamiliesTables } from "./ensure-families-tables";
+import {
+  listFamilies,
+  createFamily,
+  deleteFamily,
+  getFamilyDetail,
+  addFamilyMember,
+  removeFamilyMember,
+  addRelationship,
+  deleteRelationship,
+  blockPersons,
+  unblockPerson,
+  listBlockedPersons,
+} from "./families";
 import { listContacts, getContactArticles, updateContactMeta, createContactByName, createContactsFromLink, countDueContacts, muteByNames } from "./contacts";
 import { migrateSavedLeads } from "./migrate-saved-leads";
 import { ensureSavedLeadsTable } from "./ensure-saved-leads-table";
@@ -209,6 +223,13 @@ export async function registerRoutes(
     await ensureContactMetaTable();
   } catch (error) {
     console.error("Error ensuring contact_meta table:", error);
+  }
+
+  // Ensure families/blocked-persons tables exist
+  try {
+    await ensureFamiliesTables();
+  } catch (error) {
+    console.error("Error ensuring families tables:", error);
   }
 
   // Ensure ipo_filings table exists
@@ -691,6 +712,144 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error listing muted founders:", error);
       res.status(500).json({ error: "Failed to list muted" });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Families + blocked persons (coverage conflicts)
+  // ---------------------------------------------------------------------------
+
+  app.get("/api/families", async (req, res) => {
+    try {
+      const q = typeof req.query.q === "string" ? req.query.q : undefined;
+      const country = typeof req.query.country === "string" ? req.query.country : undefined;
+      res.json(await listFamilies(q, country));
+    } catch (error) {
+      console.error("Error listing families:", error);
+      res.status(500).json({ error: "Failed to list families" });
+    }
+  });
+
+  app.post("/api/families", async (req, res) => {
+    try {
+      const { name, country, description } = req.body ?? {};
+      if (typeof name !== "string" || name.trim().length < 2) return res.status(400).json({ error: "name required" });
+      res.json(await createFamily({ name, country, description }));
+    } catch (error) {
+      console.error("Error creating family:", error);
+      res.status(500).json({ error: "Failed to create family" });
+    }
+  });
+
+  app.get("/api/families/:id", async (req, res) => {
+    try {
+      const detail = await getFamilyDetail(req.params.id);
+      if (!detail) return res.status(404).json({ error: "Family not found" });
+      res.json(detail);
+    } catch (error) {
+      console.error("Error fetching family:", error);
+      res.status(500).json({ error: "Failed to fetch family" });
+    }
+  });
+
+  app.delete("/api/families/:id", async (req, res) => {
+    try {
+      await deleteFamily(req.params.id);
+      res.json({ ok: true });
+    } catch (error) {
+      console.error("Error deleting family:", error);
+      res.status(500).json({ error: "Failed to delete family" });
+    }
+  });
+
+  app.post("/api/families/:id/members", async (req, res) => {
+    try {
+      const { name, relation } = req.body ?? {};
+      if (typeof name !== "string" || name.trim().length < 2) return res.status(400).json({ error: "name required" });
+      const validRel =
+        relation &&
+        typeof relation.toPersonId === "number" &&
+        ["parent_of", "child_of", "spouse_of", "sibling_of"].includes(relation.type)
+          ? relation
+          : undefined;
+      res.json(await addFamilyMember(req.params.id, name.trim(), validRel));
+    } catch (error) {
+      console.error("Error adding family member:", error);
+      res.status(500).json({ error: "Failed to add member" });
+    }
+  });
+
+  app.delete("/api/families/:id/members/:personId", async (req, res) => {
+    try {
+      const personId = parseInt(req.params.personId, 10);
+      if (!Number.isFinite(personId)) return res.status(400).json({ error: "invalid personId" });
+      await removeFamilyMember(req.params.id, personId);
+      res.json({ ok: true });
+    } catch (error) {
+      console.error("Error removing family member:", error);
+      res.status(500).json({ error: "Failed to remove member" });
+    }
+  });
+
+  app.post("/api/families/:id/relationships", async (req, res) => {
+    try {
+      const { fromPersonId, toPersonId, type } = req.body ?? {};
+      if (
+        typeof fromPersonId !== "number" ||
+        typeof toPersonId !== "number" ||
+        !["parent", "spouse", "sibling"].includes(type)
+      ) {
+        return res.status(400).json({ error: "fromPersonId, toPersonId, type(parent|spouse|sibling) required" });
+      }
+      res.json((await addRelationship(req.params.id, fromPersonId, toPersonId, type)) ?? { ok: true });
+    } catch (error) {
+      console.error("Error adding relationship:", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : "Failed to add relationship" });
+    }
+  });
+
+  app.delete("/api/relationships/:id", async (req, res) => {
+    try {
+      await deleteRelationship(req.params.id);
+      res.json({ ok: true });
+    } catch (error) {
+      console.error("Error deleting relationship:", error);
+      res.status(500).json({ error: "Failed to delete relationship" });
+    }
+  });
+
+  // Blocking is always a human action; alsoBlock carries the relatives Billy
+  // ticked in the propagation dialog (parents pre-checked client-side).
+  app.post("/api/persons/:personId/block", async (req, res) => {
+    try {
+      const personId = parseInt(req.params.personId, 10);
+      if (!Number.isFinite(personId)) return res.status(400).json({ error: "invalid personId" });
+      const { alsoBlock, reason, coveredBy } = req.body ?? {};
+      const also = Array.isArray(alsoBlock) ? alsoBlock.filter((n: unknown) => typeof n === "number") : [];
+      res.json(await blockPersons(personId, also, reason, coveredBy));
+    } catch (error) {
+      console.error("Error blocking person:", error);
+      res.status(500).json({ error: "Failed to block" });
+    }
+  });
+
+  app.delete("/api/persons/:personId/block", async (req, res) => {
+    try {
+      const personId = parseInt(req.params.personId, 10);
+      if (!Number.isFinite(personId)) return res.status(400).json({ error: "invalid personId" });
+      res.json(await unblockPerson(personId));
+    } catch (error) {
+      console.error("Error unblocking person:", error);
+      res.status(500).json({ error: "Failed to unblock" });
+    }
+  });
+
+  app.get("/api/founders/blocked", async (_req, res) => {
+    try {
+      res.json(await listBlockedPersons());
+    } catch (error) {
+      console.error("Error listing blocked persons:", error);
+      res.status(500).json({ error: "Failed to list blocked" });
     }
   });
 
