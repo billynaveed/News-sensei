@@ -52,11 +52,23 @@ async function getCredentialCount(): Promise<number> {
   return creds.length;
 }
 
+// Valid tokens are cached in memory for a few minutes: sessions live ~1 year,
+// and without this every single /api request pays a DB roundtrip up front.
+const sessionCache = new Map<string, { expiresAt: number; cachedAt: number }>();
+const SESSION_CACHE_TTL_MS = 5 * 60 * 1000;
+
 async function validateSessionToken(token: string | undefined): Promise<boolean> {
   if (!token) return false;
+  const now = Date.now();
+  const cached = sessionCache.get(token);
+  if (cached && now - cached.cachedAt < SESSION_CACHE_TTL_MS) {
+    return cached.expiresAt > now;
+  }
   const sessions = await db.select().from(authSessions).where(eq(authSessions.token, token));
   if (sessions.length === 0) return false;
-  return new Date(sessions[0].expiresAt) > new Date();
+  const expiresAt = new Date(sessions[0].expiresAt).getTime();
+  sessionCache.set(token, { expiresAt, cachedAt: now });
+  return expiresAt > now;
 }
 
 async function isAuthenticated(req: Request): Promise<boolean> {

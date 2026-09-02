@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express, { type Request, Response, NextFunction } from "express";
+import compression from "compression";
 import cookieParser from "cookie-parser";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
@@ -9,6 +10,7 @@ import { setWebhook, deleteWebhook } from "./telegram";
 import { startScheduler, stopScheduler } from "./scheduler";
 
 const app = express();
+app.use(compression());
 app.use(cookieParser());
 const httpServer = createServer(app);
 
@@ -59,7 +61,12 @@ app.use((req, res, next) => {
     if (path.startsWith("/api")) {
       let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
       if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
+        // Don't stringify big list payloads (/api/leads is megabytes — doing so
+        // on every request blocks the event loop and floods journald).
+        const body = Array.isArray(capturedJsonResponse) && capturedJsonResponse.length > 10
+          ? `[Array(${capturedJsonResponse.length})]`
+          : JSON.stringify(capturedJsonResponse);
+        logLine += ` :: ${body.length > 300 ? body.slice(0, 300) + "…" : body}`;
       }
 
       log(logLine);

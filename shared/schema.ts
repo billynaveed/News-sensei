@@ -619,7 +619,7 @@ export const contactMeta = pgTable("contact_meta", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   personId: integer("person_id").notNull().unique(),
   email: text("email"),
-  status: text("status").notNull().$type<"active" | "saved" | "deleted">().default("active"),
+  status: text("status").notNull().$type<"active" | "saved" | "muted" | "deleted">().default("active"),
   remindAt: timestamp("remind_at"),
   notes: text("notes"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),

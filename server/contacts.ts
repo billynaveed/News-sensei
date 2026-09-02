@@ -116,14 +116,20 @@ export async function linkLeadFoundersToContacts(
 /** Mute people by name so their leads stop appearing (unless co-named with a
  * non-muted founder). Upserts the person and sets contact_meta status='muted'. */
 export async function muteByNames(names: string[]): Promise<number> {
-  let n = 0;
-  for (const name of names || []) {
-    if (!name || name.trim().length < 2) continue;
-    const person = await upsertPersonByName(name, { source: "mute" });
-    await updateContactMeta(person.id, { status: "muted" });
-    n++;
-  }
-  return n;
+  const valid = (names || []).filter((n) => n && n.trim().length >= 2);
+  await Promise.all(
+    valid.map(async (name) => {
+      const person = await upsertPersonByName(name, { source: "mute" });
+      await db
+        .insert(contactMeta)
+        .values({ personId: person.id, status: "muted" })
+        .onConflictDoUpdate({
+          target: contactMeta.personId,
+          set: { status: "muted", updatedAt: new Date() },
+        });
+    }),
+  );
+  return valid.length;
 }
 
 /** Create a contact by typed name (active by default). */

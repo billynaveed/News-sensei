@@ -1,4 +1,4 @@
-import { eq, desc, gte, and, ne, sql, lt, notInArray } from "drizzle-orm";
+import { eq, desc, gte, and, ne, sql, lt, notInArray, getTableColumns } from "drizzle-orm";
 import { db } from "./db";
 import {
   users, leads, settings, sources, scanLogs, rssFeeds, savedLeads, scannedUrls,
@@ -95,7 +95,11 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getAllLeads(): Promise<Lead[]> {
-    return db.select().from(leads).orderBy(desc(leads.priorityScore), desc(leads.publishedAt));
+    // List view: omit enrichment blobs the dashboard never renders (~330 kB of
+    // payload across the table). GET /api/leads/:id still returns full rows.
+    const { enrichmentData, founderBio, companyDescription, founderLinkedInUrl, seaConnection, ...listColumns } = getTableColumns(leads);
+    const rows = await db.select(listColumns).from(leads).orderBy(desc(leads.priorityScore), desc(leads.publishedAt));
+    return rows as Lead[];
   }
 
   async getLeadById(id: string): Promise<Lead | undefined> {
