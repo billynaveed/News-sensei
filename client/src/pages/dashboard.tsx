@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback, memo } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, memo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useSearch, Link } from "wouter";
 import { format } from "date-fns";
@@ -667,18 +667,30 @@ export default function Dashboard() {
     },
   });
 
+  // When a card is acted on and drops out of the list, bring the card that was
+  // below it to the top of the scroll area so triage continues from the top.
+  const pageLeadsRef = useRef<Lead[]>([]);
+  const pendingScrollRef = useRef<string | null>(null);
+  const queueScrollToNext = useCallback((id: string) => {
+    const list = pageLeadsRef.current;
+    const idx = list.findIndex((l) => l.id === id);
+    pendingScrollRef.current = idx >= 0 ? list[idx + 1]?.id ?? null : null;
+  }, []);
+
   const handleUpdateStatus = useCallback((id: string, status: LeadStatus) => {
+    if (status !== "contacted") queueScrollToNext(id);
     if (status === "saved") {
       // Use the new saved leads API
       saveMutation.mutate(id);
     } else {
       updateStatusMutation.mutate({ id, status });
     }
-  }, [saveMutation.mutate, updateStatusMutation.mutate]);
+  }, [saveMutation.mutate, updateStatusMutation.mutate, queueScrollToNext]);
 
   const handleFeedback = useCallback((id: string, reason: string) => {
     // Optimistically drop the card; the server stores feedback + dismisses it,
     // and recent "bad" feedback sharpens the next scan's filter.
+    queueScrollToNext(id);
     queryClient.setQueryData<Lead[]>(["/api/leads"], (old) =>
       old?.map((l) => (l.id === id ? { ...l, status: "dismissed" as LeadStatus } : l)) || []
     );
@@ -688,7 +700,7 @@ export default function Dashboard() {
         if (reason === "not_region") queryClient.invalidateQueries({ queryKey: ["/api/founders/muted"] });
       })
       .catch(() => queryClient.invalidateQueries({ queryKey: ["/api/leads"] }));
-  }, []);
+  }, [queueScrollToNext]);
 
   const handleEnrich = useCallback(async (id: string) => {
     // Patch just the enriched lead into the cache — no full-list refetch.
@@ -715,8 +727,9 @@ export default function Dashboard() {
     // a card when EVERY founder on it is muted, so a partial mute would
     // otherwise leave the card sitting there with no visible effect. Future
     // articles naming the un-muted founder still appear.
+    queueScrollToNext(id);
     updateStatusMutation.mutate({ id, status: "dismissed" });
-  }, [updateStatusMutation.mutate]);
+  }, [updateStatusMutation.mutate, queueScrollToNext]);
 
   // Keyboard shortcuts act on the highlighted TOP card (d/s/b/e/m). After an
   // action the card drops out and the next slides up, for fast triage. The
@@ -827,6 +840,14 @@ export default function Dashboard() {
 
   // Keyboard shortcuts act on the top card of the current page.
   topLeadRef.current = pageLeads[0];
+  pageLeadsRef.current = pageLeads;
+  useLayoutEffect(() => {
+    const id = pendingScrollRef.current;
+    if (!id) return;
+    pendingScrollRef.current = null;
+    const el = document.querySelector<HTMLElement>(`[data-lead-id="${id}"]`);
+    el?.scrollIntoView({ block: "start", behavior: "smooth" });
+  }, [pageLeads]);
 
   return (
     <div className="flex flex-col h-full">
@@ -1022,6 +1043,8 @@ export default function Dashboard() {
               {pageLeads.map((lead, idx) => (
                 <motion.div
                   key={lead.id}
+                  data-lead-id={lead.id}
+                  className="scroll-mt-6"
                   layout
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
