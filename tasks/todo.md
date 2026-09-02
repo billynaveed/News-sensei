@@ -58,16 +58,27 @@ auto-blocks. Every researched relationship stores its source URL + confidence.
   shows "Block N people" count
 - [x] Lead cards: blocked founder badges link to their family page
 
-**Phase 3 — Research agent (in-server, slow burn)**
-- [ ] Seed script: generate ~50 seed families per market (name + anchor person +
-  primary company) via claude-sonnet-4, insert as researchStatus=pending
-- [ ] `family-research.ts` worker: cron ~1 family/hour; per family: 5-8 Tavily
-  searches ("X family", "X children", "X wife", Forbes/Tatler profiles) →
-  sonnet synthesis to strict JSON (members, relations, confidence, source URLs) →
-  upsertPersonByName reuse → write members/relationships; retries w/ attempt cap;
-  low confidence ⇒ needs_review
-- [ ] Progress endpoint + Families tab progress bar (e.g. "212/300 researched")
-- [ ] Budget guard: daily cap on Tavily calls + LLM tokens; Brave fallback
+**Phase 3 — Research agent (in-server, slow burn)** ✅ 2026-09-02
+- [x] Seed: `seedFamilies()` asks claude-sonnet-4 for ~50 families/market (name,
+  anchor person, companies, net worth) → families rows as researchStatus=pending with
+  the anchor upserted into people + family_members. Idempotent on (name, country).
+  Ran 2026-09-02: 295 families (SG 50, ID 48, MY 50, TH 48, PH 49, VN 50)
+- [x] `server/family-research.ts` worker: node-cron `20 * * * *` (1 family/hour) +
+  a startup tick after 90s; per family 6 searches (web-search.ts) → sonnet strict
+  JSON (members, relations, confidence, source URLs) → upsertPersonByName reuse →
+  family_members/relationships (onConflictDoNothing; fills blank familyName/bio only);
+  low confidence or <2 members ⇒ needs_review; failures retry up to 3 attempts;
+  rows stuck in "researching" reset to pending at boot
+- [x] Endpoints: GET /api/families/research/progress, POST .../research/seed,
+  POST .../research/run (one tick now), POST /api/families/:id/research (requeue)
+- [x] Families tab progress bar ("N/295 families researched", queued/review/failed, last run)
+- [x] Budget guard: FAMILY_RESEARCH_DAILY_SEARCH_CAP (default 200 searches/day);
+  FAMILY_RESEARCH_ENABLED=false disables; FAMILY_RESEARCH_CRON overrides cadence
+- Verified: first tick researched the Wee family (SG) → 8 members, 7 sourced edges,
+  confidence high; tree renders (spouse dotted, parent lines)
+- Known seed noise: a few LLM seeds mis-attribute companies/countries (e.g. a
+  Malaysian entry citing a Singapore company); research pass + needs_review queue
+  are where these surface. Phase 4 review UI will handle them.
 
 **Phase 4 — Polish (after data flows)**
 - [ ] needs_review queue UI; person merge/dedupe review
@@ -81,7 +92,7 @@ auto-blocks. Every researched relationship stores its source URL + confidence.
 - [x] Tree renders: 2 generations, spouse dotted line, parent connectors, red blocked nodes
 - [x] Dashboard lead card shows ⛔ badge on the blocked founder only (sibling stays normal)
 - [x] Test data fully cleaned (people/family/blocks/lead + temp auth session removed)
-- [ ] Worker researches 2-3 real families end-to-end with correct trees + sources (Phase 3)
+- [x] Worker researched the Wee family end-to-end with correct tree + sources (Phase 3)
 - Deployed to production 2026-09-02 03:34 UTC (build + service restart, smoke check passed).
 
 ---

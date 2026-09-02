@@ -10,6 +10,7 @@ import { scanForLeads, getScanProgress, enrichLeadWithWebSearch } from "./scanne
 import { ensureLeadFeedbackTable } from "./ensure-lead-feedback-table";
 import { ensureContactMetaTable } from "./ensure-contact-meta-table";
 import { ensureFamiliesTables } from "./ensure-families-tables";
+import { getResearchProgress, runFamilyResearchOnce, seedFamilies, requeueFamily } from "./family-research";
 import {
   listFamilies,
   createFamily,
@@ -738,6 +739,44 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error creating family:", error);
       res.status(500).json({ error: "Failed to create family" });
+    }
+  });
+
+  // Research agent (static paths must precede /api/families/:id)
+  app.get("/api/families/research/progress", async (_req, res) => {
+    try {
+      res.json(await getResearchProgress());
+    } catch (error) {
+      console.error("Error fetching research progress:", error);
+      res.status(500).json({ error: "Failed to fetch research progress" });
+    }
+  });
+
+  app.post("/api/families/research/seed", async (_req, res) => {
+    try {
+      res.json(await seedFamilies());
+    } catch (error) {
+      console.error("Error seeding families:", error);
+      res.status(500).json({ error: "Failed to seed families" });
+    }
+  });
+
+  app.post("/api/families/research/run", async (_req, res) => {
+    try {
+      res.json(await runFamilyResearchOnce());
+    } catch (error) {
+      console.error("Error running family research:", error);
+      res.status(500).json({ error: "Failed to run family research" });
+    }
+  });
+
+  app.post("/api/families/:id/research", async (req, res) => {
+    try {
+      await requeueFamily(req.params.id);
+      res.json({ ok: true });
+    } catch (error) {
+      console.error("Error requeueing family research:", error);
+      res.status(500).json({ error: "Failed to requeue family" });
     }
   });
 

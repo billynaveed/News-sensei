@@ -8,6 +8,7 @@ import { createServer } from "http";
 import { startBot, stopBot, enableWebhookMode } from "./telegram-bot";
 import { setWebhook, deleteWebhook } from "./telegram";
 import { startScheduler, stopScheduler } from "./scheduler";
+import { startFamilyResearch, stopFamilyResearch } from "./family-research";
 
 const app = express();
 app.use(compression());
@@ -141,6 +142,7 @@ app.use((req, res, next) => {
 
       // Start scan scheduler
       startScheduler().catch(err => log(`Failed to start scheduler: ${err}`, "error"));
+      startFamilyResearch();
     },
   );
 
@@ -148,6 +150,7 @@ app.use((req, res, next) => {
   process.on('SIGTERM', async () => {
     log('SIGTERM received, shutting down gracefully...');
     stopScheduler();
+    stopFamilyResearch();
     await stopBot();
     httpServer.close(() => {
       log('Server closed');
@@ -158,6 +161,7 @@ app.use((req, res, next) => {
   process.on('SIGINT', async () => {
     log('SIGINT received, shutting down gracefully...');
     stopScheduler();
+    stopFamilyResearch();
     await stopBot();
     httpServer.close(() => {
       log('Server closed');

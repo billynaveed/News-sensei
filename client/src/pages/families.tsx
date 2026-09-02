@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Progress } from "@/components/ui/progress";
 import {
   Dialog,
   DialogContent,
@@ -30,6 +31,17 @@ export type FamilySummary = {
   blockedCount: number;
 };
 
+type ResearchProgress = {
+  enabled: boolean;
+  running: boolean;
+  counts: Record<string, number>;
+  total: number;
+  researched: number;
+  remaining: number;
+  searchesLeftToday: number;
+  lastRun: { at: string; name: string | null; status: string; error?: string } | null;
+};
+
 const RESEARCH_BADGES: Record<string, { label: string; className: string }> = {
   manual: { label: "Manual", className: "bg-muted text-muted-foreground" },
   pending: { label: "Research queued", className: "bg-amber-500/10 text-amber-600 dark:text-amber-400" },
@@ -49,6 +61,10 @@ export default function FamiliesPage() {
 
   const { data: familiesData, isLoading } = useQuery<FamilySummary[]>({
     queryKey: ["/api/families"],
+  });
+  const { data: progress } = useQuery<ResearchProgress>({
+    queryKey: ["/api/families/research/progress"],
+    refetchInterval: 60_000,
   });
 
   const createMutation = useMutation({
@@ -150,6 +166,25 @@ export default function FamiliesPage() {
           </DialogContent>
         </Dialog>
       </div>
+
+      {progress && progress.total > 0 && (
+        <Card data-testid="research-progress">
+          <CardContent className="py-3 space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+              <span className="font-medium">
+                Research agent: {progress.researched}/{progress.total} families researched
+                {progress.running && <Loader2 className="inline h-3.5 w-3.5 ml-1.5 animate-spin" />}
+              </span>
+              <span className="text-xs text-muted-foreground">
+                {progress.counts.pending ?? 0} queued · {progress.counts.needs_review ?? 0} need review · {progress.counts.failed ?? 0} failed
+                {progress.lastRun?.name ? ` · last: ${progress.lastRun.name} (${progress.lastRun.status})` : ""}
+                {!progress.enabled ? " · worker disabled" : ""}
+              </span>
+            </div>
+            <Progress value={progress.total ? (progress.researched / progress.total) * 100 : 0} className="h-2" />
+          </CardContent>
+        </Card>
+      )}
 
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative flex-1 min-w-[200px] max-w-sm">
