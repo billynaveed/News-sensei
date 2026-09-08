@@ -104,14 +104,14 @@ phone product YES · 4 prompts in Settings YES · 5 Tavily fixed by Billy (he as
 searches: 763 of ~1067 since Sep 1 were the family worker at 6/family; now 4/family + cache) ·
 6 person page/history YES · 7 weekly "what I learned" note YES · 8 hygiene OK.
 
-- [ ] **T — Telegram + weekly note** (server/telegram*.ts, health-monitor.ts, weekly-note.ts)
-- [ ] **F — Family review queue** (families.ts, family-research.ts, routes-families.ts, families UI)
-- [ ] **P — Prompts in Settings** (schema pipeline_prompts, prompts.ts, routes-prompts.ts, settings.tsx,
+- [x] **T — Telegram + weekly note** (server/telegram*.ts, health-monitor.ts, weekly-note.ts)
+- [x] **F — Family review queue** (families.ts, family-research.ts, routes-families.ts, families UI)
+- [x] **P — Prompts in Settings** (schema pipeline_prompts, prompts.ts, routes-prompts.ts, settings.tsx,
       pipeline-stages.ts/scanner.ts load prompts)
-- [ ] **L — Lead↔family/contact chips + person page** (dashboard.tsx, routes-people.ts, person.tsx)
-- [ ] **Me** — wire route modules into routes.ts, ~~retire ensure-*-table.ts~~ (done: boot now runs a
-      schema sanity check instead), last 6 LLM call sites (agent H), SendGrid removal after P
-      releases settings.tsx, test, deploy
+- [x] **L — Lead↔family/contact chips + person page** (dashboard.tsx, routes-people.ts, person.tsx)
+- [x] **Me** — routes wired, ensure-* retired, LLM sites converted, SendGrid removed, deployed 2026-09-08 ~21:30 UTC
+- Open: weekly note "dismissed" count is approximate (no status_changed_at column); the 16 old
+  failed families show no reason until requeued; Founders page name now links to /people/:id
 
 ## Current Program (approved by Billy 2026-09-08): make Sensei self-improving, observable, robust
 
