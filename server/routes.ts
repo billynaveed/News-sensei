@@ -12,6 +12,9 @@ import { ensureContactMetaTable } from "./ensure-contact-meta-table";
 import { ensureFamiliesTables } from "./ensure-families-tables";
 import { getResearchProgress, runFamilyResearchOnce, seedFamilies, requeueFamily } from "./family-research";
 import { getScraperStatus } from "./scraper";
+import { ensurePipelineExamplesTable, listExamples, upsertExample, deleteExample, getExamplesSummary } from "./pipeline-examples";
+import { startExamplesCron, runExamplesNow } from "./examples-cron";
+import { registerHealthRoutes } from "./routes-health";
 import { getSearchStatus } from "./web-search";
 import {
   listFamilies,
@@ -226,6 +229,13 @@ export async function registerRoutes(
     await ensureContactMetaTable();
   } catch (error) {
     console.error("Error ensuring contact_meta table:", error);
+  }
+
+  try {
+    await ensurePipelineExamplesTable();
+    startExamplesCron();
+  } catch (error) {
+    console.error("Error ensuring pipeline_examples table:", error);
   }
 
   // Ensure families/blocked-persons tables exist
@@ -718,6 +728,8 @@ export async function registerRoutes(
     }
   });
 
+  registerHealthRoutes(app);
+
   app.get("/api/search/status", (_req, res) => {
     res.json(getSearchStatus());
   });
@@ -727,6 +739,93 @@ export async function registerRoutes(
       res.json(await getScraperStatus());
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : "Failed" });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Learning loop: rejection funnel + reference examples
+  // ---------------------------------------------------------------------------
+
+  /** Aggregate the last N scans' per-article decisions by stage and reason. */
+  app.get("/api/pipeline/funnel", async (req, res) => {
+    try {
+      const scans = Math.min(50, Math.max(1, parseInt(String(req.query.scans ?? "12"), 10) || 12));
+      const rows = (await db.execute(sql`
+        SELECT sl.scanned_at AS "scannedAt", a.value AS article
+        FROM scan_logs sl, jsonb_array_elements(sl.articles_processed::jsonb) a
+        WHERE sl.id IN (SELECT id FROM scan_logs ORDER BY scanned_at DESC LIMIT ${scans})
+      `)).rows as { scannedAt: string; article: any }[];
+      const stageOf = (reason: string, status: string): string => {
+        if (status === "success") return "Lead created";
+        if (status === "error") return "Error";
+        const m = reason.match(/^(Pre-filter|Duplicate|URL already|S\d[ab]?)/i);
+        if (!m) return "Other";
+        const k = m[1].toLowerCase();
+        if (k.startsWith("pre")) return "S0 Pre-filter";
+        if (k.startsWith("dup") || k.startsWith("url")) return "Dedup";
+        return m[1].toUpperCase();
+      };
+      const reasonKey = (reason: string): string => {
+        const sig = reason.match(/(sea_publisher_only|sea_investor_only|vague_apac_expansion|mainland_china_only|global_company_no_sea_anchor|sea_customers_only|sea_distribution_only|not_wealth_event|hq_verified|Already have|Public company|No company|no business keywords|already scanned|Deep analysis rejected|Geo:)/i);
+        return sig ? sig[1] : reason.replace(/^S\d[ab]? [^:]*: ?/, "").slice(0, 70);
+      };
+      const stages: Record<string, { count: number; reasons: Record<string, { count: number; samples: { headline: string; source: string; url?: string; reason: string; scannedAt: string }[] }> }> = {};
+      const includeDedup = req.query.includeDedup === "true";
+      for (const r of rows) {
+        const a = r.article || {};
+        const reason = String(a.reason || "");
+        if (!includeDedup && /already scanned within retention window/i.test(reason)) continue;
+        const stage = stageOf(reason, String(a.status || ""));
+        const key = reasonKey(reason);
+        stages[stage] ??= { count: 0, reasons: {} };
+        stages[stage].count++;
+        stages[stage].reasons[key] ??= { count: 0, samples: [] };
+        const bucket = stages[stage].reasons[key];
+        bucket.count++;
+        if (bucket.samples.length < 25) bucket.samples.push({ headline: a.headline, source: a.source, url: a.url, reason, scannedAt: r.scannedAt });
+      }
+      res.json({ scans, articles: Object.values(stages).reduce((n, st) => n + st.count, 0), stages });
+    } catch (error) {
+      console.error("Error building funnel:", error);
+      res.status(500).json({ error: "Failed to build funnel" });
+    }
+  });
+
+  app.get("/api/pipeline/examples", async (_req, res) => {
+    try {
+      res.json({ examples: await listExamples(), summary: await getExamplesSummary() });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to list examples" });
+    }
+  });
+
+  app.post("/api/pipeline/examples", async (req, res) => {
+    try {
+      const { url, headline, expected, note } = req.body ?? {};
+      if (typeof url !== "string" || !/^https?:\/\//.test(url) || typeof headline !== "string" || !["pass", "reject"].includes(expected)) {
+        return res.status(400).json({ error: "url, headline and expected (pass|reject) required" });
+      }
+      await upsertExample({ url, headline, expected, note: typeof note === "string" ? note : null });
+      res.json({ ok: true });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to save example" });
+    }
+  });
+
+  app.post("/api/pipeline/examples/run", async (_req, res) => {
+    try {
+      res.json(await runExamplesNow());
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : "Failed to run examples" });
+    }
+  });
+
+  app.delete("/api/pipeline/examples/:id", async (req, res) => {
+    try {
+      await deleteExample(req.params.id);
+      res.json({ ok: true });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to delete example" });
     }
   });
 

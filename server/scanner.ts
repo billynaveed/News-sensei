@@ -1,9 +1,8 @@
-import { openai } from "./openai-client";
 import { storage } from "./storage";
 import { sendLeadAlertEmail } from "./sendgrid";
 import { sendLeadAlertTelegram } from "./telegram";
 import { fetchAllArticles, type RawArticle, type RssFeedWithMeta } from "./adapters";
-import { stripJsonFences } from "./json-utils";
+import { callJsonStage } from "./llm-json";
 import { enrichSavedLead, formatEnrichmentForSavedLead } from "./founder-enrichment";
 import { passesInterestFilter, extractPrimaryCompany, isPublicCompany, checkDuplication } from "./pipeline-stages";
 import { validateSeaAnchor } from "./sea-guard";
@@ -314,21 +313,13 @@ Extract and return JSON:
 }`;
 
   try {
-    const response = await openai.chat.completions.create({
+    const extracted = await callJsonStage<any>({
       model: "google/gemini-2.5-flash-lite",
-      messages: [{ role: "user", content: prompt }],
-      max_completion_tokens: 3000,
-      response_format: { type: "json_object" },
+      prompt,
+      maxTokens: 3000,
       temperature: 0.2,
+      label: "S6 Deep Analysis",
     });
-
-    const content = response.choices[0]?.message?.content;
-    if (!content) {
-      log("[Pipeline S6] No response from AI for deep analysis", "pipeline");
-      return null;
-    }
-
-    const extracted = JSON.parse(stripJsonFences(content));
 
     // Reject if not relevant to target regions (LLM verdict)
     if (extracted.regionRelevance === false) {
@@ -611,16 +602,27 @@ interface ArticleOutcome {
  * to update counters/logs — extracted from scanForLeads so each stage is legible
  * and the orchestration stays flat. Behavior is identical to the prior inline loop.
  */
+export interface ProcessOptions {
+  /**
+   * Judge only: run the decision stages (S1-S3, S5-S6b) but skip dedup gates
+   * and never persist a lead. Used by the nightly reference-example run, where
+   * an article that is already a lead must still be judged on its merits.
+   */
+  dryRun?: boolean;
+}
+
 async function processArticle(
   article: RawArticle,
   filterPrompt: string,
   settings: Settings,
+  opts: ProcessOptions = {},
 ): Promise<ArticleOutcome> {
   const base = {
     headline: article.headline,
     source: article.source,
     region: article.region,
     fetchMethod: article.fetchMethod,
+    url: article.url,
   };
 
   // --- Pre-check 0: Cheap keyword pre-filter (no API call) ---
@@ -629,7 +631,7 @@ async function processArticle(
   }
 
   // --- Pre-check 1: URL dedup (free, no API call) ---
-  const existingLead = await storage.getLeadByUrl(article.url);
+  const existingLead = opts.dryRun ? undefined : await storage.getLeadByUrl(article.url);
   if (existingLead) {
     return {
       processed: { ...base, status: "skipped", reason: "Duplicate - URL already in database" },
@@ -689,7 +691,7 @@ async function processArticle(
     }
 
     // --- Stage 4a: In-database company+story dedup (last 7 days) ---
-    const recentLeads = await storage.getRecentLeadsByCompany(companyName, 7);
+    const recentLeads = opts.dryRun ? [] : await storage.getRecentLeadsByCompany(companyName, 7);
     if (recentLeads && recentLeads.length > 0) {
       return {
         processed: { ...base, status: "skipped", reason: `S4a Already have ${recentLeads.length} lead(s) about ${companyName} from past 7 days` },
@@ -698,7 +700,7 @@ async function processArticle(
     }
 
     // --- Stage 4b: Smart Deduplication (against saved leads) ---
-    const dedupResult = await checkDuplication(companyName, article.headline, article.content.slice(0, 500));
+    const dedupResult = opts.dryRun ? { isDuplicate: false } as Awaited<ReturnType<typeof checkDuplication>> : await checkDuplication(companyName, article.headline, article.content.slice(0, 500));
     if (dedupResult.isDuplicate) {
       return {
         processed: { ...base, status: "skipped", reason: `S4b Duplicate: ${dedupResult.reason}` },
@@ -778,6 +780,12 @@ async function processArticle(
       pipelineReasoning,
     };
 
+    if (opts.dryRun) {
+      return {
+        processed: { ...base, status: "success", reason: `[dry run] ${deepResult.leadData.priorityLevel} priority (score ${deepResult.leadData.priorityScore}) — ${companyName}; founders: ${(deepResult.leadData.founderNames || []).join(", ") || "none"}` },
+      };
+    }
+
     await storage.createLead(lead as InsertLead);
 
     // Surface the founders as contacts (non-fatal).
@@ -813,7 +821,7 @@ async function processArticle(
  * processArticle as a scan. Returns the outcome so the caller sees why an
  * article was rejected, if it was.
  */
-export async function ingestArticleUrl(url: string): Promise<{ outcome: ArticleProcessed; leadId?: string }> {
+export async function ingestArticleUrl(url: string, opts: ProcessOptions = {}): Promise<{ outcome: ArticleProcessed; leadId?: string }> {
   const settings = await storage.getSettings();
   if (!settings) throw new Error("Settings not configured");
 
@@ -855,8 +863,8 @@ export async function ingestArticleUrl(url: string): Promise<{ outcome: ArticleP
   };
 
   const filterPrompt = (settings.interestFilterPrompt || DEFAULT_INTEREST_FILTER_PROMPT) + await buildNegativeExamplesBlock("news");
-  const outcome = await processArticle(article, filterPrompt, settings);
-  await storage.recordScannedUrl(url, article.source).catch(() => {});
+  const outcome = await processArticle(article, filterPrompt, settings, opts);
+  if (!opts.dryRun) await storage.recordScannedUrl(url, article.source).catch(() => {});
   if (outcome.error) throw new Error(outcome.error);
   const created = outcome.lead ? await storage.getLeadByUrl(url) : undefined;
   log(`[Ingest] ${url} → ${outcome.processed.status}: ${outcome.processed.reason}`, "pipeline");

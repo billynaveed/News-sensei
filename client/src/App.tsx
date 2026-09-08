@@ -6,6 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { HealthBanner } from "@/components/HealthBanner";
 import { LockScreen } from "@/components/lock-screen";
 import { useAuth } from "@/hooks/use-auth";
 import Dashboard from "@/pages/dashboard";
@@ -67,6 +68,7 @@ function App() {
               <header className="flex items-center justify-between gap-4 p-3 border-b border-border bg-background sticky top-0 z-50">
                 <SidebarTrigger data-testid="button-sidebar-toggle" />
                 <div className="flex items-center gap-2">
+                  <HealthBanner />
                   <ThemeToggle />
                 </div>
               </header>

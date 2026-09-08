@@ -826,10 +826,14 @@ export default function Dashboard() {
     if (lead.companyNames.length === 0 && lead.founderNames.length === 0) return true;
     return bestLeadIds.has(lead.id);
   }).sort((a, b) => {
-    if (a.priorityScore !== b.priorityScore) {
-      return b.priorityScore - a.priorityScore;
-    }
-    return new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime();
+    // Priority BAND first (high / medium / low), then newest. Pure score order
+    // let a week-old 90 sit above today's 85 forever; within a band, today's
+    // deal is what needs a call today.
+    const band = (l: Lead) => (l.priorityScore >= 70 ? 2 : l.priorityScore >= 40 ? 1 : 0);
+    if (band(a) !== band(b)) return band(b) - band(a);
+    const age = new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime();
+    if (age !== 0) return age;
+    return b.priorityScore - a.priorityScore;
   });
   }, [leads, mutedSet, filters]);
 

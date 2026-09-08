@@ -1,8 +1,7 @@
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { db } from "./db";
-import { openai } from "./openai-client";
 import { isPublicHttpUrl } from "./url-safety";
-import { stripJsonFences } from "./json-utils";
+import { callJsonStage } from "./llm-json";
 import { log } from "./log";
 import {
   people,
@@ -166,13 +165,12 @@ export async function createContactsFromLink(url: string): Promise<{ created: nu
 Text:
 ${text}`;
 
-  const response = await openai.chat.completions.create({
+  const parsed = await callJsonStage<any>({
     model: MODEL,
-    messages: [{ role: "user", content: prompt }],
+    prompt,
     temperature: 0.1,
-    response_format: { type: "json_object" },
+    label: "ContactsFromLink",
   });
-  const parsed = JSON.parse(stripJsonFences(response.choices[0]?.message?.content || '{"people":[]}'));
   const extracted: any[] = Array.isArray(parsed.people) ? parsed.people : [];
 
   const names: string[] = [];

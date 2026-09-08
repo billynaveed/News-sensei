@@ -1,18 +1,9 @@
-import OpenAI from "openai";
-import { openai } from "./openai-client";
 import { storage } from "./storage";
 import { log } from "./log";
 import type { RawArticle } from "./adapters";
-import { stripJsonFences } from "./json-utils";
+import { callJsonStage } from "./llm-json";
 
-// Local gemma4 on Mac Mini via Ollama (free but slow).
-// Disabled by default — Mac Mini was decommissioned 2026-05-18, ROADMAP §P0.
-// To re-enable: set OLLAMA_ENABLED=true in .env.
-const OLLAMA_ENABLED = process.env.OLLAMA_ENABLED === "true";
-const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || "http://100.110.246.23:11434/v1";
-const ollama = OLLAMA_ENABLED
-  ? new OpenAI({ apiKey: "ollama", baseURL: OLLAMA_BASE_URL, timeout: 120_000 })
-  : null;
+const STAGE_MODEL = "google/gemini-2.5-flash-lite";
 
 // ============================================================================
 // Pipeline Stage Result Types
@@ -160,20 +151,13 @@ Return JSON:
 }`;
 
   try {
-    const response = await openai.chat.completions.create({
-      model: "google/gemini-2.5-flash-lite",
-      messages: [{ role: "user", content: prompt }],
-      max_completion_tokens: 256,
+    const result = await callJsonStage<any>({
+      model: STAGE_MODEL,
+      prompt,
+      maxTokens: 256,
       temperature: 0.2,
-      response_format: { type: "json_object" },
+      label: "S1 Interest Filter",
     });
-
-    const content = response.choices[0]?.message?.content;
-    if (!content) {
-      return { passes: false, reason: "No response from AI", confidenceScore: 0 };
-    }
-
-    const result = JSON.parse(stripJsonFences(content));
     const confidenceScore: number = result.confidenceScore ?? 0;
     const passes = result.relevant === true && confidenceScore > 60;
 
@@ -251,20 +235,13 @@ Content: ${article.content.slice(0, 500)}
 Return JSON: { "companyName": "string or null", "confidenceScore": 0-100 }`;
 
   try {
-    const response = await openai.chat.completions.create({
-      model: "google/gemini-2.5-flash-lite",
-      messages: [{ role: "user", content: prompt }],
-      max_completion_tokens: 128,
+    const result = await callJsonStage<any>({
+      model: STAGE_MODEL,
+      prompt,
+      maxTokens: 128,
       temperature: 0.2,
-      response_format: { type: "json_object" },
+      label: "S2 Company Extraction",
     });
-
-    const content = response.choices[0]?.message?.content;
-    if (!content) {
-      return { companyName: null, confidenceScore: 0 };
-    }
-
-    const result = JSON.parse(stripJsonFences(content));
     const companyName: string | null = result.companyName || null;
     const confidenceScore: number = result.confidenceScore ?? 0;
 
@@ -341,20 +318,13 @@ Return JSON:
 }`;
 
   try {
-    const response = await openai.chat.completions.create({
-      model: "google/gemini-2.5-flash-lite",
-      messages: [{ role: "user", content: prompt }],
-      max_completion_tokens: 256,
+    const result = await callJsonStage<any>({
+      model: STAGE_MODEL,
+      prompt,
+      maxTokens: 256,
       temperature: 0.2,
-      response_format: { type: "json_object" },
+      label: "S3 Public Company Filter",
     });
-
-    const content = response.choices[0]?.message?.content;
-    if (!content) {
-      return { isPublic: false, reason: "No response from AI", confidenceScore: 0 };
-    }
-
-    const result = JSON.parse(stripJsonFences(content));
     const confidenceScore: number = result.confidence ?? 0;
     const isPublic = result.isPublic === true && confidenceScore > 70;
 
@@ -484,26 +454,13 @@ Return JSON:
   "reason": "Explanation of what's new or why it's duplicate"
 }`;
 
-    const response = await openai.chat.completions.create({
-      model: "google/gemini-2.5-flash-lite",
-      messages: [{ role: "user", content: prompt }],
-      max_completion_tokens: 256,
+    const comparison = await callJsonStage<any>({
+      model: STAGE_MODEL,
+      prompt,
+      maxTokens: 256,
       temperature: 0.2,
-      response_format: { type: "json_object" },
+      label: "S4 Deduplication",
     });
-
-    const content = response.choices[0]?.message?.content;
-    if (!content) {
-      return {
-        isDuplicate: false,
-        isUpdate: false,
-        existingSavedLeadId: existingSavedLead.id,
-        reason: "Could not compare articles (no AI response)",
-        confidenceScore: 0,
-      };
-    }
-
-    const comparison = JSON.parse(stripJsonFences(content));
     const percentNew: number = comparison.percentNew ?? 0;
 
     if (comparison.substantiallyNew === true && percentNew > 40) {

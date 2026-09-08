@@ -13,9 +13,8 @@ import cron, { type ScheduledTask } from "node-cron";
 import { and, asc, eq, lt, or, sql } from "drizzle-orm";
 import { db } from "./db";
 import { log } from "./log";
-import { openai } from "./openai-client";
+import { callJsonStage } from "./llm-json";
 import { searchWeb } from "./web-search";
-import { stripJsonFences } from "./json-utils";
 import { upsertPersonByName } from "./contacts";
 import { families, familyMembers, familyRelationships, people, type Family } from "@shared/schema";
 
@@ -54,15 +53,17 @@ function searchesLeftToday(): number {
   return Math.max(0, DAILY_SEARCH_CAP - searchBudget.used);
 }
 
+// jsonMode is off: `seedMarket` asks for a top-level JSON *array*, which strict
+// json_object mode can push the model into wrapping in an object.
 async function chatJson<T>(prompt: string, maxTokens: number): Promise<T> {
-  const response = await openai.chat.completions.create({
+  return callJsonStage<T>({
     model: MODEL,
-    messages: [{ role: "user", content: prompt }],
-    max_completion_tokens: maxTokens,
+    prompt,
+    maxTokens,
     temperature: 0.2,
+    label: "FamilyResearch",
+    jsonMode: false,
   });
-  const text = response.choices[0]?.message?.content || "";
-  return JSON.parse(stripJsonFences(text)) as T;
 }
 
 // ---------------------------------------------------------------------------
@@ -159,7 +160,7 @@ async function gatherSources(family: Family, anchorName: string | null) {
     if (searchesLeftToday() <= 0) break;
     searchBudget.used++;
     used++;
-    const res = await searchWeb(q, { maxResults: 5, includeAnswer: false });
+    const res = await searchWeb(q, { maxResults: 5, includeAnswer: false, priority: "background" });
     for (const r of res?.results ?? []) {
       if (r.url && !seen.has(r.url)) seen.set(r.url, { title: r.title, url: r.url, content: (r.content || "").slice(0, 1200) });
     }

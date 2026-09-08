@@ -10,13 +10,12 @@
  * HQ or founder base is in a target region.
  */
 
-import { openai } from "./openai-client";
 import { db } from "./db";
 import { companies, researchCache } from "@shared/schema";
 import { and, eq, gt, sql } from "drizzle-orm";
 import { searchCompanyHeadquarters } from "./web-search";
 import { listSeaTerms } from "./sea-guard";
-import { stripJsonFences } from "./json-utils";
+import { callJsonStage } from "./llm-json";
 import { log } from "./log";
 
 const CACHE_ENTITY = "company_hq";
@@ -118,14 +117,13 @@ Return JSON only:
 If the results are about a different company with a similar name, return nulls with confidence 0.`;
 
   try {
-    const response = await openai.chat.completions.create({
+    const parsed = await callJsonStage<any>({
       model: "google/gemini-2.5-flash-lite",
-      messages: [{ role: "user", content: prompt }],
-      max_completion_tokens: 200,
+      prompt,
+      maxTokens: 200,
       temperature: 0.1,
-      response_format: { type: "json_object" },
+      label: "GeoRescue HQ",
     });
-    const parsed = JSON.parse(stripJsonFences(response.choices[0]?.message?.content || "{}"));
     const hq: CompanyHq = {
       companyName: name,
       hqCountry: parsed.hqCountry || null,

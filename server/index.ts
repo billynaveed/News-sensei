@@ -9,6 +9,7 @@ import { startBot, stopBot, enableWebhookMode } from "./telegram-bot";
 import { setWebhook, deleteWebhook } from "./telegram";
 import { startScheduler, stopScheduler } from "./scheduler";
 import { startFamilyResearch, stopFamilyResearch } from "./family-research";
+import { startHealthMonitor, stopHealthMonitor } from "./health-monitor";
 
 const app = express();
 app.use(compression());
@@ -143,6 +144,7 @@ app.use((req, res, next) => {
       // Start scan scheduler
       startScheduler().catch(err => log(`Failed to start scheduler: ${err}`, "error"));
       startFamilyResearch();
+      startHealthMonitor();
     },
   );
 
@@ -151,6 +153,7 @@ app.use((req, res, next) => {
     log('SIGTERM received, shutting down gracefully...');
     stopScheduler();
     stopFamilyResearch();
+    stopHealthMonitor();
     await stopBot();
     httpServer.close(() => {
       log('Server closed');
@@ -162,6 +165,7 @@ app.use((req, res, next) => {
     log('SIGINT received, shutting down gracefully...');
     stopScheduler();
     stopFamilyResearch();
+    stopHealthMonitor();
     await stopBot();
     httpServer.close(() => {
       log('Server closed');

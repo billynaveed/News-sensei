@@ -1,6 +1,5 @@
-import { openai } from "./openai-client";
 import { log } from "./log";
-import { stripJsonFences } from "./json-utils";
+import { callJsonStage } from "./llm-json";
 import {
   searchFounderResidence,
   searchCompanyHeadquarters,
@@ -101,18 +100,12 @@ Important:
 - Focus on factual, verifiable information
 - Return ONLY the JSON object, no markdown formatting`;
 
-    const response = await openai.chat.completions.create({
+    const enrichmentData = await callJsonStage<any>({
       model: "anthropic/claude-sonnet-4",
-      messages: [{ role: "user", content: prompt }],
-      max_completion_tokens: 1500,
+      prompt,
+      maxTokens: 1500,
+      label: "Founder Enrichment",
     });
-
-    const content = response.choices[0]?.message?.content;
-    if (!content) {
-      throw new Error("No response from AI");
-    }
-
-    const enrichmentData = JSON.parse(stripJsonFences(content));
 
     // Extract web search sources
     const webSources = searchResults ? extractSearchSources(searchResults) : [];
@@ -209,18 +202,12 @@ Important:
 - Be concise but comprehensive
 - Return ONLY the JSON object, no markdown formatting`;
 
-    const response = await openai.chat.completions.create({
+    const enrichmentData = await callJsonStage<any>({
       model: "anthropic/claude-sonnet-4",
-      messages: [{ role: "user", content: prompt }],
-      max_completion_tokens: 1000,
+      prompt,
+      maxTokens: 1000,
+      label: "Company Enrichment",
     });
-
-    const content = response.choices[0]?.message?.content;
-    if (!content) {
-      throw new Error("No response from AI");
-    }
-
-    const enrichmentData = JSON.parse(stripJsonFences(content));
 
     // Calculate confidence based on search results
     const hasHeadquarters = !!enrichmentData.headquarters;

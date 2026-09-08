@@ -8,12 +8,11 @@
  * names to work with. Results are cached in research_cache for 90 days.
  */
 
-import { openai } from "./openai-client";
 import { db } from "./db";
 import { researchCache } from "@shared/schema";
 import { and, eq, gt, sql } from "drizzle-orm";
 import { searchWeb } from "./web-search";
-import { stripJsonFences } from "./json-utils";
+import { callJsonStage } from "./llm-json";
 import { log } from "./log";
 
 const CACHE_ENTITY = "company_founders";
@@ -60,14 +59,13 @@ Return JSON only: {"founders": [{"name": "Full name", "role": "e.g. Co-founder &
 Rules: only people explicitly tied to "${name}" in the results; never guess; empty array if unsure; max 5 people, CEO/founders first.`;
 
   try {
-    const response = await openai.chat.completions.create({
+    const parsed = await callJsonStage<any>({
       model: "google/gemini-2.5-flash-lite",
-      messages: [{ role: "user", content: prompt }],
-      max_completion_tokens: 300,
+      prompt,
+      maxTokens: 300,
       temperature: 0.1,
-      response_format: { type: "json_object" },
+      label: "FounderDiscovery",
     });
-    const parsed = JSON.parse(stripJsonFences(response.choices[0]?.message?.content || "{}"));
     const founders: DiscoveredFounder[] = (Array.isArray(parsed.founders) ? parsed.founders : [])
       .filter((f: any) => f && typeof f.name === "string" && f.name.trim().split(/\s+/).length >= 2)
       .slice(0, 5)

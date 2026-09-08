@@ -16,8 +16,17 @@ const BRAVE_API_KEY = process.env.BRAVE_API_KEY;
 let circuitBreakerOpen = false;
 let circuitBreakerResetTime = 0;
 let lastQuotaError: { at: string; message: string } | null = null;
-const searchStats = { day: "", tavily: 0, brave: 0, failures: 0 };
-function touchSearchStats() { const d = new Date().toISOString().slice(0, 10); if (searchStats.day !== d) { searchStats.day = d; searchStats.tavily = 0; searchStats.brave = 0; searchStats.failures = 0; } }
+const BACKGROUND_DAILY_CAP = parseInt(process.env.SEARCH_BACKGROUND_DAILY_CAP || "120", 10);
+const searchStats = { day: "", tavily: 0, brave: 0, failures: 0, background: 0, backgroundDenied: 0 };
+function touchSearchStats() { const d = new Date().toISOString().slice(0, 10); if (searchStats.day !== d) { searchStats.day = d; searchStats.tavily = 0; searchStats.brave = 0; searchStats.failures = 0; searchStats.background = 0; searchStats.backgroundDenied = 0; } }
+
+/** Background callers ask first; live callers never wait. */
+function takeBackgroundSlot(): boolean {
+  touchSearchStats();
+  if (searchStats.background >= BACKGROUND_DAILY_CAP) { searchStats.backgroundDenied++; return false; }
+  searchStats.background++;
+  return true;
+}
 
 /** For the Debug page: which search provider is live and whether quota is exhausted. */
 export function getSearchStatus() {
@@ -28,6 +37,7 @@ export function getSearchStatus() {
     breakerOpen: circuitBreakerOpen && Date.now() < circuitBreakerResetTime,
     breakerResetsAt: circuitBreakerOpen ? new Date(circuitBreakerResetTime).toISOString() : null,
     lastQuotaError,
+    backgroundDailyCap: BACKGROUND_DAILY_CAP,
     today: { ...searchStats },
   };
 }
@@ -49,6 +59,12 @@ interface TavilySearchResponse {
 }
 
 interface SearchOptions {
+  /**
+   * "live" (default) = a lead being processed right now; always served.
+   * "background" = batch work (family research); draws from a daily cap so it
+   * can never starve live enrichment of the shared Tavily/Brave quota.
+   */
+  priority?: "live" | "background";
   searchDepth?: "basic" | "advanced";
   maxResults?: number;
   includeAnswer?: boolean;
@@ -135,6 +151,11 @@ export async function searchWeb(
   query: string,
   options: SearchOptions = {}
 ): Promise<TavilySearchResponse | null> {
+  if (options.priority === "background" && !takeBackgroundSlot()) {
+    console.warn(`[Web Search] background cap (${BACKGROUND_DAILY_CAP}/day) reached, skipping: "${query.slice(0, 60)}"`);
+    return null;
+  }
+
   // If Tavily is not configured, try Brave
   if (!TAVILY_API_KEY) {
     return searchWithBrave(query, options);

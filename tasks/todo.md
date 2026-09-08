@@ -97,6 +97,58 @@ auto-blocks. Every researched relationship stores its source URL + confidence.
 
 ---
 
+## Current Program (approved by Billy 2026-09-08): make Sensei self-improving, observable, robust
+
+**Decisions (Billy):** 1 learning loop over hard-coded rules (it teaches itself, he teaches it);
+2 visual errors in Sensei + Telegram pings when things go bad; 3 prompts editable/versioned in
+settings with reference articles; 4 schema consolidation — do it via one-time ownership reassign
+(local Postgres, superuser available) rather than migrations; 5-8 approved as proposed.
+
+### Phase D-lite — DB ownership (unblocks everything else)
+- [x] Ownership: all 54 public tables + sequences now owned by newsuser (ALTER TABLE per table;
+  REASSIGN OWNED failed because postgres is the bootstrap role). Done 2026-09-08.
+- [x] Drift inspected via information_schema (drizzle-kit pull is broken in this install):
+  `db:push` would DROP 27 legacy tables (v1 `leads` 1632 rows, `saved_leads` 2, `contacts` 10,
+  `*_v2` draft tables, lifestyle_leads, publications, scrape_log, …) and 6 unused columns on
+  leads_v2 (analyzed_by_model, article_id, banker_angle, event_type, relevance_score, source_id).
+- [ ] DECISION FOR BILLY: archive (pg_dump) + drop the 27 legacy tables so `db:push` becomes the
+  single schema mechanism? Until then new tables still use the ensure-table pattern
+  (pipeline_examples added that way).
+
+### Phase A — Health + alerting (subagent)
+- [ ] `server/health.ts`: checks for DB, LLM gateway (last call ok/err via openai-client wrapper),
+  scraper credits, web-search quota, last scan age/errors, Stage-6 parse failures, family worker,
+  Telegram send. Each: ok | warn | error + message. `GET /api/health`.
+- [ ] `server/health-monitor.ts`: cron every 15 min; Telegram on transition to warn/error (re-ping
+  after 6h if still bad; recovery message); daily 08:00 SGT digest.
+- [ ] UI: header banner (red/amber → /debug) + Debug "System health" card replacing Integrations.
+
+### Phase B — Learning loop (me)
+- [x] `pipeline_examples` table + server/pipeline-examples.ts (list/upsert/delete/summary/run)
+- [x] GET /api/pipeline/funnel (per stage + reason with samples), examples CRUD endpoints
+- [x] client/src/components/RejectionFunnel.tsx: funnel bars, "Should pass" / "Should reject" /
+  re-run per article, "What Sensei has been taught" list — still to be mounted in debug.tsx
+- [x] Prompts learn: feedback-prompt.ts now emits negatives + positives (flagged misses + last 5
+  saved leads) under the existing export, so every scan's S1 prompt carries both
+- [ ] scanner.ts: `url` on ArticleProcessed entries + dryRun mode for the nightly examples run
+  (blocked until the refactor subagent releases scanner.ts)
+- [ ] Nightly examples cron + pass rate in the daily digest
+
+### Phase E — Refactor + deletions (subagent)
+- [ ] `callJsonStage()` helper replacing the repeated OpenAI JSON boilerplate (stages 1-4, 6,
+  geo-rescue, founder-discovery, family-research)
+- [ ] Delete: SendGrid path, Ollama client, paused lifestyle cron flag noise, dead exports
+
+### Phase C — Prompts in settings (after A/B/D)
+- [ ] `pipeline_prompts` + versions; Settings editor with "test against examples"
+
+### Phase F — Budgets + UX
+- [x] web-search.ts: `priority: "background"` draws from SEARCH_BACKGROUND_DAILY_CAP (120/day);
+  live calls never wait. family-research.ts still to be switched to background (file locked by refactor)
+- [x] Feed sort: priority band (high/med/low) then newest — a week-old 90 no longer pins above today's 85
+- [x] Radar duplicates already collapse on the dashboard (existing bestLeadIds dedup); deal value +
+  wealth angle already render on the card — they were just never persisted until today
+
 ## 2026-09-08 — Pipeline: catch SEA deals reported by non-SEA outlets (Circle × Tazapay $400M) ✅
 
 **Trigger:** Billy asked whether the pipeline caught Circle's $400M acquisition of Singapore's

@@ -268,6 +268,8 @@ export interface ArticleProcessed {
   status: "success" | "skipped" | "error";
   reason?: string;
   fetchMethod?: FetchMethod;
+  /** Article URL, so a rejection on the Debug page can be re-run or turned into an example. */
+  url?: string;
 }
 
 // Scan logs for tracking scraping activity
