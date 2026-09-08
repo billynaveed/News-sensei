@@ -422,11 +422,76 @@ function ScanLogCard({ log }: { log: ScanLog }) {
   );
 }
 
+type ScraperStatus = {
+  provider: string;
+  today: { requests: number; credits: number; failures: number; lastRemaining: number | null; lastError: string | null };
+  plan: { RemainingMonthlyRequest?: number; MaxMonthlyRequest?: number; IsActive?: boolean } | null;
+};
+type SearchStatus = {
+  tavilyConfigured: boolean;
+  braveConfigured: boolean;
+  breakerOpen: boolean;
+  breakerResetsAt: string | null;
+  lastQuotaError: { at: string; message: string } | null;
+  today: { tavily: number; brave: number; failures: number };
+};
+
+/** Paid-API health: the blind spot that let a dead scraping key and an exhausted search plan go unnoticed for weeks. */
+function IntegrationsCard({ scraper, search }: { scraper?: ScraperStatus; search?: SearchStatus }) {
+  const scraperBad = !scraper || scraper.provider === "none" || (scraper.plan && scraper.plan.IsActive === false) || (scraper.today.failures > 0 && scraper.today.requests > 0 && scraper.today.failures >= scraper.today.requests);
+  const searchBad = !search || (!search.tavilyConfigured && !search.braveConfigured) || (search.breakerOpen && !search.braveConfigured);
+  const searchDegraded = !!search?.lastQuotaError || !!search?.breakerOpen;
+  const tone = (bad: boolean, degraded = false) => bad ? "text-red-600 dark:text-red-400" : degraded ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400";
+  return (
+    <Card className={scraperBad || searchBad ? "border-red-500/50" : searchDegraded ? "border-amber-500/50" : ""} data-testid="integrations-card">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base">Integrations</CardTitle>
+        <CardDescription>Scraping and web-search providers the pipeline depends on. Red = broken, amber = degraded/fallback.</CardDescription>
+      </CardHeader>
+      <CardContent className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
+        <div className="space-y-1">
+          <div className={`font-medium ${tone(!!scraperBad)}`}>
+            Scraper: {scraper ? scraper.provider.replace("_", ".") : "…"}
+          </div>
+          {scraper?.plan && (
+            <div className="text-muted-foreground">
+              {scraper.plan.RemainingMonthlyRequest ?? "?"} / {scraper.plan.MaxMonthlyRequest ?? "?"} requests left this month
+            </div>
+          )}
+          {scraper && (
+            <div className="text-muted-foreground">
+              Today: {scraper.today.requests} requests · {scraper.today.credits} credits · {scraper.today.failures} failed
+            </div>
+          )}
+          {scraper?.today.lastError && <div className="text-xs text-red-600 dark:text-red-400 break-words">Last error: {scraper.today.lastError}</div>}
+        </div>
+        <div className="space-y-1">
+          <div className={`font-medium ${tone(!!searchBad, searchDegraded)}`}>
+            Web search: {search ? (search.breakerOpen ? (search.braveConfigured ? "Brave (Tavily paused)" : "paused") : search.tavilyConfigured ? "Tavily" : search.braveConfigured ? "Brave" : "none") : "…"}
+          </div>
+          {search && (
+            <div className="text-muted-foreground">
+              Today: {search.today.tavily} Tavily · {search.today.brave} Brave · {search.today.failures} failed
+            </div>
+          )}
+          {search?.lastQuotaError && (
+            <div className="text-xs text-amber-600 dark:text-amber-400 break-words">
+              Tavily quota: {search.lastQuotaError.message} ({new Date(search.lastQuotaError.at).toLocaleString()})
+            </div>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function DebugPage() {
   const { data, isLoading, refetch, isFetching } = useQuery<DebugResponse>({
     queryKey: ["/api/scan-debug/latest"],
   });
 
+  const { data: scraper } = useQuery<ScraperStatus>({ queryKey: ["/api/scraper/status"], refetchInterval: 60_000 });
+  const { data: search } = useQuery<SearchStatus>({ queryKey: ["/api/search/status"], refetchInterval: 60_000 });
   const { data: allLogs, isLoading: logsLoading } = useQuery<ScanLog[]>({
     queryKey: ["/api/scan-logs"],
   });
@@ -468,6 +533,7 @@ export default function DebugPage() {
   return (
     <ScrollArea className="h-full">
       <div className="p-6 space-y-6 max-w-5xl mx-auto">
+        <IntegrationsCard scraper={scraper} search={search} />
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <div>
             <h1 className="text-2xl font-bold" data-testid="debug-page-title">Debug Console</h1>

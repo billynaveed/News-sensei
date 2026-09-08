@@ -317,7 +317,8 @@ Extract and return JSON:
     const response = await openai.chat.completions.create({
       model: "google/gemini-2.5-flash-lite",
       messages: [{ role: "user", content: prompt }],
-      max_completion_tokens: 2000,
+      max_completion_tokens: 3000,
+      response_format: { type: "json_object" },
       temperature: 0.2,
     });
 

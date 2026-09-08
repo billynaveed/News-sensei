@@ -12,6 +12,7 @@ import { ensureContactMetaTable } from "./ensure-contact-meta-table";
 import { ensureFamiliesTables } from "./ensure-families-tables";
 import { getResearchProgress, runFamilyResearchOnce, seedFamilies, requeueFamily } from "./family-research";
 import { getScraperStatus } from "./scraper";
+import { getSearchStatus } from "./web-search";
 import {
   listFamilies,
   createFamily,
@@ -715,6 +716,10 @@ export async function registerRoutes(
       console.error("Error listing muted founders:", error);
       res.status(500).json({ error: "Failed to list muted" });
     }
+  });
+
+  app.get("/api/search/status", (_req, res) => {
+    res.json(getSearchStatus());
   });
 
   app.get("/api/scraper/status", async (_req, res) => {

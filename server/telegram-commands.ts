@@ -1,5 +1,5 @@
 import { sendTelegramMessage, answerCallbackQuery } from './telegram';
-import { enrichFounderInfo, enrichCompanyInfo, type FounderEnrichmentResult, type CompanyEnrichmentResult } from './founder-enrichment';
+import { enrichFounderInfoWithSearch, enrichCompanyInfoWithSearch, type FounderEnrichmentResult, type CompanyEnrichmentResult } from './founder-enrichment';
 import { formatFounderEnrichment, formatCompanyEnrichment, formatSavedLeadEnrichment, splitLongMessage } from './telegram-formatter';
 import { performResearch, formatResearchTelegram, checkRateLimit, recordRateLimit, type ResearchResult } from './research';
 import { storage } from './storage';
@@ -239,7 +239,7 @@ async function handleResearchSaved(leadIdStr: string, chatId: string, settings: 
     // Enrich founder if available
     if (founderName) {
       try {
-        founderResult = await enrichFounderInfo(founderName, companyName || "", region);
+        founderResult = await enrichFounderInfoWithSearch(founderName, companyName || "", region);
       } catch (error) {
         console.error('Error enriching founder:', error);
       }
@@ -248,7 +248,7 @@ async function handleResearchSaved(leadIdStr: string, chatId: string, settings: 
     // Enrich company if available
     if (companyName) {
       try {
-        companyResult = await enrichCompanyInfo(companyName, region);
+        companyResult = await enrichCompanyInfoWithSearch(companyName, region);
       } catch (error) {
         console.error('Error enriching company:', error);
       }

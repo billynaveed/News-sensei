@@ -97,23 +97,29 @@ You will receive messages like this when new high-priority leads are found match
   await sendTelegramMessage(chatId, message, 'HTML', undefined, messageThreadId);
 }
 
+const escHtml = (v: unknown) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
 export async function sendLeadAlertTelegram(chatId: string, leads: Lead[], messageThreadId?: number | null): Promise<void> {
   // Send header message
   const header = `<b>🔔 ${leads.length} New Lead${leads.length > 1 ? 's' : ''} Found</b>\n\n`;
   await sendTelegramMessage(chatId, header, 'HTML', undefined, messageThreadId);
 
-  // Send each lead as a separate message with action buttons
+  // Send each lead as a separate message with action buttons. One bad lead
+  // (unescaped HTML, over-long summary, transient 4xx) must not stop the rest.
+  let failed = 0;
   for (const lead of leads) {
     const priorityIcon = lead.priorityLevel === 'high' ? '🔴' : lead.priorityLevel === 'medium' ? '🟡' : '🟢';
-    const message = `${priorityIcon} <b>${lead.headline}</b>
+    const summary = (lead.aiSummary || "").length > 1200 ? `${(lead.aiSummary || "").slice(0, 1200)}…` : (lead.aiSummary || "");
+    const deal = (lead as any).keyFinancials?.dealValue || (lead as any).keyFinancials?.fundingAmount || null;
+    const message = `${priorityIcon} <b>${escHtml(lead.headline)}</b>
 
-<i>Companies:</i> ${lead.companyNames.join(', ')}
-<i>People:</i> ${lead.founderNames.join(', ') || 'N/A'}
-<i>Region:</i> ${lead.region} | <b>Score: ${lead.priorityScore}</b>
+<i>Companies:</i> ${escHtml((lead.companyNames || []).join(', '))}
+<i>People:</i> ${escHtml((lead.founderNames || []).join(', ') || 'N/A')}
+<i>Region:</i> ${escHtml(lead.region)} | <b>Score: ${lead.priorityScore}</b>${deal ? ` | <b>${escHtml(deal)}</b>` : ''}
 
-${lead.aiSummary}
+${escHtml(summary)}
 
-<a href="${lead.sourceUrl}">Read full article →</a>`;
+<a href="${escHtml(lead.sourceUrl)}">Read full article →</a>`;
 
     // Add inline keyboard with action buttons
     const keyboard = {
@@ -125,7 +131,15 @@ ${lead.aiSummary}
       ]
     };
 
-    await sendTelegramMessage(chatId, message, 'HTML', keyboard, messageThreadId);
+    try {
+      await sendTelegramMessage(chatId, message, 'HTML', keyboard, messageThreadId);
+    } catch (error) {
+      failed++;
+      console.error(`[Telegram] lead alert failed for ${lead.id} (${lead.headline.slice(0, 60)}):`, error instanceof Error ? error.message : error);
+    }
+  }
+  if (failed > 0) {
+    await sendTelegramMessage(chatId, `⚠️ ${failed} of ${leads.length} lead alert${failed > 1 ? 's' : ''} could not be sent — check the dashboard.`, 'HTML', undefined, messageThreadId).catch(() => {});
   }
 }
 

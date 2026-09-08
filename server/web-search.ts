@@ -15,6 +15,22 @@ const BRAVE_API_KEY = process.env.BRAVE_API_KEY;
 // Circuit breaker state
 let circuitBreakerOpen = false;
 let circuitBreakerResetTime = 0;
+let lastQuotaError: { at: string; message: string } | null = null;
+const searchStats = { day: "", tavily: 0, brave: 0, failures: 0 };
+function touchSearchStats() { const d = new Date().toISOString().slice(0, 10); if (searchStats.day !== d) { searchStats.day = d; searchStats.tavily = 0; searchStats.brave = 0; searchStats.failures = 0; } }
+
+/** For the Debug page: which search provider is live and whether quota is exhausted. */
+export function getSearchStatus() {
+  touchSearchStats();
+  return {
+    tavilyConfigured: !!TAVILY_API_KEY,
+    braveConfigured: !!BRAVE_API_KEY,
+    breakerOpen: circuitBreakerOpen && Date.now() < circuitBreakerResetTime,
+    breakerResetsAt: circuitBreakerOpen ? new Date(circuitBreakerResetTime).toISOString() : null,
+    lastQuotaError,
+    today: { ...searchStats },
+  };
+}
 const CIRCUIT_BREAKER_TIMEOUT = 60000; // 1 minute
 
 interface TavilySearchResult {
@@ -66,6 +82,7 @@ async function searchWithBrave(
     // Brave free tier can 422 on complex quoted queries — simplify
     const cleanQuery = query.replace(/"/g, '');
     console.info(`[Web Search] Brave query: "${cleanQuery}"`);
+    touchSearchStats(); searchStats.brave++;
     const startTime = Date.now();
 
     params.set("q", cleanQuery);
@@ -166,6 +183,7 @@ export async function searchWeb(
       if (excludeDomains) searchOptions.excludeDomains = excludeDomains;
 
       console.info(`[Web Search] Query: "${query}" (attempt ${attempt + 1}/${maxRetries})`);
+      touchSearchStats(); searchStats.tavily++;
 
       const response = await Promise.race([
         tvly.search(query, searchOptions),
@@ -197,6 +215,7 @@ export async function searchWeb(
       if (error.response?.status === 432 || /usage limit|exceeds your plan|quota/i.test(msg)) {
         circuitBreakerOpen = true;
         circuitBreakerResetTime = Date.now() + 30 * 60 * 1000;
+        lastQuotaError = { at: new Date().toISOString(), message: msg.slice(0, 160) };
         console.warn(`[Web Search] Tavily quota exhausted (${msg.slice(0, 80)}) — falling back to Brave for 30 min`);
         return searchWithBrave(query, options);
       }
