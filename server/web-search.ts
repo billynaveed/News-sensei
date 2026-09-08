@@ -126,8 +126,8 @@ export async function searchWeb(
   // Check circuit breaker
   if (circuitBreakerOpen) {
     if (Date.now() < circuitBreakerResetTime) {
-      console.warn("[Web Search] Circuit breaker open, skipping search");
-      return null;
+      console.warn("[Web Search] Circuit breaker open, using Brave");
+      return searchWithBrave(query, options);
     }
     // Reset circuit breaker
     circuitBreakerOpen = false;
@@ -191,6 +191,16 @@ export async function searchWeb(
     } catch (error: any) {
       const isLastAttempt = attempt === maxRetries - 1;
 
+      // Plan quota exhausted (Tavily 432 / "usage limit"): retrying won't help.
+      // Open the breaker so we stop paying the timeout, and serve from Brave.
+      const msg = String(error?.message || "");
+      if (error.response?.status === 432 || /usage limit|exceeds your plan|quota/i.test(msg)) {
+        circuitBreakerOpen = true;
+        circuitBreakerResetTime = Date.now() + 30 * 60 * 1000;
+        console.warn(`[Web Search] Tavily quota exhausted (${msg.slice(0, 80)}) — falling back to Brave for 30 min`);
+        return searchWithBrave(query, options);
+      }
+
       // Handle rate limiting (429)
       if (error.response?.status === 429) {
         const delay = baseDelay * Math.pow(2, attempt) + Math.random() * 1000;
@@ -209,9 +219,9 @@ export async function searchWeb(
         // Open circuit breaker after repeated failures
         circuitBreakerOpen = true;
         circuitBreakerResetTime = Date.now() + CIRCUIT_BREAKER_TIMEOUT;
-        console.warn("[Web Search] Circuit breaker opened for 1 minute");
+        console.warn("[Web Search] Circuit breaker opened for 1 minute — falling back to Brave");
 
-        return null;
+        return searchWithBrave(query, options);
       }
 
       // Exponential backoff for retries

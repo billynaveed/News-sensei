@@ -22,7 +22,7 @@ export type User = typeof users.$inferSelect;
 export type LeadStatus = "new" | "reviewed" | "saved" | "contacted" | "dismissed";
 export type PriorityLevel = "high" | "medium" | "low";
 export type SourceTier = "tier1" | "tier2" | "tier3";
-export type FetchMethod = "rss" | "google_news" | "scrapingbee" | "scrapingbee_premium";
+export type FetchMethod = "rss" | "google_news" | "scrapingbee" | "scrapingbee_premium" | "scraped";
 
 /** Financial metrics extracted during deep analysis (Stage 6 of the pipeline) */
 export interface KeyFinancials {
@@ -85,7 +85,7 @@ export const insertLeadSchema = createInsertSchema(leads).omit({
   sourceTier: z.enum(["tier1", "tier2", "tier3"]),
   priorityLevel: z.enum(["high", "medium", "low"]),
   status: z.enum(["new", "reviewed", "saved", "contacted", "dismissed"]).optional(),
-  fetchMethod: z.enum(["rss", "google_news", "scrapingbee", "scrapingbee_premium"]).nullable().optional(),
+  fetchMethod: z.enum(["rss", "google_news", "scrapingbee", "scrapingbee_premium", "scraped"]).nullable().optional(),
 });
 
 export type InsertLead = z.infer<typeof insertLeadSchema>;

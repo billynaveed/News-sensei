@@ -27,6 +27,11 @@ const FETCH_METHOD_CONFIG: Record<FetchMethod, FetchMethodConfig> = {
     label: "Premium",
     color: "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300 border-purple-200 dark:border-purple-800",
   },
+  scraped: {
+    icon: "\u{1F578}",
+    label: "Scraped",
+    color: "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300 border-purple-200 dark:border-purple-800",
+  },
 };
 
 interface FetchMethodBadgeProps {

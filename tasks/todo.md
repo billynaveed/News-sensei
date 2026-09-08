@@ -97,6 +97,43 @@ auto-blocks. Every researched relationship stores its source URL + confidence.
 
 ---
 
+## 2026-09-08 — Pipeline: catch SEA deals reported by non-SEA outlets (Circle × Tazapay $400M) ✅
+
+**Trigger:** Billy asked whether the pipeline caught Circle's $400M acquisition of Singapore's
+Tazapay. It hadn't: no subscribed source ran it, and a Tazapay article from Tech in Asia had
+been rejected at Stage 1 as "sea_publisher_only" (85% of weekly rejects carry that reason).
+
+**Root causes + fixes (all verified end-to-end on dev, then deployed):**
+- [x] Coverage: `fetchFromDealRadar` in adapters.ts — 6 source-independent Google News
+  keyword queries ("Singapore-based" + deal terms, per-market variants, SEA founder exits),
+  always on (DEAL_RADAR_ENABLED=false disables). Found 16 Tazapay articles in 2s.
+- [x] Stage 1b geography rescue (`server/geo-rescue.ts`): S1 only sees headline+500 chars,
+  so a SEA company whose HQ isn't in the snippet is rejected. For deal-shaped articles
+  rejected on geography alone, verify the subject's HQ (research_cache → companies table →
+  one web search + flash-lite read; 60 lookups/day cap) and rescue with a "[Verified: …]"
+  note that flows into S6. 
+- [x] Stage 2/6 subject selection: acquisitions now resolve to the TARGET (Tazapay), never
+  the acquirer (Circle). companyNames[0] = subject, so S7 enriches the right company.
+- [x] Stage 6 scoring: acquisition of a private target-region company = liquidity event by
+  definition (85+ with named founder + price; 55-65 with nobody named). Was scoring 25.
+- [x] Stage 6a founder discovery (`server/founder-discovery.ts`): for medium+ leads, look up
+  the subject company's founders (2 short searches + flash-lite), put them FIRST; acquirer
+  executives are excluded from founderNames. Tazapay → Rahul Shinghal (CEO, Singapore),
+  Arul Kumaravel, Saroj Mishra, Kanupriya Sharda; LinkedIn found in S7.
+- [x] keyFinancials / wealthAngle / seaConnection were computed by S6 but never persisted —
+  now written to leads_v2.
+- [x] web-search.ts: Tavily plan is over its usage limit (432 "exceeds your plan"); searchWeb
+  now falls back to Brave on quota errors, breaker-open, and final failure instead of null.
+- [x] `POST /api/leads/ingest-url {url}`: push any article through the full pipeline on demand.
+- [x] Scraping made provider-agnostic (`server/scraper.ts`): scrape.do (trial, 1000 req/month,
+  key in .env as SCRAPE_DO_API_KEY) replaces the dead ScrapingBee key (401). Used by S5 (now
+  for any article with <1500 chars, not only tier1), RSS-via-proxy, homepage discovery, IDX
+  IPO page, and ingest fallback. `GET /api/scraper/status` shows credits. CoinDesk (429 on
+  direct fetch) = 1 credit; Tech in Asia rendered = 5 credits.
+- Result: lead 8c568b5f… on the dashboard — high (85), $400M, four founders, LinkedIn.
+- Not done: Debug-page panel for scraper/search quota (endpoint exists); per-source Google
+  News toggle is still off in settings (radar covers the deal case).
+
 ## Completed Tasks
 
 ### [Date] - [Task Name]

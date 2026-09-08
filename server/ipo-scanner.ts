@@ -1,4 +1,5 @@
 import * as cheerio from "cheerio";
+import { scrapeUrl, activeScraper } from "./scraper";
 import { openai } from "./openai-client";
 import { db } from "./db";
 import { ipoFilings, type InsertIpoFiling, type IpoExchange, type IpoFiling } from "@shared/schema";
@@ -166,34 +167,22 @@ async function scrapeSgxHtml(): Promise<InsertIpoFiling[]> {
  * ScrapingBee if available, otherwise skip gracefully.
  */
 async function scrapeIdx(): Promise<InsertIpoFiling[]> {
-  const scrapingBeeKey = process.env.SCRAPINGBEE_API_KEY;
 
-  if (!scrapingBeeKey) {
-    console.log("[IPO] IDX: ScrapingBee not configured, skipping (Cloudflare-protected)");
+  if (activeScraper() === "none") {
+    console.log("[IPO] IDX: no scraping provider configured, skipping (Cloudflare-protected)");
     return [];
   }
 
   const targetUrl = "https://www.idx.co.id/en/listed-companies/ipo-prospectus/";
-  console.log(`[IPO] Fetching IDX via ScrapingBee: ${targetUrl}`);
+  console.log(`[IPO] Fetching IDX via ${activeScraper()}: ${targetUrl}`);
 
   try {
-    const params = new URLSearchParams({
-      api_key: scrapingBeeKey,
-      url: targetUrl,
-      render_js: "true",
-      wait: "3000",
-    });
-
-    const res = await fetch(`https://app.scrapingbee.com/api/v1/?${params}`, {
-      signal: AbortSignal.timeout(30_000),
-    });
-
+    const res = await scrapeUrl(targetUrl, { render: true, timeoutMs: 45_000 });
     if (!res.ok) {
-      console.warn(`[IPO] IDX ScrapingBee returned ${res.status}`);
+      console.warn(`[IPO] IDX scrape failed: ${res.error}`);
       return [];
     }
-
-    const html = await res.text();
+    const html = res.body;
     const $ = cheerio.load(html);
     const filings: InsertIpoFiling[] = [];
 

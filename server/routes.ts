@@ -6,11 +6,12 @@ import { storage } from "./storage";
 import { sendTestEmail, sendLeadAlertEmail } from "./sendgrid";
 import { sendTestTelegramMessage, getTelegramUpdates, type TelegramUpdate } from "./telegram";
 import { handleUpdate as handleTelegramUpdate } from "./telegram-bot";
-import { scanForLeads, getScanProgress, enrichLeadWithWebSearch } from "./scanner";
+import { scanForLeads, getScanProgress, enrichLeadWithWebSearch, ingestArticleUrl } from "./scanner";
 import { ensureLeadFeedbackTable } from "./ensure-lead-feedback-table";
 import { ensureContactMetaTable } from "./ensure-contact-meta-table";
 import { ensureFamiliesTables } from "./ensure-families-tables";
 import { getResearchProgress, runFamilyResearchOnce, seedFamilies, requeueFamily } from "./family-research";
+import { getScraperStatus } from "./scraper";
 import {
   listFamilies,
   createFamily,
@@ -713,6 +714,26 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error listing muted founders:", error);
       res.status(500).json({ error: "Failed to list muted" });
+    }
+  });
+
+  app.get("/api/scraper/status", async (_req, res) => {
+    try {
+      res.json(await getScraperStatus());
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : "Failed" });
+    }
+  });
+
+  // Manual ingest: run one article URL through the full lead pipeline.
+  app.post("/api/leads/ingest-url", async (req, res) => {
+    try {
+      const { url } = req.body ?? {};
+      if (typeof url !== "string" || !/^https?:\/\//.test(url)) return res.status(400).json({ error: "url required" });
+      res.json(await ingestArticleUrl(url));
+    } catch (error) {
+      console.error("Error ingesting URL:", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : "Failed to ingest URL" });
     }
   });
 

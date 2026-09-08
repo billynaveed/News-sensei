@@ -1,7 +1,7 @@
+import { scrapeUrl, extractHeadlinesFromHtml, activeScraper } from "./scraper";
 import Parser from "rss-parser";
 import type { Source, SourceTier, RssFeed, ScrapingBeeDebugEntry, FetchMethod } from "@shared/schema";
 
-const SCRAPINGBEE_API_KEY = process.env.SCRAPINGBEE_API_KEY;
 
 export interface RawArticle {
   headline: string;
@@ -154,34 +154,23 @@ export async function fetchRssViaScrapingBee(
     },
   };
 
-  if (!SCRAPINGBEE_API_KEY) {
-    debugEntry.error = "ScrapingBee API key not configured";
+  if (activeScraper() === "none") {
+    debugEntry.error = "No scraping provider configured";
     debugEntry.response.latencyMs = Date.now() - startTime;
-    return { articles, errors: ["ScrapingBee API key not configured"], debugEntry };
+    return { articles, errors: ["No scraping provider configured"], debugEntry };
   }
 
   try {
-    const params = new URLSearchParams({
-      api_key: SCRAPINGBEE_API_KEY,
-      url: feed.url,
-      render_js: "false",
-    });
-
-    const response = await fetch(`https://app.scrapingbee.com/api/v1?${params.toString()}`, {
-      method: "GET",
-      headers: { "Accept": "application/xml, text/xml, */*" },
-    });
-
-    debugEntry.response.status = response.status;
-    debugEntry.response.statusText = response.statusText;
+    const scraped = await scrapeUrl(feed.url, { timeoutMs: 20_000 });
+    debugEntry.response.status = scraped.status;
+    debugEntry.response.statusText = scraped.ok ? "OK" : (scraped.error || "error");
     debugEntry.response.latencyMs = Date.now() - startTime;
-
-    const responseText = await response.text();
+    const responseText = scraped.body;
     debugEntry.response.rawResponseSnippet = responseText.slice(0, 3000);
 
-    if (!response.ok) {
-      debugEntry.error = `HTTP ${response.status}: ${responseText.slice(0, 500)}`;
-      errors.push(`ScrapingBee RSS error for ${feed.sourceName}: ${response.status}`);
+    if (!scraped.ok) {
+      debugEntry.error = scraped.error || `HTTP ${scraped.status}`;
+      errors.push(`Proxy RSS error for ${feed.sourceName}: ${scraped.error}`);
       return { articles, errors, debugEntry };
     }
 
@@ -368,65 +357,35 @@ export async function fetchFromScrapingBee(
     },
   };
 
-  if (!SCRAPINGBEE_API_KEY) {
-    debugEntry.error = "ScrapingBee API key not configured";
+  if (activeScraper() === "none") {
+    debugEntry.error = "No scraping provider configured";
     debugEntry.response.latencyMs = Date.now() - startTime;
-    return { articles, errors: ["ScrapingBee API key not configured"], debugEntry };
+    return { articles, errors: ["No scraping provider configured"], debugEntry };
   }
 
   try {
     const targetUrl = `https://${source.domain}`;
-    const params = new URLSearchParams({
-      api_key: SCRAPINGBEE_API_KEY,
-      url: targetUrl,
-      render_js: "false",
-      extract_rules: extractRules,
-    });
-
-    const response = await fetch(`https://app.scrapingbee.com/api/v1?${params.toString()}`, {
-      method: "GET",
-      headers: { "Accept": "application/json" },
-    });
-
-    debugEntry.response.status = response.status;
-    debugEntry.response.statusText = response.statusText;
+    const scraped = await scrapeUrl(targetUrl, { timeoutMs: 20_000 });
+    debugEntry.response.status = scraped.status;
+    debugEntry.response.statusText = scraped.ok ? "OK" : (scraped.error || "error");
     debugEntry.response.latencyMs = Date.now() - startTime;
-
-    const responseText = await response.text();
-    debugEntry.response.rawResponseSnippet = responseText.slice(0, 3000);
-
-    if (!response.ok) {
-      debugEntry.error = `HTTP ${response.status}: ${responseText.slice(0, 500)}`;
-      errors.push(`ScrapingBee error for ${source.name}: ${response.status} - ${responseText}`);
+    debugEntry.response.rawResponseSnippet = scraped.body.slice(0, 3000);
+    if (!scraped.ok) {
+      debugEntry.error = scraped.error || `HTTP ${scraped.status}`;
+      errors.push(`Scrape error for ${source.name}: ${scraped.error}`);
       return { articles, errors, debugEntry };
     }
 
-    let data: any;
-    try {
-      data = JSON.parse(responseText);
-    } catch (parseError) {
-      debugEntry.error = `JSON parse error: ${responseText.slice(0, 200)}`;
-      errors.push(`ScrapingBee JSON parse error for ${source.name}`);
-      return { articles, errors, debugEntry };
-    }
-
-    const extractedArticles = data.articles || [];
+    const extractedArticles = extractHeadlinesFromHtml(scraped.body, source.domain);
     debugEntry.response.extractedCount = extractedArticles.length;
 
     for (const item of extractedArticles) {
-      if (!item.headline || !item.link) continue;
+      if (!item.headline || !item.url) continue;
 
       const headline = typeof item.headline === 'string' ? item.headline.trim() : '';
       if (!headline) continue;
 
-      let articleUrl = item.link;
-      if (articleUrl && !articleUrl.startsWith("http")) {
-        try {
-          articleUrl = new URL(articleUrl, `https://${source.domain}`).toString();
-        } catch {
-          continue;
-        }
-      }
+      const articleUrl = item.url;
 
       const summary = typeof item.summary === 'string' ? item.summary.trim() : '';
       const combinedText = `${headline} ${summary}`.toLowerCase();
@@ -444,7 +403,7 @@ export async function fetchFromScrapingBee(
         url: articleUrl,
         source: source.name,
         sourceTier: source.tier as SourceTier,
-        publishedAt: item.date ? new Date(item.date) : new Date(),
+        publishedAt: new Date(),
         content: summary.slice(0, 2000),
         region: defaultRegion,
         fetchMethod: "scrapingbee",
@@ -527,75 +486,38 @@ export async function fetchFromScrapingBeePremium(
     },
   };
 
-  if (!SCRAPINGBEE_API_KEY) {
-    debugEntry.error = "ScrapingBee API key not configured";
+  if (activeScraper() === "none") {
+    debugEntry.error = "No scraping provider configured";
     debugEntry.response.latencyMs = Date.now() - startTime;
-    return { articles, errors: ["ScrapingBee API key not configured"], debugEntry };
+    return { articles, errors: ["No scraping provider configured"], debugEntry };
   }
 
   try {
     const targetUrl = `https://${source.domain}`;
-    const params = new URLSearchParams({
-      api_key: SCRAPINGBEE_API_KEY,
-      url: targetUrl,
-      extract_rules: premiumExtractRules,
-    });
-
-    if (usePremium) {
-      params.set("premium_proxy", "true");
-      params.set("render_js", "true");
-      params.set("block_resources", "false");
-    } else {
-      params.set("render_js", "false");
-    }
-
-    const response = await fetch(`https://app.scrapingbee.com/api/v1?${params.toString()}`, {
-      method: "GET",
-      headers: { "Accept": "application/json" },
-    });
-
-    debugEntry.response.status = response.status;
-    debugEntry.response.statusText = response.statusText;
+    const scraped = await scrapeUrl(targetUrl, { render: usePremium, premium: usePremium, timeoutMs: 45_000 });
+    debugEntry.response.status = scraped.status;
+    debugEntry.response.statusText = scraped.ok ? "OK" : (scraped.error || "error");
     debugEntry.response.latencyMs = Date.now() - startTime;
-
-    const responseText = await response.text();
-    debugEntry.response.rawResponseSnippet = responseText.slice(0, 3000);
-
-    if (!response.ok) {
-      debugEntry.error = `HTTP ${response.status}: ${responseText.slice(0, 500)}`;
-      errors.push(`Premium ScrapingBee error for ${source.name}: ${response.status} - ${responseText.slice(0, 500)}`);
+    debugEntry.response.rawResponseSnippet = scraped.body.slice(0, 3000);
+    if (!scraped.ok) {
+      debugEntry.error = scraped.error || `HTTP ${scraped.status}`;
+      errors.push(`Premium scrape error for ${source.name}: ${scraped.error}`);
       return { articles, errors, debugEntry };
     }
 
-    let data: Record<string, unknown>;
-    try {
-      data = JSON.parse(responseText) as Record<string, unknown>;
-    } catch {
-      debugEntry.error = `JSON parse error: ${responseText.slice(0, 200)}`;
-      errors.push(`Premium ScrapingBee JSON parse error for ${source.name}`);
-      return { articles, errors, debugEntry };
-    }
-
-    const extractedArticles = (data.articles as Array<Record<string, unknown>>) || [];
-    const articleText = typeof data.article_text === "string" ? data.article_text : "";
+    const extractedArticles = extractHeadlinesFromHtml(scraped.body, source.domain);
+    const articleText = "";
     debugEntry.response.extractedCount = extractedArticles.length;
 
     for (const item of extractedArticles) {
-      if (!item.headline || !item.link) continue;
+      if (!item.headline || !item.url) continue;
 
-      const headline = typeof item.headline === "string" ? item.headline.trim() : "";
+      const headline = item.headline.trim();
       if (!headline) continue;
 
-      let articleUrl = item.link as string;
-      if (articleUrl && !articleUrl.startsWith("http")) {
-        try {
-          articleUrl = new URL(articleUrl, `https://${source.domain}`).toString();
-        } catch {
-          continue;
-        }
-      }
+      const articleUrl = item.url;
 
-      const summary = typeof item.summary === "string" ? item.summary.trim() : "";
+      const summary = item.summary.trim();
       // Use extracted article_text as enhanced content when available
       const enhancedContent = articleText || summary;
       const combinedText = `${headline} ${summary} ${articleText}`.toLowerCase();
@@ -612,7 +534,7 @@ export async function fetchFromScrapingBeePremium(
         url: articleUrl,
         source: source.name,
         sourceTier: source.tier as SourceTier,
-        publishedAt: item.date ? new Date(item.date as string) : new Date(),
+        publishedAt: new Date(),
         content: enhancedContent.slice(0, 5000),
         region: defaultRegion,
         fetchMethod: "scrapingbee_premium",
@@ -733,6 +655,59 @@ function buildTier1FetchPromises(
   return promises;
 }
 
+
+// ---------------------------------------------------------------------------
+// Deal radar: keyword Google News queries not tied to any subscribed source.
+// Catches SEA-company deals reported by outlets we don't subscribe to (e.g. a
+// Singapore fintech acquired by a US company, covered only by CoinDesk/PYMNTS).
+// ---------------------------------------------------------------------------
+
+export const DEAL_RADAR_SOURCE_NAME = "Deal radar (Google News)";
+
+const DEAL_TERMS = '(acquire OR acquires OR acquired OR acquisition OR "to buy" OR raises OR "Series B" OR "Series C" OR "Series D" OR valuation OR IPO OR "sells stake")';
+const DEAL_RADAR_QUERIES = [
+  `"Singapore-based" ${DEAL_TERMS}`,
+  `("Singapore startup" OR "Singapore fintech" OR "Singapore firm" OR "Singapore company") ${DEAL_TERMS}`,
+  `("Indonesia-based" OR "Jakarta-based" OR "Malaysia-based" OR "Kuala Lumpur-based" OR "Malaysian company" OR "Indonesian startup") ${DEAL_TERMS}`,
+  `("Thailand-based" OR "Bangkok-based" OR "Vietnam-based" OR "Vietnamese startup" OR "Philippines-based" OR "Manila-based" OR "Philippine company") ${DEAL_TERMS}`,
+  `("Hong Kong-based" OR "Taiwan-based" OR "Taiwanese company") ${DEAL_TERMS}`,
+  `("Southeast Asia" OR "Southeast Asian") founder (exit OR acquired OR "sells" OR IPO OR unicorn)`,
+];
+
+export async function fetchFromDealRadar(defaultRegion: string = "Singapore"): Promise<AdapterResult> {
+  const articles: RawArticle[] = [];
+  const errors: string[] = [];
+  const cutoff = new Date(Date.now() - 12 * 60 * 60 * 1000);
+
+  for (const query of DEAL_RADAR_QUERIES) {
+    try {
+      const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query + " when:1d")}&hl=en-SG&gl=SG&ceid=SG:en`;
+      const parsed = await rssParser.parseURL(url);
+      for (const item of parsed.items) {
+        if (!item.title || !item.link) continue;
+        const pubDate = item.pubDate ? new Date(item.pubDate) : null;
+        if (pubDate && pubDate < cutoff) continue;
+        const content = item.contentSnippet || item.content || item.summary || "";
+        // Google News titles end with " - Publisher"; keep the publisher as the source label.
+        const m = item.title.match(/^(.*)\s-\s([^-]+)$/);
+        articles.push({
+          headline: m ? m[1].trim() : item.title,
+          url: item.link,
+          source: m ? `${m[2].trim()} (radar)` : DEAL_RADAR_SOURCE_NAME,
+          sourceTier: "tier2",
+          publishedAt: pubDate ?? new Date(),
+          content: content.slice(0, 2000),
+          region: defaultRegion,
+          fetchMethod: "google_news",
+        });
+      }
+    } catch (error) {
+      errors.push(`Deal radar query failed (${query.slice(0, 40)}…): ${error instanceof Error ? error.message : "Unknown error"}`);
+    }
+  }
+  return { articles, errors };
+}
+
 /**
  * Fetches articles from all active sources using the configured scanning methods.
  *
@@ -824,12 +799,22 @@ export async function fetchAllArticles(
   // ScrapingBee NOT used for article discovery (conserves API credits).
   // It's only used in Stage 5 (scanner.ts) for premium paywall bypass on Tier 1 articles.
 
+  // --- Deal radar: source-independent keyword queries (always on unless disabled) ---
+  let radarCount = 0;
+  if (process.env.DEAL_RADAR_ENABLED !== "false") {
+    const result = await fetchFromDealRadar(options.defaultRegion);
+    radarCount = collectAdapterResult(result, allArticles, allErrors, debugEntries);
+  }
+
   // Build sources searched summary
   const sourcesSearched = activeSources.map(source => ({
     name: source.name,
     tier: source.tier as SourceTier,
     articlesFound: sourceArticleCounts.get(source.name) || 0,
   }));
+  if (process.env.DEAL_RADAR_ENABLED !== "false") {
+    sourcesSearched.push({ name: DEAL_RADAR_SOURCE_NAME, tier: "tier2" as SourceTier, articlesFound: radarCount });
+  }
 
   const dedupedArticles = deduplicateArticles(allArticles);
 

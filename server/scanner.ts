@@ -12,10 +12,12 @@ import { matchesBusinessPrefilter } from "./prefilter";
 import { buildNegativeExamplesBlock } from "./feedback-prompt";
 import { linkLeadFoundersToContacts } from "./contacts";
 import { foundersKeepLead } from "./founder-geo";
+import { shouldAttemptGeoRescue, resolveCompanyHq, hqNote } from "./geo-rescue";
+import { discoverFounders } from "./founder-discovery";
+import { scrapeUrl, extractArticleText } from "./scraper";
 import { log } from "./log";
 import type { InsertLead, PriorityLevel, SourceTier, FetchMethod, SourceSearched, ArticleProcessed, ScrapingBeeDebugEntry, Settings } from "@shared/schema";
 
-const SCRAPINGBEE_API_KEY = process.env.SCRAPINGBEE_API_KEY;
 
 // ============================================================================
 // Pipeline Stages 1-4 (imported from pipeline-stages.ts)
@@ -114,71 +116,31 @@ export async function fetchFullArticleContent(
 ): Promise<FullArticleContentResult> {
   const startTime = Date.now();
 
-  // For Tier 1 sources, use premium ScrapingBee if available
-  if (sourceTier === "tier1" && SCRAPINGBEE_API_KEY) {
-    try {
-      const params = new URLSearchParams({
-        api_key: SCRAPINGBEE_API_KEY,
-        url: article.url,
-        render_js: "true",
-        premium_proxy: "true",
-        block_resources: "false",
-        extract_rules: JSON.stringify({
-          article_text: {
-            selector: "article, .article-body, .story-body, main, .content-body, .article-content",
-            type: "item",
-            output: "text",
-          },
-        }),
-      });
-
-      const response = await fetch(`https://app.scrapingbee.com/api/v1?${params.toString()}`, {
-        method: "GET",
-        headers: { Accept: "application/json" },
-        signal: AbortSignal.timeout(15000),
-      });
-
-      if (!response.ok) {
-        log(
-          `[Pipeline S5] ScrapingBee premium failed (${response.status}), falling back to existing content`,
-          "pipeline"
-        );
-        return buildFallbackResult(article, startTime);
-      }
-
-      const data = await response.json();
-      const fullContent: string = data.article_text || "";
-
-      if (fullContent.length > article.content.length) {
-        const result: FullArticleContentResult = {
-          fullContent,
-          fetchMethod: "scrapingbee_premium",
-          contentLength: fullContent.length,
-        };
-
+  // Fetch the full page through the scraping provider when the snippet is thin
+  // or the source is Tier 1 (paywalled/premium). Deep analysis needs the body:
+  // a 300-char RSS snippet rarely names founders or deal terms.
+  const minChars = parseInt(process.env.SCRAPER_S5_MIN_CHARS || "1500", 10);
+  if (sourceTier === "tier1" || article.content.length < minChars) {
+    const scraped = await scrapeUrl(article.url, { timeoutMs: 20_000 });
+    if (scraped.ok) {
+      const { text } = extractArticleText(scraped.body);
+      if (text.length > article.content.length) {
         logPipelineDecision({
           stage: 5,
           stageName: "Full Article Fetch",
           articleHeadline: article.headline,
-          decision: "PREMIUM FETCH",
-          reason: `Fetched ${fullContent.length} chars via ScrapingBee premium`,
+          decision: "SCRAPED",
+          reason: `Fetched ${text.length} chars via ${scraped.provider}${scraped.cost ? ` (${scraped.cost} credits)` : ""}`,
           confidenceScore: 95,
           durationMs: Date.now() - startTime,
         });
-
-        return result;
+        return { fullContent: text, fetchMethod: "scraped", contentLength: text.length };
       }
-
-      // Premium fetch returned less content than snippet; use existing
-      return buildFallbackResult(article, startTime);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : "Unknown error";
-      log(`[Pipeline S5] Premium fetch error: ${errorMessage}, using existing content`, "pipeline");
-      return buildFallbackResult(article, startTime);
+    } else if (scraped.provider !== "none") {
+      log(`[Pipeline S5] scrape failed (${scraped.error}), falling back to existing content`, "pipeline");
     }
   }
 
-  // For non-Tier 1 sources or when ScrapingBee is unavailable
   return buildFallbackResult(article, startTime);
 }
 
@@ -272,6 +234,12 @@ independent qualifying anchor in HK or Taiwan or another Target Region.
 PRIORITY SCORING:
 - 80-100 (HIGH): Clear liquidity event with a named individual. IPO filing,
   acquisition with disclosed price, Series D+ / late-stage raise >$100M, confirmed exit.
+- ACQUISITION OF A PRIVATE TARGET-REGION COMPANY = a liquidity event for its
+  founders and shareholders BY DEFINITION. Do NOT require the article to say
+  explicitly that a person "gains wealth". If the target is private and in a
+  Target Region: named founder/CEO of the target + disclosed price ⇒ 85+;
+  named founder/CEO, price undisclosed ⇒ 70-80; no individual named ⇒ 55-65
+  (founders will be identified in enrichment — still worth a banker's look).
 - 50-79 (MEDIUM): Likely liquidity event, details missing. IPO rumors, M&A talks,
   Series C, unicorn milestone with named founders.
 - 20-49 (LOW): Tangential — possible future liquidity. Ignore Series A/B.
@@ -297,8 +265,14 @@ WORKED EXAMPLE — "Richard Li-backed bolttech in talks to acquire MoneyHero for
   priorityScore 75, wealthAngle "Richard Li (billionaire backer of bolttech) positioned
   to realize returns from the reported US$200M MoneyHero acquisition."
 
+SUBJECT COMPANY: in an acquisition ("A acquires / buys B") the subject company is
+ALWAYS the TARGET B — its founders and shareholders receive the liquidity. The
+acquirer's HQ and founders are irrelevant. In a funding round or IPO the subject
+is the company raising / listing, never its investors.
+
 Required structured output:
-- hqLocation       : "City, Country" of the subject company HQ, or null if unclear.
+- hqLocation       : "City, Country" of the SUBJECT company HQ (the acquisition
+                     target / fundraiser), or null if unclear.
 - founderLocations : array of {"name": "...", "location": "City, Country | null"} for
                      each named founder. Use null when location is not stated.
 - seaEvidenceType  : one of "company_hq" | "founder_base" | "founder_roots"
@@ -315,9 +289,9 @@ Required structured output:
 
 Extract and return JSON:
 {
-  "companyNames": ["array of all companies mentioned"],
-  "primaryCompany": "the main company this article is about",
-  "founderNames": ["founders, key people, AND named billionaire investors/backers with ACTUAL NAMES. Include people described as 'backers'/'investors'/'X-backed' even if not the founder, e.g. 'Richard Li-backed bolttech' -> include 'Richard Li'. Empty array if no names."],
+  "companyNames": ["SUBJECT company FIRST (acquisition target / fundraiser), then the acquirer/investors. Do NOT include publishers or companies only mentioned in passing"],
+  "primaryCompany": "the SUBJECT company (acquisition target / fundraiser), never the acquirer or investor",
+  "founderNames": ["SUBJECT company's founders/CEO/shareholders ONLY (they receive the liquidity). Executives of the ACQUIRER or of investors are NOT founders — omit them entirely, even if quoted. Also named billionaire investors/backers with ACTUAL NAMES. Include people described as 'backers'/'investors'/'X-backed' even if not the founder, e.g. 'Richard Li-backed bolttech' -> include 'Richard Li'. Empty array if no names."],
   "investors": ["array of investors mentioned — include anyone described as backer, supporter, or financier"],
   "summary": "1-2 sentence summary of what happened",
   "keyFinancials": {
@@ -664,13 +638,35 @@ async function processArticle(
 
   try {
     // --- Stage 1: Interest Filter (cheap 256-token call) ---
-    const interestResult = await passesInterestFilter(article, filterPrompt, settings.regions);
+    let interestResult = await passesInterestFilter(article, filterPrompt, settings.regions);
+    let verifiedNote: string | null = null;
+    if (!interestResult.passes && shouldAttemptGeoRescue(article, interestResult.reason)) {
+      // --- Stage 1b: Geography rescue. S1 only sees the snippet, so a SEA
+      // company whose HQ isn't stated there gets rejected as "non-SEA". For
+      // deal-shaped articles, verify the subject company's HQ before giving up.
+      const probe = await extractPrimaryCompany(article);
+      if (probe.companyName) {
+        const hq = await resolveCompanyHq(probe.companyName);
+        if (hq.isSea) {
+          verifiedNote = hqNote(hq);
+          interestResult = {
+            passes: true,
+            reason: `hq_verified (${hq.resolvedVia}): ${probe.companyName} — ${[hq.hqCity, hq.hqCountry].filter(Boolean).join(", ") || hq.founderBase}; S1 had said: ${interestResult.reason}`,
+            confidenceScore: hq.confidence,
+          };
+          log(`[Pipeline S1b] RESCUED "${article.headline}" — ${verifiedNote}`, "pipeline");
+        } else {
+          log(`[Pipeline S1b] no rescue for ${probe.companyName} (${hq.resolvedVia}: ${hq.hqCountry ?? "unknown"})`, "pipeline");
+        }
+      }
+    }
     if (!interestResult.passes) {
       return {
         processed: { ...base, status: "skipped", reason: `S1 Interest filter: ${interestResult.reason}` },
         bump: "interestFiltered",
       };
     }
+    if (verifiedNote) article = { ...article, content: `${verifiedNote} ${article.content}` };
 
     // --- Stage 2: Extract Primary Company ---
     const companyResult = await extractPrimaryCompany(article);
@@ -712,12 +708,27 @@ async function processArticle(
     // --- Stage 5: Full Article Content (Tier 1 only, uses ScrapingBee) ---
     const sourceTier = article.sourceTier || "tier3";
     const contentResult = await fetchFullArticleContent(article, sourceTier as SourceTier);
-    const fullContent = contentResult.fullContent;
+    const fullContent = verifiedNote ? `${verifiedNote} ${contentResult.fullContent}` : contentResult.fullContent;
 
     // --- Stage 6: Deep Analysis ---
     const deepResult = await deepAnalyzeArticle(article, fullContent, settings.regions);
     if (!deepResult) {
       return { processed: { ...base, status: "skipped", reason: "S6 Deep analysis rejected (not relevant or error)" } };
+    }
+
+    // --- Stage 6a: Founder discovery. Wire stories about an acquisition often
+    // name only the acquirer's people; the target's founders are the lead.
+    // Runs for every medium+ lead: the model often names whoever is quoted
+    // (an acquirer exec) rather than the target's founders. Discovered founders
+    // go first; names the article gave are kept after them.
+    if ((deepResult.leadData.priorityScore ?? 0) >= 50) {
+      const found = await discoverFounders(companyName, article.region || settings.regions[0] || null);
+      if (found.length > 0) {
+        const existing = (deepResult.leadData.founderNames || []).filter((n) => !found.some((f) => f.name.toLowerCase() === n.toLowerCase()));
+        deepResult.leadData.founderNames = [...found.map((f) => f.name), ...existing];
+        const roles = found.map((f) => `${f.name}${f.role ? ` (${f.role})` : ""}${f.location ? `, ${f.location}` : ""}`).join("; ");
+        deepResult.leadData.aiSummary = `${deepResult.leadData.aiSummary || ""} ${companyName} founders (web-identified): ${roles}.`.trim();
+      }
     }
 
     // --- Stage 6b: Founder geography (ask the model where the person lives) ---
@@ -756,6 +767,9 @@ async function processArticle(
     // --- Save lead with enrichment data ---
     const lead = {
       ...deepResult.leadData,
+      keyFinancials: deepResult.keyFinancials,
+      wealthAngle: deepResult.wealthAngle || null,
+      seaConnection: deepResult.seaConnection || null,
       founderLinkedInUrl: enrichResult?.founderLinkedInUrl || null,
       founderBio: enrichResult?.founderBio || null,
       companyDescription: enrichResult?.companyDescription || null,
@@ -790,6 +804,62 @@ async function processArticle(
       error: `Error processing "${article.headline}": ${errorMessage}`,
     };
   }
+}
+
+/**
+ * Push one article URL through the full pipeline on demand (e.g. a deal Billy
+ * saw elsewhere). Fetches the page, extracts title + body, and runs the same
+ * processArticle as a scan. Returns the outcome so the caller sees why an
+ * article was rejected, if it was.
+ */
+export async function ingestArticleUrl(url: string): Promise<{ outcome: ArticleProcessed; leadId?: string }> {
+  const settings = await storage.getSettings();
+  if (!settings) throw new Error("Settings not configured");
+
+  // Direct fetch first (free); scraping provider when the site blocks bots
+  // (CoinDesk 429s plain fetches) or renders client-side (Tech in Asia).
+  let html = "";
+  let via = "direct";
+  try {
+    const res = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36", Accept: "text/html" },
+      redirect: "follow",
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (res.ok) html = await res.text();
+  } catch { /* fall through to scraper */ }
+  let extracted = html ? extractArticleText(html) : { title: "", text: "", publishedAt: null };
+  if (!extracted.title || extracted.text.length < 200) {
+    const scraped = await scrapeUrl(url, { timeoutMs: 30_000 });
+    if (scraped.ok) { extracted = extractArticleText(scraped.body); via = scraped.provider; }
+    if (!extracted.title || extracted.text.length < 200) {
+      const rendered = await scrapeUrl(url, { render: true, timeoutMs: 60_000 });
+      if (rendered.ok) { extracted = extractArticleText(rendered.body); via = `${rendered.provider}+render`; }
+    }
+  }
+  const headline = extracted.title;
+  const content = extracted.text.slice(0, 8000);
+  if (!headline || content.length < 200) throw new Error("Could not extract article text from page (direct fetch and scraper both failed)");
+  log(`[Ingest] fetched ${url} via ${via} (${content.length} chars)`, "pipeline");
+  const published = extracted.publishedAt;
+  const article: RawArticle = {
+    headline,
+    url,
+    source: `${new URL(url).hostname.replace(/^www\./, "")} (manual)`,
+    sourceTier: "tier2",
+    publishedAt: published ? new Date(published) : new Date(),
+    content,
+    region: settings.regions[0] || "Singapore",
+    fetchMethod: "rss",
+  };
+
+  const filterPrompt = (settings.interestFilterPrompt || DEFAULT_INTEREST_FILTER_PROMPT) + await buildNegativeExamplesBlock("news");
+  const outcome = await processArticle(article, filterPrompt, settings);
+  await storage.recordScannedUrl(url, article.source).catch(() => {});
+  if (outcome.error) throw new Error(outcome.error);
+  const created = outcome.lead ? await storage.getLeadByUrl(url) : undefined;
+  log(`[Ingest] ${url} → ${outcome.processed.status}: ${outcome.processed.reason}`, "pipeline");
+  return { outcome: outcome.processed, leadId: created?.id };
 }
 
 export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: number; matchesFound: number; newLeads: number; duplicatesSkipped: number; scanId: string }> {

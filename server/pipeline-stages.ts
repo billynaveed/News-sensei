@@ -240,10 +240,13 @@ CRITICAL RULES:
   - "Digital Bank Maya" → "Maya" (also known as PayMaya, Voyager Innovations)
   - "Grab Holdings" or "Grab" → "Grab"
   - "GoTo Group" or "Gojek Tokopedia" → "GoTo"
-- If multiple companies are mentioned in an M&A context (A acquires B), the PRIMARY company is whichever is more relevant as a lead (usually the one being acquired/IPO-ing/raising funds).
+- ACQUISITIONS: when "A acquires / buys / agrees to acquire B", the PRIMARY company is ALWAYS B (the target being acquired) — its founders and shareholders are the ones receiving the liquidity. NEVER return the acquirer, even if the headline leads with the acquirer's name.
+  - "Circle agrees to buy Tazapay for $400M" → "Tazapay"
+  - "Grab to acquire Jaya Grocer" → "Jaya Grocer"
+- FUNDING / IPO: the company raising money or listing is the primary company, not its investors.
 
 Headline: ${article.headline}
-Content: ${article.content.slice(0, 300)}
+Content: ${article.content.slice(0, 500)}
 
 Return JSON: { "companyName": "string or null", "confidenceScore": 0-100 }`;
 
