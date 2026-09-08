@@ -104,16 +104,18 @@ auto-blocks. Every researched relationship stores its source URL + confidence.
 settings with reference articles; 4 schema consolidation — do it via one-time ownership reassign
 (local Postgres, superuser available) rather than migrations; 5-8 approved as proposed.
 
-### Phase D-lite — DB ownership (unblocks everything else)
+### Phase D — DB ownership + schema consolidation ✅ 2026-09-08
 - [x] Ownership: all 54 public tables + sequences now owned by newsuser (ALTER TABLE per table;
   REASSIGN OWNED failed because postgres is the bootstrap role). Done 2026-09-08.
 - [x] Drift inspected via information_schema (drizzle-kit pull is broken in this install):
   `db:push` would DROP 27 legacy tables (v1 `leads` 1632 rows, `saved_leads` 2, `contacts` 10,
   `*_v2` draft tables, lifestyle_leads, publications, scrape_log, …) and 6 unused columns on
   leads_v2 (analyzed_by_model, article_id, banker_angle, event_type, relevance_score, source_id).
-- [ ] DECISION FOR BILLY: archive (pg_dump) + drop the 27 legacy tables so `db:push` becomes the
-  single schema mechanism? Until then new tables still use the ensure-table pattern
-  (pipeline_examples added that way).
+- [x] Billy OK'd 2026-09-08: 27 legacy tables dumped to
+  /root/backups/sensei/legacy-tables-20260908-2050.sql.gz (2.3 MB) and dropped. Unique
+  constraints renamed to Drizzle naming, missing FKs/indexes added; `npm run db:push` is now a
+  clean no-op and the schema mechanism going forward. The 6 live leads_v2 columns were kept
+  (they hold data) and added to schema.ts. ensure-*-table.ts files can be retired one by one.
 
 ### Phase A — Health + alerting ✅ deployed 2026-09-08 20:09 UTC
 - [x] `server/health.ts`: checks for DB, LLM gateway (last call ok/err via openai-client wrapper),
