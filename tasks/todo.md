@@ -115,36 +115,37 @@ settings with reference articles; 4 schema consolidation — do it via one-time 
   single schema mechanism? Until then new tables still use the ensure-table pattern
   (pipeline_examples added that way).
 
-### Phase A — Health + alerting (subagent)
-- [ ] `server/health.ts`: checks for DB, LLM gateway (last call ok/err via openai-client wrapper),
+### Phase A — Health + alerting ✅ deployed 2026-09-08 20:09 UTC
+- [x] `server/health.ts`: checks for DB, LLM gateway (last call ok/err via openai-client wrapper),
   scraper credits, web-search quota, last scan age/errors, Stage-6 parse failures, family worker,
   Telegram send. Each: ok | warn | error + message. `GET /api/health`.
-- [ ] `server/health-monitor.ts`: cron every 15 min; Telegram on transition to warn/error (re-ping
+- [x] `server/health-monitor.ts`: cron every 15 min; Telegram on transition to warn/error (re-ping
   after 6h if still bad; recovery message); daily 08:00 SGT digest.
-- [ ] UI: header banner (red/amber → /debug) + Debug "System health" card replacing Integrations.
+- [x] UI: header banner (red/amber → /debug) + Debug "System health" card replacing Integrations.
 
-### Phase B — Learning loop (me)
+### Phase B — Learning loop ✅ deployed 2026-09-08 20:09 UTC
 - [x] `pipeline_examples` table + server/pipeline-examples.ts (list/upsert/delete/summary/run)
 - [x] GET /api/pipeline/funnel (per stage + reason with samples), examples CRUD endpoints
-- [x] client/src/components/RejectionFunnel.tsx: funnel bars, "Should pass" / "Should reject" /
-  re-run per article, "What Sensei has been taught" list — still to be mounted in debug.tsx
+- [x] client/src/components/RejectionFunnel.tsx mounted on Debug: funnel bars, "Should pass" /
+  "Should reject" / re-run per article, "What Sensei has been taught" with re-check-all
 - [x] Prompts learn: feedback-prompt.ts now emits negatives + positives (flagged misses + last 5
   saved leads) under the existing export, so every scan's S1 prompt carries both
-- [ ] scanner.ts: `url` on ArticleProcessed entries + dryRun mode for the nightly examples run
-  (blocked until the refactor subagent releases scanner.ts)
-- [ ] Nightly examples cron + pass rate in the daily digest
+- [x] scanner.ts: `url` on ArticleProcessed entries + dryRun mode (skips dedup gates, never persists)
+- [x] Nightly examples cron (examples-cron.ts, 03:30 SGT) + POST /api/pipeline/examples/run; pass
+  rate on the Debug page ("What Sensei has been taught"). Digest line for it: TODO
 
-### Phase E — Refactor + deletions (subagent)
-- [ ] `callJsonStage()` helper replacing the repeated OpenAI JSON boilerplate (stages 1-4, 6,
-  geo-rescue, founder-discovery, family-research)
-- [ ] Delete: SendGrid path, Ollama client, paused lifestyle cron flag noise, dead exports
+### Phase E — Refactor + deletions ✅ (partial, see notes)
+- [x] `callJsonStage()` (server/llm-json.ts) replaces 12 call sites; 6 remain (telegram-commands,
+  lifestyle-scanner ×2, backfill-lifestyle-geo ×2, ipo-scanner needs a systemPrompt option)
+- [x] Deleted: Ollama client, gpt-4o-mini reprocess script, knowledge-only enrichers.
+  SendGrid still wired via routes.ts + settings — remove in a follow-up with the Settings UI
 
 ### Phase C — Prompts in settings (after A/B/D)
 - [ ] `pipeline_prompts` + versions; Settings editor with "test against examples"
 
 ### Phase F — Budgets + UX
 - [x] web-search.ts: `priority: "background"` draws from SEARCH_BACKGROUND_DAILY_CAP (120/day);
-  live calls never wait. family-research.ts still to be switched to background (file locked by refactor)
+  live calls never wait; family-research.ts searches are "background"
 - [x] Feed sort: priority band (high/med/low) then newest — a week-old 90 no longer pins above today's 85
 - [x] Radar duplicates already collapse on the dashboard (existing bestLeadIds dedup); deal value +
   wealth angle already render on the card — they were just never persisted until today
