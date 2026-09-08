@@ -28,6 +28,8 @@ import {
   Ban,
   Building2,
   DollarSign,
+  ExternalLink,
+  GitMerge,
   Loader2,
   MapPin,
   Plus,
@@ -72,11 +74,45 @@ type FamilyDetail = {
     description: string | null;
     netWorthEstimate: string | null;
     researchStatus: string;
+    /** "medium" or "low: only 1 member found" — level, optionally with a reason. */
+    confidence: string | null;
+    researchedAt: string | null;
     sourceUrls: string[] | null;
   };
   members: Member[];
   relationships: Relationship[];
 };
+
+/** Family summary shape used by the "merge into another family" picker. */
+type FamilyOption = {
+  id: string;
+  name: string;
+  country: string | null;
+  memberCount: number;
+};
+
+const CONFIDENCE_BADGES: Record<string, string> = {
+  high: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20",
+  medium: "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20",
+  low: "bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/20",
+  error: "bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20",
+};
+
+/** `families.confidence` packs the level and the review reason into one field. */
+function splitConfidence(raw: string | null): { level: string | null; note: string | null } {
+  if (!raw) return { level: null, note: null };
+  const i = raw.indexOf(":");
+  if (i < 0) return { level: raw.trim().toLowerCase(), note: null };
+  return { level: raw.slice(0, i).trim().toLowerCase(), note: raw.slice(i + 1).trim() || null };
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+}
 
 type RelationKind = "none" | "child_of" | "parent_of" | "spouse_of" | "sibling_of";
 
@@ -259,7 +295,10 @@ export default function FamilyDetailPage() {
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [addOpen, setAddOpen] = useState(false);
+  const [mergeOpen, setMergeOpen] = useState(false);
   const [blockTargetId, setBlockTargetId] = useState<number | null>(null);
+  const [mergePersonId, setMergePersonId] = useState<number | null>(null);
+  const confidence = splitConfidence(detail?.family.confidence ?? null);
 
   const layout = useMemo(
     () => (detail ? computeGenerations(detail.members, detail.relationships) : null),
@@ -359,6 +398,7 @@ export default function FamilyDetailPage() {
 
   const selected = detail?.members.find((m) => m.id === selectedId) ?? null;
   const blockTarget = detail?.members.find((m) => m.id === blockTargetId) ?? null;
+  const mergePerson = detail?.members.find((m) => m.id === mergePersonId) ?? null;
 
   if (isLoading || !detail) {
     return (
@@ -381,12 +421,52 @@ export default function FamilyDetailPage() {
             {[detail.family.country, detail.family.netWorthEstimate].filter(Boolean).join(" · ")}
           </div>
           {detail.family.description && (
-            <p className="text-sm text-muted-foreground mt-1 max-w-2xl">{detail.family.description}</p>
+            <p className="text-sm text-muted-foreground mt-1 max-w-2xl" data-testid="text-family-description">
+              {detail.family.description}
+            </p>
+          )}
+          <div className="flex flex-wrap items-center gap-1.5 mt-2">
+            {confidence.level && (
+              <Badge variant="outline" className={CONFIDENCE_BADGES[confidence.level] ?? ""} data-testid="badge-family-confidence">
+                confidence {confidence.level}
+              </Badge>
+            )}
+            {confidence.note && (
+              <span className="text-xs text-orange-600 dark:text-orange-400">{confidence.note}</span>
+            )}
+            {detail.family.researchedAt && (
+              <span className="text-xs text-muted-foreground">
+                researched {new Date(detail.family.researchedAt).toLocaleDateString()}
+              </span>
+            )}
+          </div>
+          {(detail.family.sourceUrls?.length ?? 0) > 0 && (
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1.5" data-testid="family-sources">
+              <span className="text-xs text-muted-foreground uppercase tracking-wide font-medium">
+                Sources
+              </span>
+              {detail.family.sourceUrls!.map((url) => (
+                <a
+                  key={url}
+                  href={url}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  title={url}
+                  className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 inline-flex items-center gap-0.5"
+                >
+                  {hostOf(url)}
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              ))}
+            </div>
           )}
         </div>
         <div className="flex gap-2">
           <Button onClick={() => setAddOpen(true)} data-testid="button-add-member">
             <UserPlus className="h-4 w-4 mr-1.5" /> Add member
+          </Button>
+          <Button variant="outline" onClick={() => setMergeOpen(true)} data-testid="button-merge-family">
+            <GitMerge className="h-4 w-4 mr-1.5" /> Merge into…
           </Button>
           <Button
             variant="ghost"
@@ -489,6 +569,7 @@ export default function FamilyDetailPage() {
               detail={detail}
               familyId={familyId}
               onBlock={() => setBlockTargetId(selected.id)}
+              onMerge={() => setMergePersonId(selected.id)}
               onUnblock={() => unblockMutation.mutate(selected.id)}
               unblockPending={unblockMutation.isPending}
               onRemove={() => {
@@ -521,6 +602,30 @@ export default function FamilyDetailPage() {
           }}
         />
       )}
+
+      <MergeFamilyDialog
+        open={mergeOpen}
+        onOpenChange={setMergeOpen}
+        family={detail.family}
+        onMerged={(targetId) => {
+          setMergeOpen(false);
+          queryClient.invalidateQueries({ queryKey: ["/api/families"] });
+          navigate(`/families/${targetId}`);
+        }}
+      />
+
+      {mergePerson && (
+        <MergePersonDialog
+          member={mergePerson}
+          members={detail.members}
+          onOpenChange={(o) => !o && setMergePersonId(null)}
+          onMerged={() => {
+            setMergePersonId(null);
+            setSelectedId(null);
+            invalidate();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -531,6 +636,7 @@ function PersonPanel({
   detail,
   familyId,
   onBlock,
+  onMerge,
   onUnblock,
   unblockPending,
   onRemove,
@@ -540,6 +646,7 @@ function PersonPanel({
   detail: FamilyDetail;
   familyId: string;
   onBlock: () => void;
+  onMerge: () => void;
   onUnblock: () => void;
   unblockPending: boolean;
   onRemove: () => void;
@@ -622,6 +729,11 @@ function PersonPanel({
             <span className="inline-flex items-center gap-1"><DollarSign className="h-3.5 w-3.5" />{member.netWorthEstimate}</span>
           )}
         </div>
+        {(member.aliases?.length ?? 0) > 0 && (
+          <div className="text-xs text-muted-foreground" data-testid="text-person-aliases">
+            Also known as: {member.aliases!.join(", ")}
+          </div>
+        )}
         {member.bio && <p className="text-muted-foreground line-clamp-4">{member.bio}</p>}
 
         <div>
@@ -632,13 +744,38 @@ function PersonPanel({
           <div className="space-y-1">
             {rels.map(({ rel, other, label }) => (
               <div key={rel.id} className="flex items-center justify-between gap-2 rounded border border-border px-2 py-1">
-                <span>
+                <span className="min-w-0">
                   <span className="text-muted-foreground">{label}</span> <span className="font-medium">{other!.fullName}</span>
+                  {/* Provenance: how sure the researcher was and what it read. */}
+                  {rel.confidence && rel.confidence !== "manual" && (
+                    <Badge
+                      variant="outline"
+                      className={`ml-1.5 text-[10px] px-1 py-0 ${CONFIDENCE_BADGES[rel.confidence] ?? ""}`}
+                      title={`Researcher confidence: ${rel.confidence}`}
+                    >
+                      {rel.confidence}
+                    </Badge>
+                  )}
+                  {rel.confidence === "manual" && (
+                    <span className="ml-1.5 text-[10px] text-muted-foreground">added by hand</span>
+                  )}
+                  {rel.sourceUrl && (
+                    <a
+                      href={rel.sourceUrl}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      title={rel.sourceUrl}
+                      className="ml-1.5 text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 inline-flex items-center gap-0.5"
+                    >
+                      {hostOf(rel.sourceUrl)}
+                      <ExternalLink className="h-3 w-3" />
+                    </a>
+                  )}
                 </span>
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="h-6 w-6"
+                  className="h-6 w-6 shrink-0"
                   onClick={() => deleteRelMutation.mutate(rel.id)}
                 >
                   <X className="h-3 w-3" />
@@ -683,9 +820,19 @@ function PersonPanel({
         </div>
       </div>
 
-      <DialogFooter className="flex-row justify-between sm:justify-between gap-2">
+      <DialogFooter className="flex-row flex-wrap justify-between sm:justify-between gap-2">
         <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={onRemove}>
           <Trash2 className="h-3.5 w-3.5 mr-1" /> Remove from family
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="text-muted-foreground"
+          onClick={onMerge}
+          disabled={detail.members.length < 2}
+          data-testid="button-merge-person"
+        >
+          <GitMerge className="h-3.5 w-3.5 mr-1" /> Merge into…
         </Button>
         {member.blocked ? (
           <Button variant="outline" size="sm" onClick={onUnblock} disabled={unblockPending} data-testid="button-unblock">
@@ -907,6 +1054,195 @@ function BlockDialog({
             Block {1 + selectedCount} {1 + selectedCount === 1 ? "person" : "people"}
           </Button>
         </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
+/**
+ * Fold this family into another one — the seeder produced duplicates like
+ * "Kwek family" and "Kwek Leng Beng family". Members and relationships move to
+ * the target (duplicates skipped) and this family is deleted.
+ */
+function MergeFamilyDialog({
+  open,
+  onOpenChange,
+  family,
+  onMerged,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  family: FamilyDetail["family"];
+  onMerged: (targetId: string) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const [targetId, setTargetId] = useState<string | null>(null);
+
+  const { data: allFamilies, isLoading } = useQuery<FamilyOption[]>({
+    queryKey: ["/api/families"],
+    enabled: open,
+  });
+
+  const matches = useMemo(() => {
+    const q = search.toLowerCase().trim();
+    const others = (allFamilies ?? []).filter((f) => f.id !== family.id);
+    const pool = q
+      ? others.filter((f) => f.name.toLowerCase().includes(q) || (f.country ?? "").toLowerCase().includes(q))
+      : // Default to the likely duplicates: same country, sharing a surname token.
+        others.filter(
+          (f) =>
+            f.country === family.country &&
+            family.name
+              .toLowerCase()
+              .split(/\s+/)
+              .filter((t) => t.length > 2 && t !== "family")
+              .some((t) => f.name.toLowerCase().includes(t)),
+        );
+    return pool.slice(0, 25);
+  }, [allFamilies, search, family]);
+
+  const target = (allFamilies ?? []).find((f) => f.id === targetId) ?? null;
+
+  const mergeMutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest("POST", `/api/families/${family.id}/merge`, { targetId });
+    },
+    onSuccess: () => {
+      if (targetId) onMerged(targetId);
+    },
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o) { setSearch(""); setTargetId(null); } onOpenChange(o); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <GitMerge className="h-4 w-4" /> Merge "{family.name}" into another family
+          </DialogTitle>
+          <DialogDescription>
+            Members and relationships move to the family you pick (duplicates are skipped), then "{family.name}" is
+            deleted. People and their block status are kept.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-2">
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search families…"
+            data-testid="input-merge-family-search"
+          />
+          <div className="max-h-64 overflow-y-auto rounded border border-border divide-y divide-border">
+            {isLoading ? (
+              <div className="p-3 text-sm text-muted-foreground">Loading…</div>
+            ) : matches.length === 0 ? (
+              <div className="p-3 text-sm text-muted-foreground">
+                {search ? "No families match." : "No likely duplicates — search by name."}
+              </div>
+            ) : (
+              matches.map((f) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  onClick={() => setTargetId(f.id)}
+                  className={`w-full text-left px-3 py-2 text-sm hover:bg-muted/60 flex items-center justify-between gap-2 ${
+                    targetId === f.id ? "bg-muted" : ""
+                  }`}
+                  data-testid={`option-merge-family-${f.id}`}
+                >
+                  <span className="min-w-0 truncate">
+                    <span className="font-medium">{f.name}</span>
+                    {f.country && <span className="text-muted-foreground"> · {f.country}</span>}
+                  </span>
+                  <Badge variant="secondary" className="shrink-0">{f.memberCount}</Badge>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+        <DialogFooter>
+          <Button
+            onClick={() => mergeMutation.mutate()}
+            disabled={!targetId || mergeMutation.isPending}
+            data-testid="button-merge-family-confirm"
+          >
+            {mergeMutation.isPending && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
+            {target ? `Merge into ${target.name}` : "Merge"}
+          </Button>
+        </DialogFooter>
+        {mergeMutation.isError && (
+          <p className="text-xs text-red-600 dark:text-red-400">{(mergeMutation.error as Error).message}</p>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
+/**
+ * Two members are the same person under variant spellings ("Kwek Leng Beng" /
+ * "Leng Beng Kwek"). The person shown here is the duplicate: their memberships,
+ * relationships and blocks move to whoever is picked, and their spelling is
+ * kept as an alias on the survivor.
+ */
+function MergePersonDialog({
+  member,
+  members,
+  onOpenChange,
+  onMerged,
+}: {
+  member: Member;
+  members: Member[];
+  onOpenChange: (o: boolean) => void;
+  onMerged: () => void;
+}) {
+  const [targetId, setTargetId] = useState<string>("");
+  const others = members.filter((m) => m.id !== member.id);
+  const target = others.find((m) => String(m.id) === targetId) ?? null;
+
+  const mergeMutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest("POST", `/api/persons/${member.id}/merge`, { targetPersonId: parseInt(targetId, 10) });
+    },
+    onSuccess: onMerged,
+  });
+
+  return (
+    <Dialog open onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <GitMerge className="h-4 w-4" /> Merge {member.fullName} into…
+          </DialogTitle>
+          <DialogDescription>
+            Use this when the same person appears twice under different spellings. "{member.fullName}" is kept as an
+            alias on the person you pick, and their relationships and blocks move across.
+          </DialogDescription>
+        </DialogHeader>
+        <Select value={targetId} onValueChange={setTargetId}>
+          <SelectTrigger data-testid="select-merge-person-target">
+            <SelectValue placeholder="Keep this person…" />
+          </SelectTrigger>
+          <SelectContent>
+            {others.map((m) => (
+              <SelectItem key={m.id} value={String(m.id)}>{m.fullName}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <DialogFooter>
+          <Button
+            variant="destructive"
+            onClick={() => mergeMutation.mutate()}
+            disabled={!targetId || mergeMutation.isPending}
+            data-testid="button-merge-person-confirm"
+          >
+            {mergeMutation.isPending && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
+            {target ? `Keep ${target.fullName}` : "Merge"}
+          </Button>
+        </DialogFooter>
+        {mergeMutation.isError && (
+          <p className="text-xs text-red-600 dark:text-red-400">{(mergeMutation.error as Error).message}</p>
+        )}
       </DialogContent>
     </Dialog>
   );

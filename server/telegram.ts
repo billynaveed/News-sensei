@@ -1,4 +1,7 @@
-import type { Lead } from "@shared/schema";
+import { inArray, sql } from "drizzle-orm";
+import { people, type Lead } from "@shared/schema";
+import { db } from "./db";
+import { buildLeadAlertMessage, buildLeadKeyboard, founderKey } from "./telegram-formatter";
 
 const TELEGRAM_API = 'https://api.telegram.org/bot';
 
@@ -97,39 +100,55 @@ You will receive messages like this when new high-priority leads are found match
   await sendTelegramMessage(chatId, message, 'HTML', undefined, messageThreadId);
 }
 
-const escHtml = (v: unknown) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+/**
+ * Looks up a known city for each founder named across a batch of leads.
+ *
+ * The pipeline only enriches the primary founder's residence onto the lead
+ * itself, but `people.city` accumulates locations from every past mention, so
+ * one query fills in the co-founders too. Best-effort: a lookup failure must
+ * never hold up an alert, so the caller just gets fewer cities.
+ *
+ * @param leads - The leads about to be sent
+ * @returns Lower-cased founder name → city, for the names that have one
+ */
+async function lookupFounderCities(leads: Lead[]): Promise<Record<string, string>> {
+  const names = Array.from(
+    new Set(leads.flatMap((lead) => (lead.founderNames || []).map(founderKey).filter((n) => n.length >= 2))),
+  );
+  if (names.length === 0) return {};
+
+  try {
+    const rows = await db
+      .select({ fullName: people.fullName, city: people.city })
+      .from(people)
+      .where(inArray(sql<string>`lower(${people.fullName})`, names))
+      .limit(200);
+
+    const cities: Record<string, string> = {};
+    for (const row of rows) {
+      const city = (row.city || "").trim();
+      if (city) cities[founderKey(row.fullName)] = city;
+    }
+    return cities;
+  } catch (error) {
+    console.error('[Telegram] founder city lookup failed:', error instanceof Error ? error.message : error);
+    return {};
+  }
+}
 
 export async function sendLeadAlertTelegram(chatId: string, leads: Lead[], messageThreadId?: number | null): Promise<void> {
   // Send header message
   const header = `<b>🔔 ${leads.length} New Lead${leads.length > 1 ? 's' : ''} Found</b>\n\n`;
   await sendTelegramMessage(chatId, header, 'HTML', undefined, messageThreadId);
 
+  const founderCities = await lookupFounderCities(leads);
+
   // Send each lead as a separate message with action buttons. One bad lead
   // (unescaped HTML, over-long summary, transient 4xx) must not stop the rest.
   let failed = 0;
   for (const lead of leads) {
-    const priorityIcon = lead.priorityLevel === 'high' ? '🔴' : lead.priorityLevel === 'medium' ? '🟡' : '🟢';
-    const summary = (lead.aiSummary || "").length > 1200 ? `${(lead.aiSummary || "").slice(0, 1200)}…` : (lead.aiSummary || "");
-    const deal = (lead as any).keyFinancials?.dealValue || (lead as any).keyFinancials?.fundingAmount || null;
-    const message = `${priorityIcon} <b>${escHtml(lead.headline)}</b>
-
-<i>Companies:</i> ${escHtml((lead.companyNames || []).join(', '))}
-<i>People:</i> ${escHtml((lead.founderNames || []).join(', ') || 'N/A')}
-<i>Region:</i> ${escHtml(lead.region)} | <b>Score: ${lead.priorityScore}</b>${deal ? ` | <b>${escHtml(deal)}</b>` : ''}
-
-${escHtml(summary)}
-
-<a href="${escHtml(lead.sourceUrl)}">Read full article →</a>`;
-
-    // Add inline keyboard with action buttons
-    const keyboard = {
-      inline_keyboard: [
-        [
-          { text: "💾 Save", callback_data: `lead_save_${lead.id}` },
-          { text: "🗑️ Dismiss", callback_data: `lead_dismiss_${lead.id}` }
-        ]
-      ]
-    };
+    const message = buildLeadAlertMessage(lead, { founderCities });
+    const keyboard = buildLeadKeyboard(lead.id);
 
     try {
       await sendTelegramMessage(chatId, message, 'HTML', keyboard, messageThreadId);

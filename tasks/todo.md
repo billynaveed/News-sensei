@@ -97,6 +97,22 @@ auto-blocks. Every researched relationship stores its source URL + confidence.
 
 ---
 
+## Program 2 (approved by Billy 2026-09-08 evening) — running as 4 parallel workstreams
+
+Billy's answers: 1 family review queue OK · 2 leads↔families/contacts OK · 3 Telegram as the
+phone product YES · 4 prompts in Settings YES · 5 Tavily fixed by Billy (he asked why so many
+searches: 763 of ~1067 since Sep 1 were the family worker at 6/family; now 4/family + cache) ·
+6 person page/history YES · 7 weekly "what I learned" note YES · 8 hygiene OK.
+
+- [ ] **T — Telegram + weekly note** (server/telegram*.ts, health-monitor.ts, weekly-note.ts)
+- [ ] **F — Family review queue** (families.ts, family-research.ts, routes-families.ts, families UI)
+- [ ] **P — Prompts in Settings** (schema pipeline_prompts, prompts.ts, routes-prompts.ts, settings.tsx,
+      pipeline-stages.ts/scanner.ts load prompts)
+- [ ] **L — Lead↔family/contact chips + person page** (dashboard.tsx, routes-people.ts, person.tsx)
+- [ ] **Me** — wire route modules into routes.ts, ~~retire ensure-*-table.ts~~ (done: boot now runs a
+      schema sanity check instead), last 6 LLM call sites (agent H), SendGrid removal after P
+      releases settings.tsx, test, deploy
+
 ## Current Program (approved by Billy 2026-09-08): make Sensei self-improving, observable, robust
 
 **Decisions (Billy):** 1 learning loop over hard-coded rules (it teaches itself, he teaches it);

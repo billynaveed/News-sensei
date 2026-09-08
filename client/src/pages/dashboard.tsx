@@ -40,6 +40,21 @@ type BlockedInfo = {
   familyId: string | null;
 };
 
+// Lead ↔ person context (GET /api/people/lookup), keyed by lowercase name.
+// Drives the chips next to a founder: family tree, notes, "seen N×".
+type PersonLookup = {
+  queryName: string;
+  personId: number;
+  fullName: string;
+  familyId: string | null;
+  familyName: string | null;
+  blocked: boolean;
+  contactStatus: string | null;
+  hasNotes: boolean;
+  mentionCount: number;
+  lastMentionedAt: string | null;
+};
+
 // Page numbers to show: first, last, current ±1, with "..." gaps.
 function pageWindow(current: number, total: number): (number | "...")[] {
   const set = new Set<number>([0, total - 1, current, current - 1, current + 1]);
@@ -146,7 +161,59 @@ const BAD_REASONS: { value: string; label: string }[] = [
   { value: "other", label: "Other / just bad" },
 ];
 
-const LeadCard = memo(function LeadCard({ lead, isTop, onUpdateStatus, onFeedback, onEnrich, onMute, blockedMap }: {
+/**
+ * The chips that sit next to a founder's name: which family tree they're in,
+ * whether we already hold notes on them, and how often they've come up.
+ * Rendered only from data the batched lookup already returned — no per-card
+ * queries (LeadCard is memoized and the feed is performance-sensitive).
+ */
+function FounderChips({ person, leadId, name }: { person: PersonLookup | undefined; leadId: string; name: string }) {
+  if (!person) return null;
+  return (
+    <>
+      {person.familyId && (
+        <Link href={`/families/${person.familyId}`}>
+          <Badge
+            size="sm"
+            variant="outline"
+            title={`Part of the ${person.familyName ?? "known"} family tree`}
+            className="max-w-[10rem] gap-1 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/20 hover:bg-emerald-500/20"
+            data-testid={`chip-family-${leadId}-${name}`}
+          >
+            <span aria-hidden>🌳</span>
+            <span className="truncate">{person.familyName ?? "Family"}</span>
+          </Badge>
+        </Link>
+      )}
+      {person.hasNotes && (
+        <Link href={`/people/${person.personId}`}>
+          <Badge
+            size="sm"
+            variant="outline"
+            title="You already have notes on this person"
+            className="gap-1 hover-elevate"
+            data-testid={`chip-notes-${leadId}-${name}`}
+          >
+            <span aria-hidden>📝</span> notes
+          </Badge>
+        </Link>
+      )}
+      {person.mentionCount > 1 && (
+        <Badge
+          size="sm"
+          variant="outline"
+          title={`Seen in ${person.mentionCount} stories so far`}
+          className="font-mono tabular-nums text-muted-foreground"
+          data-testid={`chip-seen-${leadId}-${name}`}
+        >
+          seen {person.mentionCount}×
+        </Badge>
+      )}
+    </>
+  );
+}
+
+const LeadCard = memo(function LeadCard({ lead, isTop, onUpdateStatus, onFeedback, onEnrich, onMute, blockedMap, personMap }: {
   lead: Lead;
   isTop?: boolean;
   onUpdateStatus: (id: string, status: LeadStatus) => void;
@@ -154,6 +221,7 @@ const LeadCard = memo(function LeadCard({ lead, isTop, onUpdateStatus, onFeedbac
   onEnrich: (id: string) => Promise<void>;
   onMute: (id: string, names: string[]) => void;
   blockedMap: Map<string, BlockedInfo>;
+  personMap: Map<string, PersonLookup>;
 }) {
   const [enriching, setEnriching] = useState(false);
   const [muteOpen, setMuteOpen] = useState(false);
@@ -263,15 +331,19 @@ const LeadCard = memo(function LeadCard({ lead, isTop, onUpdateStatus, onFeedbac
                 <div className="text-xs text-muted-foreground uppercase tracking-wide font-medium mb-0.5">Founders</div>
                 <div className="flex flex-wrap gap-1">
                   {lead.founderNames.filter(Boolean).map((f) => {
-                    const blocked = blockedMap.get(f.toLowerCase().trim());
-                    if (!blocked) return <Badge key={f} variant="secondary" size="sm">{f}</Badge>;
-                    const why =
-                      blocked.origin === "propagated" && blocked.originName
+                    const key = f.toLowerCase().trim();
+                    const blocked = blockedMap.get(key);
+                    const person = personMap.get(key);
+                    // Known people get a link to their history page; blocked
+                    // people always resolve (blockedMap carries the personId).
+                    const personId = person?.personId ?? blocked?.personId ?? null;
+                    const why = blocked
+                      ? blocked.origin === "propagated" && blocked.originName
                         ? `Blocked — ${blocked.originName} is covered${blocked.coveredBy ? ` by ${blocked.coveredBy}` : ""}`
-                        : `Blocked${blocked.coveredBy ? ` — covered by ${blocked.coveredBy}` : " — covered elsewhere"}`;
-                    const badge = (
+                        : `Blocked${blocked.coveredBy ? ` — covered by ${blocked.coveredBy}` : " — covered elsewhere"}`
+                      : undefined;
+                    const nameBadge = blocked ? (
                       <Badge
-                        key={f}
                         size="sm"
                         title={why}
                         className="gap-1 bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20 hover:bg-red-500/20"
@@ -279,11 +351,20 @@ const LeadCard = memo(function LeadCard({ lead, isTop, onUpdateStatus, onFeedbac
                       >
                         <Ban className="h-3 w-3" /> {f}
                       </Badge>
-                    );
-                    return blocked.familyId ? (
-                      <Link key={f} href={`/families/${blocked.familyId}`}>{badge}</Link>
                     ) : (
-                      badge
+                      <Badge variant="secondary" size="sm" className={personId ? "hover-elevate" : undefined}>{f}</Badge>
+                    );
+                    return (
+                      <span key={f} className="inline-flex max-w-full flex-wrap items-center gap-1">
+                        {personId ? (
+                          <Link href={`/people/${personId}`} title={why ?? "Open this person's history"}>
+                            {nameBadge}
+                          </Link>
+                        ) : (
+                          nameBadge
+                        )}
+                        <FounderChips person={person} leadId={lead.id} name={f} />
+                      </span>
                     );
                   })}
                 </div>
@@ -842,6 +923,30 @@ export default function Dashboard() {
   const safePage = Math.min(page, totalPages - 1);
   const pageLeads = filteredLeads.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
 
+  // ONE person lookup per page of leads: every founder named on the visible 20
+  // cards goes out in a single request. The key is derived from the names
+  // themselves, so paging back to a page already seen is served from cache and
+  // LeadCard's memoization is preserved (personMap only changes with the data).
+  const founderNamesKey = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          pageLeads.flatMap((l) => (l.founderNames ?? []).filter(Boolean).map((f) => f.trim())),
+        ),
+      )
+        .sort()
+        .join(","),
+    [pageLeads],
+  );
+  const { data: personLookup } = useQuery<PersonLookup[]>({
+    queryKey: [`/api/people/lookup?names=${encodeURIComponent(founderNamesKey)}`],
+    enabled: founderNamesKey.length > 0,
+  });
+  const personMap = useMemo(
+    () => new Map((personLookup ?? []).map((p) => [p.queryName, p])),
+    [personLookup],
+  );
+
   // Keyboard shortcuts act on the top card of the current page.
   topLeadRef.current = pageLeads[0];
   pageLeadsRef.current = pageLeads;
@@ -1063,6 +1168,7 @@ export default function Dashboard() {
                     onEnrich={handleEnrich}
                     onMute={handleMute}
                     blockedMap={blockedMap}
+                    personMap={personMap}
                   />
                 </motion.div>
               ))}

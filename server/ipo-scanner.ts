@@ -1,12 +1,11 @@
 import * as cheerio from "cheerio";
 import { scrapeUrl, activeScraper } from "./scraper";
-import { openai } from "./openai-client";
+import { callJsonStage } from "./llm-json";
 import { db } from "./db";
 import { ipoFilings, type InsertIpoFiling, type IpoExchange, type IpoFiling } from "@shared/schema";
 import { eq, and, desc, isNull } from "drizzle-orm";
 import { sendTelegramMessage } from "./telegram";
 import { storage } from "./storage";
-import { stripJsonFences } from "./json-utils";
 
 // ---------------------------------------------------------------------------
 // HKEX Scrapers
@@ -375,13 +374,11 @@ async function analyzeProspectus(filing: IpoFiling): Promise<ProspectusAnalysis 
       return null;
     }
 
-    const response = await openai.chat.completions.create({
+    const parsed = await callJsonStage<ProspectusAnalysis>({
       model: "anthropic/claude-sonnet-4",
       temperature: 0.1,
-      messages: [
-        {
-          role: "system",
-          content: `You are an IPO filing analyst. Extract key information from prospectus content.
+      label: "IPO Prospectus",
+      systemPrompt: `You are an IPO filing analyst. Extract key information from prospectus content.
 Return a JSON object with these fields (use null if not found):
 - industry: string (sector/industry of the company)
 - proposedValuation: string (proposed market cap or valuation, with currency)
@@ -394,19 +391,9 @@ Return a JSON object with these fields (use null if not found):
 - lockupExpiration: string (lock-up period end date or duration)
 
 Return ONLY valid JSON, no markdown.`,
-        },
-        {
-          role: "user",
-          content: `Analyze this IPO filing:\n\nCompany: ${filing.companyName}\nExchange: ${filing.exchange}\nStock Code: ${filing.stockCode}\n\nProspectus Content:\n${textContent}`,
-        },
-      ],
+      prompt: `Analyze this IPO filing:\n\nCompany: ${filing.companyName}\nExchange: ${filing.exchange}\nStock Code: ${filing.stockCode}\n\nProspectus Content:\n${textContent}`,
     });
 
-    const raw = response.choices[0]?.message?.content?.trim();
-    if (!raw) return null;
-
-    // Parse JSON (handle potential markdown wrapping)
-    const parsed = JSON.parse(stripJsonFences(raw)) as ProspectusAnalysis;
     console.log(`[IPO] Analysis complete for ${filing.companyName}: industry=${parsed.industry}`);
     return parsed;
   } catch (err: any) {

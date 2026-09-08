@@ -26,23 +26,6 @@ export interface PipelineExample {
   createdAt: string;
 }
 
-/** App-role-owned table (same pattern as families); folded into schema.ts once db:push is safe. */
-export async function ensurePipelineExamplesTable() {
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS pipeline_examples (
-      id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
-      url TEXT NOT NULL UNIQUE,
-      headline TEXT NOT NULL,
-      expected TEXT NOT NULL,
-      note TEXT,
-      last_result TEXT,
-      last_reason TEXT,
-      last_run_at TIMESTAMP,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
-    );
-  `);
-}
-
 export async function listExamples(): Promise<PipelineExample[]> {
   const r = await db.execute(sql`
     SELECT id, url, headline, expected, note,

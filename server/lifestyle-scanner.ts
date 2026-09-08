@@ -1,8 +1,7 @@
 import Parser from "rss-parser";
-import { openai } from "./openai-client";
+import { callJsonStage } from "./llm-json";
 import { tavily } from "@tavily/core";
 import * as cheerio from "cheerio";
-import { stripJsonFences } from "./json-utils";
 import { and, desc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import { db } from "./db";
 import { log } from "./log";
@@ -193,14 +192,12 @@ Return:
   "eventType": "wedding" | "charity" | "property" | "business" | "social" | "style" | "other"
 }`;
 
-  const response = await openai.chat.completions.create({
+  return callJsonStage<any>({
     model: MODEL,
-    messages: [{ role: "user", content: prompt }],
+    prompt,
     temperature: 0.1,
-    response_format: { type: "json_object" },
+    label: "Lifestyle Classify",
   });
-
-  return JSON.parse(stripJsonFences(response.choices[0]?.message?.content || '{"relevant":false,"reason":"empty","confidence":0,"eventType":"other"}'));
 }
 
 export async function extractStructuredLifestyleData(article: typeof lifestyleArticles.$inferSelect, source: typeof lifestyleSources.$inferSelect) {
@@ -245,14 +242,12 @@ Schema:
   "sea_evidence_text": "supporting passage from the article (or empty string if none)"
 }`;
 
-  const response = await openai.chat.completions.create({
+  const parsed = await callJsonStage<any>({
     model: MODEL,
-    messages: [{ role: "user", content: prompt }],
+    prompt,
     temperature: 0.1,
-    response_format: { type: "json_object" },
+    label: "Lifestyle Extract",
   });
-
-  const parsed = JSON.parse(stripJsonFences(response.choices[0]?.message?.content || "{}"));
 
   // Geography gate — same Target-Region rule (SEA + HK + Taiwan) as the main
   // news pipeline (scanner.ts). The lifestyle path historically had no location

@@ -14,6 +14,7 @@ import { and, eq, gt, sql } from "drizzle-orm";
 import { searchWeb } from "./web-search";
 import { callJsonStage } from "./llm-json";
 import { log } from "./log";
+import { getPrompt, render } from "./prompts";
 
 const CACHE_ENTITY = "company_founders";
 const CACHE_TTL_DAYS = 90;
@@ -51,12 +52,12 @@ export async function discoverFounders(companyName: string, hint?: string | null
   const search = { answer };
 
   const context = results.map((r, i) => `[${i + 1}] ${r.title}\n${r.url}\n${(r.content || "").slice(0, 600)}`).join("\n\n");
-  const prompt = `From these search results, list the founders and CEO of the company "${name}"${hint ? ` (${hint})` : ""}.
-
-${search?.answer ? `Search summary: ${search.answer}\n\n` : ""}${context}
-
-Return JSON only: {"founders": [{"name": "Full name", "role": "e.g. Co-founder & CEO", "location": "City, Country where they are based, or null"}]}
-Rules: only people explicitly tied to "${name}" in the results; never guess; empty array if unsure; max 5 people, CEO/founders first.`;
+  const prompt = render(await getPrompt("founder_discovery"), {
+    companyName: name,
+    hintSuffix: hint ? ` (${hint})` : "",
+    answerBlock: search?.answer ? `Search summary: ${search.answer}\n\n` : "",
+    results: context,
+  });
 
   try {
     const parsed = await callJsonStage<any>({

@@ -720,3 +720,36 @@ export const personBlocks = pgTable("person_blocks", {
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
 export type PersonBlock = typeof personBlocks.$inferSelect;
+
+// ============================================================================
+// Pipeline prompts (editable + versioned from Settings)
+// ============================================================================
+// Every LLM prompt the pipeline uses has a code default (server/prompts.ts
+// DEFAULT_PROMPTS). A row here overrides the default for that key; deleting the
+// row reverts to the default. Bodies are templates using {{placeholder}} vars
+// rendered by server/prompts.ts `render()`.
+
+export const pipelinePrompts = pgTable("pipeline_prompts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  /** Stable identifier, e.g. "stage1_interest". See PROMPT_KEYS in server/prompts.ts. */
+  key: text("key").notNull().unique(),
+  body: text("body").notNull(),
+  /** Bumped on every save; matches the newest pipeline_prompt_versions row. */
+  version: integer("version").notNull().default(1),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedBy: text("updated_by"),
+});
+export type PipelinePrompt = typeof pipelinePrompts.$inferSelect;
+
+/** Append-only history: one row per save, so any version can be reverted to. */
+export const pipelinePromptVersions = pgTable("pipeline_prompt_versions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  key: text("key").notNull(),
+  version: integer("version").notNull(),
+  body: text("body").notNull(),
+  note: text("note"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (t) => ({
+  keyVersionUnique: uniqueIndex("pipeline_prompt_versions_key_version_uq").on(t.key, t.version),
+}));
+export type PipelinePromptVersion = typeof pipelinePromptVersions.$inferSelect;

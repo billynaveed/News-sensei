@@ -31,6 +31,12 @@ export interface JsonStageOptions {
   /** Fully-built user prompt. */
   prompt: string;
   /**
+   * Optional system message, sent ahead of the user prompt. Only a couple of
+   * call sites split their instructions this way; when omitted, no system
+   * message is sent at all — identical to a plain single-message request.
+   */
+  systemPrompt?: string;
+  /**
    * `max_completion_tokens`. Optional because a few call sites deliberately
    * leave the cap to the model default; omitting it here sends no cap, exactly
    * as those sites did before.
@@ -55,7 +61,12 @@ async function requestJson(opts: JsonStageOptions, prompt: string): Promise<stri
   const response = await openai.chat.completions.create(
     {
       model: opts.model,
-      messages: [{ role: "user", content: prompt }],
+      messages: [
+        ...(opts.systemPrompt !== undefined
+          ? [{ role: "system" as const, content: opts.systemPrompt }]
+          : []),
+        { role: "user" as const, content: prompt },
+      ],
       ...(opts.maxTokens !== undefined ? { max_completion_tokens: opts.maxTokens } : {}),
       ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
       ...(opts.jsonMode === false ? {} : { response_format: { type: "json_object" as const } }),

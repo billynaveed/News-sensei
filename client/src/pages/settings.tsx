@@ -1,4 +1,5 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+import { Link } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -21,7 +22,10 @@ import {
   ChevronRight,
   Send,
   Info,
-  RotateCcw
+  RotateCcw,
+  FlaskConical,
+  History,
+  GitCompare
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -59,7 +63,6 @@ import {
 } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { DEFAULT_INTEREST_FILTER_PROMPT } from "@shared/schema";
 import type { Settings, SourceTier, Source, RssFeed } from "@shared/schema";
 
 const DEFAULT_REGIONS = [
@@ -67,12 +70,7 @@ const DEFAULT_REGIONS = [
   "Vietnam", "Thailand", "Malaysia", "Philippines"
 ];
 
-const INTEREST_FILTER_PROMPT_MIN_LENGTH = 50;
-const INTEREST_FILTER_PROMPT_RECOMMENDED_MIN = 500;
-const INTEREST_FILTER_PROMPT_RECOMMENDED_MAX = 1000;
-
 const settingsSchema = z.object({
-  interestFilterPrompt: z.string().min(INTEREST_FILTER_PROMPT_MIN_LENGTH, "Prompt must be at least 50 characters"),
   regions: z.array(z.string()).min(1, "At least one region is required"),
   summaryLength: z.enum(["brief", "detailed", "actionable"]),
   scanFrequency: z.enum(["hourly", "daily", "weekly", "manual"]),
@@ -84,97 +82,523 @@ const settingsSchema = z.object({
 
 type SettingsFormData = z.infer<typeof settingsSchema>;
 
-function InterestFilterSection({
-  value,
-  onChange,
-  onReset,
-}: {
-  value: string;
-  onChange: (value: string) => void;
-  onReset: () => void;
-}) {
-  const charCount = value.length;
-  const isUnderRecommended = charCount < INTEREST_FILTER_PROMPT_RECOMMENDED_MIN;
-  const isOverRecommended = charCount > INTEREST_FILTER_PROMPT_RECOMMENDED_MAX;
-  const isInRange = !isUnderRecommended && !isOverRecommended;
+// ============================================================================
+// Pipeline prompts (editable + versioned)
+// ============================================================================
 
-  const getCharCountColor = (): string => {
-    if (charCount < INTEREST_FILTER_PROMPT_MIN_LENGTH) return "text-destructive";
-    if (isInRange) return "text-green-600";
-    return "text-muted-foreground";
+/** One `{{name}}` slot a prompt template may use. */
+interface PromptVariable {
+  name: string;
+  description: string;
+}
+
+/** A prompt's live state, as returned by GET /api/prompts. */
+interface PromptState {
+  key: string;
+  label: string;
+  description: string;
+  /** False while the prompt is stored but not yet read by the module that sends it. */
+  wired: boolean;
+  variables: PromptVariable[];
+  body: string;
+  defaultBody: string;
+  version: number;
+  isDefault: boolean;
+  updatedAt: string | null;
+  updatedBy: string | null;
+}
+
+interface PromptVersionRow {
+  id: string;
+  key: string;
+  version: number;
+  body: string;
+  note: string | null;
+  createdAt: string;
+}
+
+interface ExampleRunResult {
+  ran: number;
+  passing: number;
+  failing: number;
+}
+
+/** One aligned row of a two-column diff. */
+interface DiffRow {
+  left: string | null;
+  right: string | null;
+  changed: boolean;
+}
+
+/**
+ * Line-level diff via longest common subsequence.
+ *
+ * Prompts are small enough that the O(n*m) table is free (a 200-line prompt is
+ * 40k cells), and LCS keeps the view honest about inserted and removed lines
+ * rather than pretending every edit is line-for-line.
+ */
+function diffLines(oldText: string, newText: string): DiffRow[] {
+  const a = oldText.split("\n");
+  const b = newText.split("\n");
+  const lcs: number[][] = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
+
+  for (let i = a.length - 1; i >= 0; i--) {
+    for (let j = b.length - 1; j >= 0; j--) {
+      lcs[i][j] = a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+    }
+  }
+
+  const rows: DiffRow[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) {
+      rows.push({ left: a[i], right: b[j], changed: false });
+      i++;
+      j++;
+    } else if (lcs[i + 1][j] >= lcs[i][j + 1]) {
+      rows.push({ left: a[i], right: null, changed: true });
+      i++;
+    } else {
+      rows.push({ left: null, right: b[j], changed: true });
+      j++;
+    }
+  }
+  while (i < a.length) rows.push({ left: a[i++], right: null, changed: true });
+  while (j < b.length) rows.push({ left: null, right: b[j++], changed: true });
+  return rows;
+}
+
+function PromptDiff({ oldText, newText, oldLabel, newLabel }: {
+  oldText: string;
+  newText: string;
+  oldLabel: string;
+  newLabel: string;
+}) {
+  const rows = diffLines(oldText, newText);
+  const changedCount = rows.filter(r => r.changed).length;
+
+  return (
+    <div className="rounded-md border overflow-hidden" data-testid="prompt-diff">
+      <div className="grid grid-cols-2 text-xs font-medium bg-muted/60">
+        <div className="px-3 py-1.5 border-r">{oldLabel}</div>
+        <div className="px-3 py-1.5">{newLabel}</div>
+      </div>
+      {changedCount === 0 ? (
+        <p className="px-3 py-3 text-sm text-muted-foreground">Identical — no changes.</p>
+      ) : (
+        <div className="max-h-80 overflow-auto">
+          {rows.map((row, index) => (
+            <div key={index} className="grid grid-cols-2 font-mono text-xs">
+              <div className={`px-3 py-0.5 border-r whitespace-pre-wrap break-words ${
+                row.changed && row.left !== null ? "bg-red-500/10" : ""
+              }`}>
+                {row.left ?? ""}
+              </div>
+              <div className={`px-3 py-0.5 whitespace-pre-wrap break-words ${
+                row.changed && row.right !== null ? "bg-green-500/10" : ""
+              }`}>
+                {row.right ?? ""}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Editor for one prompt: body, variable chips, save-with-note, reset, and the
+ * version history with one-click revert and a side-by-side diff.
+ */
+function PromptEditor({ prompt, onChanged }: { prompt: PromptState; onChanged: () => void }) {
+  const { toast } = useToast();
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [draft, setDraft] = useState(prompt.body);
+  const [note, setNote] = useState("");
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [diffVersion, setDiffVersion] = useState<number | null>(null);
+
+  // Re-seed the draft whenever a different prompt (or a newer version of the
+  // same one) arrives, so a save/revert/reset is reflected in the textarea.
+  useEffect(() => {
+    setDraft(prompt.body);
+    setNote("");
+    setDiffVersion(null);
+  }, [prompt.key, prompt.version, prompt.body]);
+
+  const { data: history } = useQuery<{ versions: PromptVersionRow[] }>({
+    queryKey: ["/api/prompts", prompt.key, "versions"],
+    enabled: historyOpen,
+  });
+  const versions = history?.versions ?? [];
+
+  const isDirty = draft !== prompt.body;
+  const unknownVariables = Array.from(
+    new Set(Array.from(draft.matchAll(/\{\{\s*(\w+)\s*\}\}/g)).map(m => m[1]))
+  ).filter(name => !prompt.variables.some(v => v.name === name));
+
+  const afterMutation = (title: string, description: string) => {
+    queryClient.invalidateQueries({ queryKey: ["/api/prompts"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/prompts", prompt.key, "versions"] });
+    onChanged();
+    toast({ title, description });
   };
+
+  const onError = (error: unknown) => {
+    toast({
+      title: "Could not save prompt",
+      description: error instanceof Error ? error.message : "Unknown error",
+      variant: "destructive",
+    });
+  };
+
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest("PUT", `/api/prompts/${prompt.key}`, { body: draft, note: note || undefined });
+    },
+    onSuccess: () => afterMutation("Prompt saved", `${prompt.label} is now version ${prompt.version + 1}.`),
+    onError,
+  });
+
+  const resetMutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest("POST", `/api/prompts/${prompt.key}/reset`);
+    },
+    onSuccess: () => afterMutation("Reset to default", `${prompt.label} now uses the built-in prompt.`),
+    onError,
+  });
+
+  const revertMutation = useMutation({
+    mutationFn: async (version: number) => {
+      await apiRequest("POST", `/api/prompts/${prompt.key}/revert`, { version });
+    },
+    onSuccess: () => afterMutation("Reverted", `${prompt.label} restored from history.`),
+    onError,
+  });
+
+  const insertVariable = (name: string) => {
+    const textarea = textareaRef.current;
+    const token = `{{${name}}}`;
+    if (!textarea) {
+      setDraft(current => current + token);
+      return;
+    }
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    setDraft(current => current.slice(0, start) + token + current.slice(end));
+    requestAnimationFrame(() => {
+      textarea.focus();
+      textarea.setSelectionRange(start + token.length, start + token.length);
+    });
+  };
+
+  const diffSource = diffVersion === null
+    ? null
+    : diffVersion === 0
+      ? { label: "Built-in default", body: prompt.defaultBody }
+      : { label: `v${diffVersion}`, body: versions.find(v => v.version === diffVersion)?.body ?? "" };
+
+  return (
+    <div className="space-y-4 rounded-md border p-4" data-testid={`prompt-editor-${prompt.key}`}>
+      <div>
+        <div className="flex flex-wrap items-center gap-2">
+          <h3 className="font-medium">{prompt.label}</h3>
+          <Badge variant="outline" className="text-xs font-mono">{prompt.key}</Badge>
+          {!prompt.wired && (
+            <Badge variant="secondary" className="text-xs">Reference only — not yet used</Badge>
+          )}
+        </div>
+        <p className="mt-1 text-sm text-muted-foreground">{prompt.description}</p>
+      </div>
+
+      {prompt.variables.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-xs font-medium text-muted-foreground">
+            Variables (click to insert — these are filled in per article):
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {prompt.variables.map(variable => (
+              <button
+                key={variable.name}
+                type="button"
+                title={variable.description}
+                onClick={() => insertVariable(variable.name)}
+                className="rounded border bg-muted px-2 py-0.5 font-mono text-xs hover-elevate"
+                data-testid={`button-insert-var-${variable.name}`}
+              >
+                {`{{${variable.name}}}`}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <Textarea
+        ref={textareaRef}
+        value={draft}
+        onChange={e => setDraft(e.target.value)}
+        className="min-h-[320px] font-mono text-xs leading-relaxed resize-y"
+        spellCheck={false}
+        data-testid={`textarea-prompt-${prompt.key}`}
+      />
+
+      {unknownVariables.length > 0 && (
+        <p className="text-sm text-destructive">
+          Unknown variable{unknownVariables.length > 1 ? "s" : ""}:{" "}
+          {unknownVariables.map(name => `{{${name}}}`).join(", ")} — saving will be rejected.
+        </p>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          value={note}
+          onChange={e => setNote(e.target.value)}
+          placeholder="Optional note — what did you change and why?"
+          className="h-9 flex-1 min-w-[220px]"
+          data-testid={`input-prompt-note-${prompt.key}`}
+        />
+        <Button
+          type="button"
+          size="sm"
+          disabled={!isDirty || unknownVariables.length > 0 || saveMutation.isPending}
+          onClick={() => saveMutation.mutate()}
+          data-testid={`button-save-prompt-${prompt.key}`}
+        >
+          {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+          Save
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          disabled={!isDirty}
+          onClick={() => setDraft(prompt.body)}
+          data-testid={`button-discard-prompt-${prompt.key}`}
+        >
+          Discard
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={prompt.isDefault || resetMutation.isPending}
+          onClick={() => resetMutation.mutate()}
+          data-testid={`button-reset-prompt-${prompt.key}`}
+        >
+          <RotateCcw className="h-3 w-3" />
+          Reset to default
+        </Button>
+        {!prompt.isDefault && (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={() => setDiffVersion(diffVersion === 0 ? null : 0)}
+            data-testid={`button-diff-default-${prompt.key}`}
+          >
+            <GitCompare className="h-3 w-3" />
+            Diff vs default
+          </Button>
+        )}
+      </div>
+
+      {diffSource && (
+        <PromptDiff
+          oldText={diffSource.body}
+          newText={draft}
+          oldLabel={diffSource.label}
+          newLabel={isDirty ? "Your unsaved draft" : `Current (v${prompt.version})`}
+        />
+      )}
+
+      <Collapsible open={historyOpen} onOpenChange={setHistoryOpen}>
+        <CollapsibleTrigger asChild>
+          <Button type="button" variant="ghost" size="sm" data-testid={`button-history-${prompt.key}`}>
+            {historyOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+            <History className="h-3 w-3" />
+            Version history
+          </Button>
+        </CollapsibleTrigger>
+        <CollapsibleContent className="pt-2">
+          {versions.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No saved versions yet — this prompt is still the built-in default.
+            </p>
+          ) : (
+            <div className="space-y-1.5">
+              {versions.map(version => (
+                <div
+                  key={version.id}
+                  className="flex flex-wrap items-center gap-2 rounded border px-3 py-2 text-sm"
+                  data-testid={`row-prompt-version-${version.version}`}
+                >
+                  <Badge variant={version.version === prompt.version ? "default" : "outline"} className="text-xs">
+                    v{version.version}
+                  </Badge>
+                  <span className="text-muted-foreground text-xs tabular-nums">
+                    {new Date(version.createdAt).toLocaleString()}
+                  </span>
+                  <span className="flex-1 min-w-[120px] truncate text-muted-foreground">
+                    {version.note ?? "No note"}
+                  </span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setDiffVersion(diffVersion === version.version ? null : version.version)}
+                    data-testid={`button-diff-version-${version.version}`}
+                  >
+                    <GitCompare className="h-3 w-3" />
+                    Diff
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={version.version === prompt.version || revertMutation.isPending}
+                    onClick={() => revertMutation.mutate(version.version)}
+                    data-testid={`button-revert-version-${version.version}`}
+                  >
+                    Revert
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </CollapsibleContent>
+      </Collapsible>
+    </div>
+  );
+}
+
+/**
+ * "Pipeline prompts" settings section: pick a prompt, edit it, and check the
+ * edit against the reference articles Billy has taught Sensei about.
+ *
+ * Deliberately rendered outside the settings <form> — these mutations save
+ * themselves immediately and must not be swept up by the form's submit.
+ */
+function PipelinePromptsSection() {
+  const { toast } = useToast();
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<ExampleRunResult | null>(null);
+
+  const { data, isLoading } = useQuery<{ prompts: PromptState[] }>({
+    queryKey: ["/api/prompts"],
+  });
+  const prompts = data?.prompts ?? [];
+  const selected = prompts.find(p => p.key === selectedKey) ?? null;
+
+  const testMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest("POST", "/api/pipeline/examples/run");
+      return (await response.json()) as ExampleRunResult;
+    },
+    onSuccess: result => {
+      setTestResult(result);
+      toast({
+        title: "Examples re-run",
+        description: `${result.passing}/${result.ran} matched what you taught Sensei.`,
+      });
+    },
+    onError: error => {
+      toast({
+        title: "Could not run examples",
+        description: error instanceof Error ? error.message : "Unknown error",
+        variant: "destructive",
+      });
+    },
+  });
 
   return (
     <Card>
       <CardHeader>
-        <div className="flex items-center justify-between gap-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <BrainCircuit className="h-5 w-5 text-primary" />
-            <CardTitle className="text-lg">Lead Interest Filter (AI-Powered)</CardTitle>
+            <CardTitle className="text-lg">Pipeline prompts</CardTitle>
           </div>
-          <Badge variant="secondary" className="text-xs gap-1">
-            <Info className="h-3 w-3" />
-            Replaces keyword matching
-          </Badge>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => testMutation.mutate()}
+              disabled={testMutation.isPending}
+              data-testid="button-test-examples"
+            >
+              {testMutation.isPending
+                ? <Loader2 className="h-4 w-4 animate-spin" />
+                : <FlaskConical className="h-4 w-4" />}
+              Test against my examples
+            </Button>
+            <Link href="/debug">
+              <Button type="button" variant="ghost" size="sm" data-testid="link-debug-examples">
+                <ExternalLink className="h-3 w-3" />
+                Per-example results
+              </Button>
+            </Link>
+          </div>
         </div>
         <CardDescription>
-          This prompt controls how AI evaluates each article during Stage 1 of the lead pipeline.
-          Articles that don't match your criteria are filtered out before deeper analysis.
-          Write clear INCLUDE and EXCLUDE rules to fine-tune lead quality.
+          Every judgement Sensei makes about an article comes from one of these prompts. Edit them
+          here instead of in code — each save is versioned, so a change that makes things worse is
+          one click from being undone. Then re-run your reference articles to see the effect.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <Textarea
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={DEFAULT_INTEREST_FILTER_PROMPT}
-          className="min-h-[300px] font-mono text-sm leading-relaxed resize-y"
-          data-testid="textarea-interest-filter-prompt"
-        />
-
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <span className={`text-sm tabular-nums ${getCharCountColor()}`}>
-              {charCount} characters
+        {testResult && (
+          <div className="rounded-md bg-muted/50 p-3 text-sm" data-testid="text-example-result">
+            Ran <span className="font-medium tabular-nums">{testResult.ran}</span> reference
+            article{testResult.ran === 1 ? "" : "s"}:{" "}
+            <span className="font-medium text-green-600 tabular-nums">{testResult.passing} as taught</span>,{" "}
+            <span className={`font-medium tabular-nums ${testResult.failing > 0 ? "text-destructive" : ""}`}>
+              {testResult.failing} off
             </span>
-            {isUnderRecommended && charCount >= INTEREST_FILTER_PROMPT_MIN_LENGTH && (
-              <span className="text-xs text-muted-foreground">
-                Recommended: {INTEREST_FILTER_PROMPT_RECOMMENDED_MIN}-{INTEREST_FILTER_PROMPT_RECOMMENDED_MAX} characters
-              </span>
-            )}
-            {isOverRecommended && (
-              <span className="text-xs text-amber-600">
-                Consider keeping under {INTEREST_FILTER_PROMPT_RECOMMENDED_MAX} characters for optimal performance
-              </span>
-            )}
-            {isInRange && (
-              <span className="text-xs text-green-600">
-                Good length
-              </span>
-            )}
+            . <Link href="/debug" className="underline">See which ones on the Debug page.</Link>
           </div>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={onReset}
-            className="text-muted-foreground"
-            data-testid="button-reset-filter-prompt"
-          >
-            <RotateCcw className="h-3 w-3" />
-            Reset to default
-          </Button>
-        </div>
+        )}
 
-        <div className="rounded-md bg-muted/50 p-3 text-sm text-muted-foreground space-y-1">
-          <p className="font-medium">Tips for effective filtering:</p>
-          <ul className="list-disc list-inside space-y-0.5 ml-1">
-            <li>Use clear INCLUDE/EXCLUDE sections for best results</li>
-            <li>Be specific about what wealth events matter to you</li>
-            <li>Mention target regions to focus the AI's analysis</li>
-            <li>The AI will return a confidence score -- articles below 60% confidence are filtered out</li>
-          </ul>
-        </div>
+        {isLoading ? (
+          <Skeleton className="h-32 w-full" />
+        ) : (
+          <div className="space-y-1.5">
+            {prompts.map(prompt => {
+              const isSelected = prompt.key === selectedKey;
+              return (
+                <button
+                  key={prompt.key}
+                  type="button"
+                  onClick={() => setSelectedKey(isSelected ? null : prompt.key)}
+                  className={`flex w-full flex-wrap items-center gap-2 rounded-md border px-3 py-2 text-left hover-elevate ${
+                    isSelected ? "border-primary" : ""
+                  }`}
+                  data-testid={`button-select-prompt-${prompt.key}`}
+                >
+                  {isSelected
+                    ? <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    : <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />}
+                  <span className="font-medium text-sm">{prompt.label}</span>
+                  {prompt.isDefault ? (
+                    <Badge variant="outline" className="text-xs">Default</Badge>
+                  ) : (
+                    <Badge className="text-xs">Modified · v{prompt.version}</Badge>
+                  )}
+                  {!prompt.wired && (
+                    <Badge variant="secondary" className="text-xs">Reference only</Badge>
+                  )}
+                  <span className="ml-auto text-xs text-muted-foreground tabular-nums">
+                    {prompt.body.length.toLocaleString()} chars
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {selected && <PromptEditor prompt={selected} onChanged={() => setTestResult(null)} />}
       </CardContent>
     </Card>
   );
@@ -807,7 +1231,6 @@ export default function SettingsPage() {
   const form = useForm<SettingsFormData>({
     resolver: zodResolver(settingsSchema),
     defaultValues: {
-      interestFilterPrompt: DEFAULT_INTEREST_FILTER_PROMPT,
       regions: DEFAULT_REGIONS,
       summaryLength: "brief",
       scanFrequency: "hourly",
@@ -821,7 +1244,6 @@ export default function SettingsPage() {
   useEffect(() => {
     if (settings) {
       form.reset({
-        interestFilterPrompt: settings.interestFilterPrompt ?? DEFAULT_INTEREST_FILTER_PROMPT,
         regions: settings.regions,
         summaryLength: settings.summaryLength as "brief" | "detailed" | "actionable",
         scanFrequency: (settings.scanFrequency as "hourly" | "daily" | "weekly" | "manual") ?? "hourly",
@@ -835,7 +1257,13 @@ export default function SettingsPage() {
 
   const saveMutation = useMutation({
     mutationFn: async (data: SettingsFormData) => {
-      await apiRequest("PUT", "/api/settings", data);
+      // Stage 1's prompt moved to the "Pipeline prompts" section (key
+      // "stage1_interest"). The legacy settings column is echoed back unchanged
+      // so a settings save never silently rewrites it.
+      await apiRequest("PUT", "/api/settings", {
+        ...data,
+        ...(settings ? { interestFilterPrompt: settings.interestFilterPrompt } : {}),
+      });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/settings"] });
@@ -871,14 +1299,6 @@ export default function SettingsPage() {
       });
     },
   });
-
-  const handleInterestFilterPromptChange = (value: string) => {
-    form.setValue("interestFilterPrompt", value, { shouldDirty: true });
-  };
-
-  const handleResetInterestFilterPrompt = () => {
-    form.setValue("interestFilterPrompt", DEFAULT_INTEREST_FILTER_PROMPT, { shouldDirty: true });
-  };
 
   const handleToggleRegion = (region: string) => {
     const current = form.getValues("regions");
@@ -926,14 +1346,10 @@ export default function SettingsPage() {
         </p>
       </div>
 
+      <PipelinePromptsSection />
+
       <Form {...form}>
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
-          <InterestFilterSection
-            value={form.watch("interestFilterPrompt")}
-            onChange={handleInterestFilterPromptChange}
-            onReset={handleResetInterestFilterPrompt}
-          />
-
           <RegionsSection
             regions={form.watch("regions")}
             allRegions={DEFAULT_REGIONS}

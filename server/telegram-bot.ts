@@ -1,6 +1,12 @@
-import { getTelegramUpdates, sendTelegramMessage, answerCallbackQuery, editMessageWithStatus, type TelegramUpdate } from './telegram';
-import { handleStartCommand, handleHelpCommand, handleResearchCommand, handleLeadsCommand, handleSaveCallback, handleHereCommand } from './telegram-commands';
+import { and, eq } from 'drizzle-orm';
+import { leadFeedback, type Lead } from '@shared/schema';
+import { getTelegramUpdates, sendTelegramMessage, answerCallbackQuery, editMessageWithStatus, editMessageReplyMarkup, type TelegramUpdate } from './telegram';
+import { handleStartCommand, handleHelpCommand, handleResearchCommand, handleLeadsCommand, handleSaveCallback, handleHereCommand, handleTeachCommand, handleHealthCommand } from './telegram-commands';
+import { LEAD_CALLBACK, leadActionRow, statusRow } from './telegram-formatter';
+import { upsertExample } from './pipeline-examples';
+import { muteByNames } from './contacts';
 import { storage } from './storage';
+import { db } from './db';
 
 /** Whether the bot is operating in webhook mode (true) or polling mode (false) */
 let webhookMode = false;
@@ -65,6 +71,14 @@ async function routeCommand(command: string, args: string[], chatId: string, mes
         await handleLeadsCommand(chatId);
         break;
 
+      case 'teach':
+        await handleTeachCommand(args, chatId, settings, messageThreadId);
+        break;
+
+      case 'health':
+        await handleHealthCommand(chatId, settings, messageThreadId);
+        break;
+
       default:
         await sendTelegramMessage(chatId, `❌ Unknown command: /${command}\n\nUse /help to see available commands.`, 'HTML', undefined, messageThreadId);
     }
@@ -96,23 +110,24 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
         return;
       }
 
-      // Handle lead action callbacks
-      if (callbackData.startsWith('lead_save_')) {
-        const leadId = callbackData.substring(10); // Remove 'lead_save_' prefix
-        await handleLeadSaveCallback(leadId, chatId, callbackQueryId, messageId);
-        return;
-      }
+      // Handle lead action callbacks. Prefixes come from telegram-formatter so
+      // the button that was rendered and the branch that handles it can never
+      // drift apart (they used to be a literal and a hand-counted substring).
+      const leadRoutes: [string, (leadId: string) => Promise<void>][] = [
+        [LEAD_CALLBACK.save, (id) => handleLeadSaveCallback(id, chatId, callbackQueryId, messageId)],
+        [LEAD_CALLBACK.reviewed, (id) => handleLeadReviewedCallback(id, chatId, callbackQueryId, messageId)],
+        [LEAD_CALLBACK.dismiss, (id) => handleLeadDismissCallback(id, chatId, callbackQueryId, messageId)],
+        [LEAD_CALLBACK.mute, (id) => handleLeadMuteCallback(id, chatId, callbackQueryId, messageId)],
+        [LEAD_CALLBACK.good, (id) => handleLeadFeedbackCallback(id, 'good', chatId, callbackQueryId, messageId)],
+        [LEAD_CALLBACK.bad, (id) => handleLeadFeedbackCallback(id, 'bad', chatId, callbackQueryId, messageId)],
+        [LEAD_CALLBACK.higher, (id) => handleScoredTooLowCallback(id, chatId, callbackQueryId, messageId)],
+      ];
 
-      if (callbackData.startsWith('lead_reviewed_')) {
-        const leadId = callbackData.substring(14); // Remove 'lead_reviewed_' prefix
-        await handleLeadReviewedCallback(leadId, chatId, callbackQueryId, messageId);
-        return;
-      }
-
-      if (callbackData.startsWith('lead_dismiss_')) {
-        const leadId = callbackData.substring(13); // Remove 'lead_dismiss_' prefix
-        await handleLeadDismissCallback(leadId, chatId, callbackQueryId, messageId);
-        return;
+      for (const [prefix, handle] of leadRoutes) {
+        if (callbackData.startsWith(prefix)) {
+          await handle(callbackData.slice(prefix.length));
+          return;
+        }
       }
 
       // Handle research save callback
@@ -308,6 +323,176 @@ async function handleLeadDismissCallback(
     if (messageId) {
       await editMessageWithStatus(chatId, messageId, "⚠️ Error - try again");
     }
+  }
+}
+
+/** Marks every ui_lead_feedback row that came from a Telegram button tap. */
+const TELEGRAM_FEEDBACK_REASON = "telegram";
+
+/** Note stored on the reference example when Billy says a lead was under-scored. */
+const SCORED_TOO_LOW_NOTE = "Billy: should have scored higher (Telegram)";
+
+/**
+ * Shows the outcome of a button tap on the message itself.
+ *
+ * State-changing taps (save / dismiss / mute) replace the whole keyboard, which
+ * is also what makes a double-tap a no-op. Feedback taps replace only the second
+ * row, so Billy can still save or dismiss the lead after rating it.
+ */
+async function showTapResult(
+  chatId: string,
+  messageId: number | undefined,
+  statusText: string,
+  keepActionsForLeadId?: string,
+): Promise<void> {
+  if (!messageId) return;
+  if (keepActionsForLeadId) {
+    await editMessageReplyMarkup(chatId, messageId, {
+      inline_keyboard: [leadActionRow(keepActionsForLeadId), statusRow(statusText)],
+    });
+    return;
+  }
+  await editMessageWithStatus(chatId, messageId, statusText);
+}
+
+/** Loads the lead behind a callback, telling the user when it has gone away. */
+async function loadLeadForCallback(
+  leadId: string,
+  chatId: string,
+  callbackQueryId: string,
+  messageId?: number,
+): Promise<Lead | null> {
+  const lead = await storage.getLeadById(leadId);
+  if (lead) return lead;
+  await answerCallbackQuery(callbackQueryId, "❌ Lead no longer available");
+  await showTapResult(chatId, messageId, "❌ Lead not found");
+  return null;
+}
+
+/** Uniform failure path: tell the user, and leave the message showing why. */
+async function reportCallbackError(
+  context: string,
+  error: unknown,
+  chatId: string,
+  callbackQueryId: string,
+  messageId?: number,
+): Promise<void> {
+  console.error(`Error ${context}:`, error);
+  await answerCallbackQuery(callbackQueryId, "⚠️ Error, please try again");
+  await showTapResult(chatId, messageId, "⚠️ Error - try again");
+}
+
+/**
+ * Handles the "🔇 Mute founders" button.
+ *
+ * Mirrors what the dashboard does (POST /api/founders/mute then PATCH the lead
+ * to dismissed), but calls the same storage/contacts functions directly instead
+ * of looping back through HTTP.
+ */
+async function handleLeadMuteCallback(
+  leadId: string,
+  chatId: string,
+  callbackQueryId: string,
+  messageId?: number,
+): Promise<void> {
+  try {
+    const lead = await loadLeadForCallback(leadId, chatId, callbackQueryId, messageId);
+    if (!lead) return;
+
+    const names = (lead.founderNames || []).filter((n) => n && n.trim().length >= 2);
+    if (names.length === 0) {
+      // Nothing to mute — leave the keyboard intact so Save/Dismiss still work.
+      await answerCallbackQuery(callbackQueryId, "No founders named on this lead");
+      return;
+    }
+
+    const muted = await muteByNames(names);
+    await storage.updateLeadStatus(leadId, "dismissed");
+
+    await answerCallbackQuery(callbackQueryId, `🔇 Muted ${muted} founder${muted === 1 ? "" : "s"}`);
+    const shown = names.slice(0, 2).join(", ");
+    const extra = names.length - Math.min(names.length, 2);
+    await showTapResult(chatId, messageId, `🔇 Muted ${shown}${extra > 0 ? ` +${extra}` : ""} · dismissed`);
+  } catch (error) {
+    await reportCallbackError("muting lead founders", error, chatId, callbackQueryId, messageId);
+  }
+}
+
+/**
+ * Handles "👍 Good lead" / "👎 Not a lead".
+ *
+ * Writes one ui_lead_feedback row; the scan prompts read the bad ones back as
+ * negative examples (see feedback-prompt.ts), which is the whole point. The
+ * lead's own status is deliberately left alone — this is a rating, not triage.
+ */
+async function handleLeadFeedbackCallback(
+  leadId: string,
+  rating: "good" | "bad",
+  chatId: string,
+  callbackQueryId: string,
+  messageId?: number,
+): Promise<void> {
+  const label = rating === "good" ? "👍 Good lead" : "👎 Not a lead";
+  try {
+    const lead = await loadLeadForCallback(leadId, chatId, callbackQueryId, messageId);
+    if (!lead) return;
+
+    // The keyboard edit already prevents a second tap; this guards the race
+    // where two updates for the same tap arrive before the edit lands.
+    const [existing] = await db
+      .select({ id: leadFeedback.id })
+      .from(leadFeedback)
+      .where(and(eq(leadFeedback.leadId, leadId), eq(leadFeedback.reason, TELEGRAM_FEEDBACK_REASON)))
+      .limit(1);
+
+    if (!existing) {
+      await db.insert(leadFeedback).values({
+        leadId: lead.id,
+        rating,
+        reason: TELEGRAM_FEEDBACK_REASON,
+        headline: lead.headline,
+        category: lead.category,
+        region: lead.region,
+        companyNames: lead.companyNames,
+        founderNames: lead.founderNames,
+      });
+    }
+
+    await answerCallbackQuery(callbackQueryId, existing ? "Already recorded" : "Thanks — noted");
+    await showTapResult(chatId, messageId, `${label} — noted`, leadId);
+  } catch (error) {
+    await reportCallbackError("recording lead feedback", error, chatId, callbackQueryId, messageId);
+  }
+}
+
+/**
+ * Handles "🎓 Should have scored higher".
+ *
+ * Turns the article into a reference example expecting a pass, so the nightly
+ * regression run and the scan prompts both learn from it. Upsert-by-URL makes a
+ * repeat tap (or the same article arriving twice) harmless.
+ */
+async function handleScoredTooLowCallback(
+  leadId: string,
+  chatId: string,
+  callbackQueryId: string,
+  messageId?: number,
+): Promise<void> {
+  try {
+    const lead = await loadLeadForCallback(leadId, chatId, callbackQueryId, messageId);
+    if (!lead) return;
+
+    await upsertExample({
+      url: lead.sourceUrl,
+      headline: lead.headline,
+      expected: "pass",
+      note: SCORED_TOO_LOW_NOTE,
+    });
+
+    await answerCallbackQuery(callbackQueryId, "🎓 Taught — added to reference examples");
+    await showTapResult(chatId, messageId, "🎓 Taught: should score higher", leadId);
+  } catch (error) {
+    await reportCallbackError("teaching from lead", error, chatId, callbackQueryId, messageId);
   }
 }
 

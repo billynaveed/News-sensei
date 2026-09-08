@@ -17,7 +17,23 @@ import {
   DialogFooter,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Ban, ChevronRight, Loader2, Network, Plus, Search, Users } from "lucide-react";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  AlertTriangle,
+  Ban,
+  Check,
+  CheckCheck,
+  ChevronRight,
+  Link2,
+  Loader2,
+  Network,
+  Plus,
+  RotateCw,
+  Search,
+  Trash2,
+  Users,
+  XCircle,
+} from "lucide-react";
 
 export type FamilySummary = {
   id: string;
@@ -26,10 +42,36 @@ export type FamilySummary = {
   description: string | null;
   netWorthEstimate: string | null;
   researchStatus: string;
+  researchAttempts: number;
+  researchedAt: string | null;
   primaryCompanies: string[] | null;
+  /** "high" | "medium" | "low" | "error" — parsed out of families.confidence. */
+  confidenceLevel: string | null;
+  /** Why the researcher flagged it, e.g. "only 1 member found". */
+  reviewNote: string | null;
+  sourceCount: number;
+  relationshipCount: number;
   memberCount: number;
   blockedCount: number;
 };
+
+type ReviewView = "all" | "needs_review" | "failed";
+
+const CONFIDENCE_BADGES: Record<string, string> = {
+  high: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20",
+  medium: "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20",
+  low: "bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/20",
+  error: "bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20",
+};
+
+/** Billy's bulk rule: enough people, and the model wasn't unsure. */
+function isBulkApprovable(f: FamilySummary): boolean {
+  return (
+    f.researchStatus === "needs_review" &&
+    f.memberCount >= 3 &&
+    (f.confidenceLevel === "medium" || f.confidenceLevel === "high")
+  );
+}
 
 type ResearchProgress = {
   enabled: boolean;
@@ -102,7 +144,67 @@ export default function FamiliesPage() {
     return Array.from(set).sort();
   }, [familiesData]);
   const [countryFilter, setCountryFilter] = useState<string>("all");
-  const visible = countryFilter === "all" ? filtered : filtered.filter((f) => f.country === countryFilter);
+  const inCountry = countryFilter === "all" ? filtered : filtered.filter((f) => f.country === countryFilter);
+
+  // Review queue: families the researcher could not finish on its own.
+  const [view, setView] = useState<ReviewView>("all");
+  const reviewCounts = useMemo(
+    () => ({
+      needs_review: (familiesData ?? []).filter((f) => f.researchStatus === "needs_review").length,
+      failed: (familiesData ?? []).filter((f) => f.researchStatus === "failed").length,
+    }),
+    [familiesData],
+  );
+
+  const visible = useMemo(() => {
+    if (view !== "all") return inCountry.filter((f) => f.researchStatus === view);
+    // Anything awaiting a decision sorts to the top of the full list.
+    const rank = (f: FamilySummary) =>
+      f.researchStatus === "needs_review" ? 0 : f.researchStatus === "failed" ? 1 : 2;
+    return [...inCountry].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+  }, [inCountry, view]);
+
+  const bulkApprovable = useMemo(
+    () => (familiesData ?? []).filter(isBulkApprovable).length,
+    [familiesData],
+  );
+
+  const invalidateFamilies = () => {
+    queryClient.invalidateQueries({ queryKey: ["/api/families"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/families/research/progress"] });
+  };
+
+  const approveMutation = useMutation({
+    mutationFn: async (id: string) => {
+      await apiRequest("POST", `/api/families/${id}/approve`);
+    },
+    onSuccess: invalidateFamilies,
+  });
+
+  const requeueMutation = useMutation({
+    mutationFn: async (id: string) => {
+      await apiRequest("POST", `/api/families/${id}/research`);
+    },
+    onSuccess: invalidateFamilies,
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: string) => {
+      await apiRequest("DELETE", `/api/families/${id}`);
+    },
+    onSuccess: invalidateFamilies,
+  });
+
+  const bulkApproveMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/families/review/approve-all", {
+        minMembers: 3,
+        minConfidence: "medium",
+      });
+      return (await res.json()) as { approved: number };
+    },
+    onSuccess: invalidateFamilies,
+  });
 
   return (
     <div className="p-4 md:p-6 space-y-4 max-w-5xl mx-auto">
@@ -186,6 +288,47 @@ export default function FamiliesPage() {
         </Card>
       )}
 
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <Tabs value={view} onValueChange={(v) => setView(v as ReviewView)}>
+          <TabsList>
+            <TabsTrigger value="all" data-testid="tab-families-all">
+              All ({familiesData?.length ?? 0})
+            </TabsTrigger>
+            <TabsTrigger value="needs_review" data-testid="tab-families-review">
+              <AlertTriangle className="h-3.5 w-3.5 mr-1.5 text-orange-500" />
+              Needs review ({reviewCounts.needs_review})
+            </TabsTrigger>
+            <TabsTrigger value="failed" data-testid="tab-families-failed">
+              <XCircle className="h-3.5 w-3.5 mr-1.5 text-red-500" />
+              Failed ({reviewCounts.failed})
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
+        {/* Always visible on the queue so the rule is discoverable, disabled
+            while nothing qualifies. */}
+        {view === "needs_review" && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => bulkApproveMutation.mutate()}
+            disabled={bulkApproveMutation.isPending || bulkApprovable === 0}
+            title={
+              bulkApprovable === 0
+                ? "Nothing in the queue has 3+ members and confidence medium or better"
+                : undefined
+            }
+            data-testid="button-approve-all"
+          >
+            {bulkApproveMutation.isPending ? (
+              <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+            ) : (
+              <CheckCheck className="h-3.5 w-3.5 mr-1.5" />
+            )}
+            Approve all with ≥3 members and confidence ≥ medium ({bulkApprovable})
+          </Button>
+        )}
+      </div>
+
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative flex-1 min-w-[200px] max-w-sm">
           <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
@@ -229,9 +372,36 @@ export default function FamiliesPage() {
       ) : visible.length === 0 ? (
         <Card>
           <CardContent className="py-10 text-center text-sm text-muted-foreground">
-            {familiesData?.length ? "No families match the search." : "No families yet — create one to start mapping."}
+            {view === "needs_review"
+              ? "Nothing to review — the researcher is happy with every family it has finished."
+              : view === "failed"
+                ? "No failed families."
+                : familiesData?.length
+                  ? "No families match the search."
+                  : "No families yet — create one to start mapping."}
           </CardContent>
         </Card>
+      ) : view !== "all" ? (
+        <div className="space-y-2">
+          {visible.map((f) => (
+            <ReviewRow
+              key={f.id}
+              family={f}
+              onApprove={() => approveMutation.mutate(f.id)}
+              onRequeue={() => requeueMutation.mutate(f.id)}
+              onDelete={() => {
+                if (window.confirm(`Delete "${f.name}"? People and their block status are kept — only the tree is removed.`)) {
+                  deleteMutation.mutate(f.id);
+                }
+              }}
+              pending={
+                (approveMutation.isPending && approveMutation.variables === f.id) ||
+                (requeueMutation.isPending && requeueMutation.variables === f.id) ||
+                (deleteMutation.isPending && deleteMutation.variables === f.id)
+              }
+            />
+          ))}
+        </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {visible.map((f) => {
@@ -270,5 +440,74 @@ export default function FamiliesPage() {
         </div>
       )}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+/**
+ * One row of the review queue: what the researcher found (members, edges,
+ * confidence + why it flagged the family, sources) and the three decisions —
+ * approve as-is, send it back to the queue, or drop it.
+ */
+function ReviewRow({
+  family,
+  onApprove,
+  onRequeue,
+  onDelete,
+  pending,
+}: {
+  family: FamilySummary;
+  onApprove: () => void;
+  onRequeue: () => void;
+  onDelete: () => void;
+  pending: boolean;
+}) {
+  const confidence = family.confidenceLevel ?? "unknown";
+  const failed = family.researchStatus === "failed";
+  return (
+    <Card data-testid={`row-review-${family.id}`}>
+      <CardContent className="p-3 flex flex-col sm:flex-row sm:items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <Link href={`/families/${family.id}`} className="font-semibold hover:underline truncate">
+              {family.name}
+            </Link>
+            {family.country && <span className="text-xs text-muted-foreground">{family.country}</span>}
+            <Badge variant="secondary" className="gap-1">
+              <Users className="h-3 w-3" /> {family.memberCount}
+            </Badge>
+            <Badge variant="secondary" className="gap-1">
+              <Link2 className="h-3 w-3" /> {family.relationshipCount}
+            </Badge>
+            <Badge variant="outline" className={CONFIDENCE_BADGES[confidence] ?? ""}>
+              {failed ? `failed · attempt ${family.researchAttempts}` : `confidence ${confidence}`}
+            </Badge>
+            <span className="text-xs text-muted-foreground">
+              {family.sourceCount} source{family.sourceCount === 1 ? "" : "s"}
+            </span>
+          </div>
+          {family.reviewNote && (
+            <div className={`text-xs mt-1 ${failed ? "text-red-600 dark:text-red-400" : "text-orange-600 dark:text-orange-400"}`}>
+              {family.reviewNote}
+            </div>
+          )}
+          {family.description && (
+            <p className="text-sm text-muted-foreground mt-1 line-clamp-2">{family.description}</p>
+          )}
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <Button size="sm" variant="outline" onClick={onApprove} disabled={pending} data-testid={`button-approve-${family.id}`}>
+            {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5 mr-1" />}
+            Approve
+          </Button>
+          <Button size="sm" variant="outline" onClick={onRequeue} disabled={pending} data-testid={`button-requeue-${family.id}`}>
+            <RotateCw className="h-3.5 w-3.5 mr-1" /> Requeue
+          </Button>
+          <Button size="sm" variant="ghost" onClick={onDelete} disabled={pending} data-testid={`button-delete-${family.id}`}>
+            <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   );
 }

@@ -3,18 +3,19 @@ import { createServer, type Server } from "http";
 import { z } from "zod";
 import crypto from "crypto";
 import { storage } from "./storage";
-import { sendTestEmail, sendLeadAlertEmail } from "./sendgrid";
 import { sendTestTelegramMessage, getTelegramUpdates, type TelegramUpdate } from "./telegram";
 import { handleUpdate as handleTelegramUpdate } from "./telegram-bot";
 import { scanForLeads, getScanProgress, enrichLeadWithWebSearch, ingestArticleUrl } from "./scanner";
-import { ensureLeadFeedbackTable } from "./ensure-lead-feedback-table";
-import { ensureContactMetaTable } from "./ensure-contact-meta-table";
-import { ensureFamiliesTables } from "./ensure-families-tables";
 import { getResearchProgress, runFamilyResearchOnce, seedFamilies, requeueFamily } from "./family-research";
 import { getScraperStatus } from "./scraper";
-import { ensurePipelineExamplesTable, listExamples, upsertExample, deleteExample, getExamplesSummary } from "./pipeline-examples";
+import { listExamples, upsertExample, deleteExample, getExamplesSummary } from "./pipeline-examples";
 import { startExamplesCron, runExamplesNow } from "./examples-cron";
 import { registerHealthRoutes } from "./routes-health";
+import { registerPeopleRoutes } from "./routes-people";
+import { registerPromptRoutes } from "./routes-prompts";
+import { registerFamilyRoutes } from "./routes-families";
+import { seedPromptsFromSettings } from "./prompts";
+import { buildWeeklyNote, sendWeeklyNoteNow } from "./weekly-note";
 import { getSearchStatus } from "./web-search";
 import {
   listFamilies,
@@ -31,11 +32,8 @@ import {
 } from "./families";
 import { listContacts, getContactArticles, updateContactMeta, createContactByName, createContactsFromLink, countDueContacts, muteByNames } from "./contacts";
 import { migrateSavedLeads } from "./migrate-saved-leads";
-import { ensureSavedLeadsTable } from "./ensure-saved-leads-table";
 import { enrichSavedLead, formatEnrichmentForSavedLead } from "./founder-enrichment";
 import { restartScheduler } from "./scheduler";
-import { ensureIpoFilingsTable } from "./ensure-ipo-table";
-import { ensureResearchCacheTable } from "./ensure-research-cache-table";
 import { scanForIpoFilings, getAllIpoFilings, getIpoFilingById, backfillIpoAnalysis } from "./ipo-scanner";
 import { generateRegistrationOptions, verifyRegistrationResponse, generateAuthenticationOptions, verifyAuthenticationResponse } from "@simplewebauthn/server";
 import type { LeadStatus, IpoExchange } from "@shared/schema";
@@ -207,63 +205,22 @@ export async function registerRoutes(
     }
   });
 
-  // Ensure saved_leads table exists
+  // Schema is managed by `npm run db:push` (see memory/db-superuser-ownership).
+  // Boot-time sanity check only: a missing table is a deploy error, not
+  // something to paper over at runtime.
   try {
-    const created = await ensureSavedLeadsTable();
-    if (created) {
-      console.log("saved_leads table was created");
-    }
+    const expected = ["leads_v2", "saved_leads_v2", "ui_lead_feedback", "contact_meta", "pipeline_examples", "families", "family_members", "family_relationships", "person_blocks", "ipo_filings", "research_cache"];
+    const present = new Set(((await db.execute(sql`SELECT tablename FROM pg_tables WHERE schemaname = 'public'`)).rows as { tablename: string }[]).map((r) => r.tablename));
+    const missing = expected.filter((t) => !present.has(t));
+    if (missing.length) console.error(`[schema] MISSING TABLES: ${missing.join(", ")} — run \`npm run db:push\``);
   } catch (error) {
-    console.error("Error ensuring saved_leads table:", error);
+    console.error("[schema] sanity check failed:", error);
   }
-
-  // Ensure lead_feedback table exists
-  try {
-    await ensureLeadFeedbackTable();
-  } catch (error) {
-    console.error("Error ensuring lead_feedback table:", error);
-  }
-
-  // Ensure contact_meta table exists
-  try {
-    await ensureContactMetaTable();
-  } catch (error) {
-    console.error("Error ensuring contact_meta table:", error);
-  }
-
-  try {
-    await ensurePipelineExamplesTable();
-    startExamplesCron();
-  } catch (error) {
-    console.error("Error ensuring pipeline_examples table:", error);
-  }
-
-  // Ensure families/blocked-persons tables exist
-  try {
-    await ensureFamiliesTables();
-  } catch (error) {
-    console.error("Error ensuring families tables:", error);
-  }
-
-  // Ensure ipo_filings table exists
-  try {
-    const created = await ensureIpoFilingsTable();
-    if (created) {
-      console.log("ipo_filings table was created");
-    }
-  } catch (error) {
-    console.error("Error ensuring ipo_filings table:", error);
-  }
-
-  // Ensure research_cache table exists
-  try {
-    const created = await ensureResearchCacheTable();
-    if (created) {
-      console.log("research_cache table was created");
-    }
-  } catch (error) {
-    console.error("Error ensuring research_cache table:", error);
-  }
+  // Prompts: the live Stage 1 prompt lived in settings.interest_filter_prompt;
+  // seed it as version 1 so behaviour does not change when prompts move to
+  // pipeline_prompts. Idempotent.
+  await seedPromptsFromSettings();
+  startExamplesCron();
 
   // Ensure webauthn tables exist
   try {
@@ -729,6 +686,25 @@ export async function registerRoutes(
   });
 
   registerHealthRoutes(app);
+  registerPeopleRoutes(app);
+  registerPromptRoutes(app);
+  registerFamilyRoutes(app);
+
+  // Weekly "what I learned" note: preview (text) and manual send.
+  app.get("/api/weekly-note/preview", async (_req, res) => {
+    try {
+      res.json({ text: await buildWeeklyNote() });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : "Failed" });
+    }
+  });
+  app.post("/api/weekly-note/send", async (_req, res) => {
+    try {
+      res.json(await sendWeeklyNoteNow());
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : "Failed" });
+    }
+  });
 
   app.get("/api/search/status", (_req, res) => {
     res.json(getSearchStatus());
@@ -1109,20 +1085,6 @@ export async function registerRoutes(
     }
   });
 
-  // Test email endpoint
-  app.post("/api/test-email", async (req, res) => {
-    try {
-      const settings = await storage.getSettings();
-      if (!settings?.alertEmail) {
-        return res.status(400).json({ error: "No alert email configured" });
-      }
-      await sendTestEmail(settings.alertEmail);
-      res.json({ success: true, message: "Test email sent" });
-    } catch (error) {
-      console.error("Error sending test email:", error);
-      res.status(500).json({ error: "Failed to send test email" });
-    }
-  });
 
   // Test Telegram endpoint
   app.post("/api/test-telegram", async (req, res) => {

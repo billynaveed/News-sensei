@@ -1,11 +1,17 @@
 import { sendTelegramMessage, answerCallbackQuery } from './telegram';
 import { enrichFounderInfoWithSearch, enrichCompanyInfoWithSearch, type FounderEnrichmentResult, type CompanyEnrichmentResult } from './founder-enrichment';
-import { formatFounderEnrichment, formatCompanyEnrichment, formatSavedLeadEnrichment, splitLongMessage } from './telegram-formatter';
+import { formatFounderEnrichment, formatCompanyEnrichment, formatSavedLeadEnrichment, splitLongMessage, debugPageLink, escapeHtml } from './telegram-formatter';
 import { performResearch, formatResearchTelegram, checkRateLimit, recordRateLimit, type ResearchResult } from './research';
 import { storage } from './storage';
 import type { Settings } from '@shared/schema';
-import { openai } from './openai-client';
-import { stripJsonFences } from './json-utils';
+import { callJsonStage } from './llm-json';
+import { upsertExample } from './pipeline-examples';
+import { getHealth, type HealthStatus } from './health';
+import { scrapeUrl, extractArticleText } from './scraper';
+import { isPublicHttpUrl } from './url-safety';
+
+/** Cheap gateway model used for the one-shot person/company classification. */
+const CLASSIFIER_MODEL = "google/gemini-2.5-flash-lite";
 
 
 // Store research results temporarily for saving
@@ -43,6 +49,8 @@ I can help you research founders and companies on-demand.
 /research &lt;name&gt; - Research a founder or company
 /research saved &lt;id&gt; - Enrich a saved lead
 /leads - Show recent saved leads
+/teach &lt;url&gt; - Teach me an article I should have caught
+/health - System health right now
 
 <b>Examples:</b>
 /research Elon Musk
@@ -123,6 +131,19 @@ Example:
 <b>/leads</b>
 Show your recent saved leads with their IDs, so you can enrich them.
 
+<b>/teach &lt;url&gt;</b>
+Found a deal I missed? Send me the article and I'll treat it as a reference example that must pass the filter — it feeds the scan prompts and the nightly regression run.
+
+Example:
+• /teach https://www.techinasia.com/circle-acquires-tazapay
+
+<b>/health</b>
+One-message system status: database, LLM gateway, scraper credits, search quota, last scan, family worker, Telegram.
+
+<b>On every lead alert:</b>
+💾 Save · 🗑 Dismiss · 🔇 Mute founders (mutes them everywhere and dismisses this lead)
+👍 Good lead · 👎 Not a lead · 🎓 Should have scored higher (teaches the filter)
+
 <b>Authorization:</b>
 This bot only responds to the authorized chat ID configured in your settings.
 
@@ -145,13 +166,12 @@ Rules:
 
 Return JSON: {"type": "founder" | "company"}`;
 
-    const response = await openai.chat.completions.create({
-      model: "google/gemini-2.5-flash-lite",
-      messages: [{ role: "user", content: prompt }],
+    const result = await callJsonStage<{ type?: string }>({
+      model: CLASSIFIER_MODEL,
+      prompt,
       temperature: 0,
+      label: "Telegram entity classifier",
     });
-
-    const result = JSON.parse(stripJsonFences(response.choices[0].message.content || '{"type": "company"}'));
     return result.type === "founder" ? "founder" : "company";
   } catch (error) {
     console.error('Error classifying entity:', error);
@@ -478,5 +498,145 @@ export async function handleSaveCallback(researchId: string, chatId: string, cal
     console.error('Error saving research:', error);
     await answerCallbackQuery(callbackQueryId, "❌ Failed to save");
     await sendTelegramMessage(chatId, "⚠️ Failed to save the research. Please try again.");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// /teach and /health — the two commands that make the phone a control surface
+// rather than just a notification feed.
+// ---------------------------------------------------------------------------
+
+/** Note recorded on examples taught with /teach, so their origin stays visible. */
+const TEACH_NOTE = "Billy: taught via /teach (Telegram)";
+
+/** Longest headline we keep; pipeline_examples truncates at 300 anyway. */
+const MAX_TEACH_HEADLINE = 280;
+
+const STATUS_ICON: Record<HealthStatus, string> = { ok: "🟢", warn: "🟡", error: "🔴" };
+
+/** Only the configured chat may read internals or write to the learning loop. */
+function isAuthorized(chatId: string, settings: Settings): boolean {
+  return !settings.telegramChatId || chatId === settings.telegramChatId;
+}
+
+/** Turn ".../circle-acquires-tazapay-400m" into "circle acquires tazapay 400m". */
+function headlineFromUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const slug = parsed.pathname.split("/").filter(Boolean).pop() || "";
+    const words = slug.replace(/\.(html?|php|aspx)$/i, "").replace(/[-_]+/g, " ").trim();
+    return words.length >= 8 ? words : parsed.hostname;
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * Best-effort headline for a URL Billy wants taught.
+ *
+ * A plain fetch handles most outlets for free; the scraper is the fallback for
+ * the ones that block direct requests (it costs a credit, but /teach is a rare,
+ * deliberate action). The URL slug is the last resort so a headline always
+ * exists — pipeline_examples.headline is NOT NULL and feeds the few-shot prompts.
+ */
+async function resolveHeadline(url: string): Promise<string> {
+  try {
+    const response = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36" },
+      signal: AbortSignal.timeout(12_000),
+    });
+    if (response.ok) {
+      const title = extractArticleText(await response.text()).title.trim();
+      if (title) return title.slice(0, MAX_TEACH_HEADLINE);
+    }
+  } catch { /* fall through to the scraper */ }
+
+  try {
+    const scraped = await scrapeUrl(url);
+    if (scraped.ok && scraped.body) {
+      const title = extractArticleText(scraped.body).title.trim();
+      if (title) return title.slice(0, MAX_TEACH_HEADLINE);
+    }
+  } catch { /* fall through to the slug */ }
+
+  return headlineFromUrl(url).slice(0, MAX_TEACH_HEADLINE);
+}
+
+/**
+ * Handles `/teach <url>` — records an article as a reference example that the
+ * pipeline is expected to pass.
+ *
+ * The example feeds both halves of the learning loop: the scan prompts pick it
+ * up as a positive few-shot, and the nightly regression run re-checks it. The
+ * upsert is keyed on URL, so teaching the same article twice is a no-op.
+ */
+export async function handleTeachCommand(
+  args: string[],
+  chatId: string,
+  settings: Settings,
+  messageThreadId?: number,
+): Promise<void> {
+  const reply = (text: string) => sendTelegramMessage(chatId, text, 'HTML', undefined, messageThreadId);
+
+  if (!isAuthorized(chatId, settings)) {
+    console.warn(`Unauthorized /teach attempt from chat ID: ${chatId}`);
+    await reply("⛔ This bot is private.");
+    return;
+  }
+
+  const url = (args[0] || "").trim();
+  if (!url) {
+    await reply("Usage: <code>/teach &lt;article url&gt;</code>\n\nTeaches Sensei that an article like this one should pass the filter.");
+    return;
+  }
+
+  if (!isPublicHttpUrl(url)) {
+    await reply("❌ That doesn't look like a public article URL.");
+    return;
+  }
+
+  try {
+    const headline = await resolveHeadline(url);
+    await upsertExample({ url, headline, expected: "pass", note: TEACH_NOTE });
+    await reply(
+      `🎓 <b>Taught.</b>\n\n${escapeHtml(headline)}\n\n` +
+      `It's now a reference example expecting a PASS, so it feeds the scan prompts and the nightly regression run.\n\n${debugPageLink()}`,
+    );
+  } catch (error) {
+    console.error('Error handling /teach:', error);
+    await reply("⚠️ Couldn't save that example. Check the server logs.");
+  }
+}
+
+/**
+ * Handles `/health` — the same report the Debug page shows, in one message.
+ */
+export async function handleHealthCommand(
+  chatId: string,
+  settings: Settings,
+  messageThreadId?: number,
+): Promise<void> {
+  const reply = (text: string) => sendTelegramMessage(chatId, text, 'HTML', undefined, messageThreadId);
+
+  if (!isAuthorized(chatId, settings)) {
+    console.warn(`Unauthorized /health attempt from chat ID: ${chatId}`);
+    await reply("⛔ This bot is private.");
+    return;
+  }
+
+  try {
+    const report = await getHealth();
+    const lines = report.checks.map(
+      (check) => `${STATUS_ICON[check.status]} <b>${escapeHtml(check.label)}</b> — ${escapeHtml(check.message)}`,
+    );
+    const failing = report.checks.filter((c) => c.status !== "ok").length;
+    const headline = failing === 0
+      ? `${STATUS_ICON.ok} <b>All ${report.checks.length} checks green</b>`
+      : `${STATUS_ICON[report.overall]} <b>${failing} of ${report.checks.length} checks need attention</b>`;
+
+    await reply([headline, "", ...lines, "", debugPageLink()].join("\n"));
+  } catch (error) {
+    console.error('Error handling /health:', error);
+    await reply("⚠️ Couldn't read system health. Check the server logs.");
   }
 }

@@ -1,8 +1,8 @@
 import { storage } from "./storage";
-import { sendLeadAlertEmail } from "./sendgrid";
 import { sendLeadAlertTelegram } from "./telegram";
 import { fetchAllArticles, type RawArticle, type RssFeedWithMeta } from "./adapters";
 import { callJsonStage } from "./llm-json";
+import { getPrompt, render } from "./prompts";
 import { enrichSavedLead, formatEnrichmentForSavedLead } from "./founder-enrichment";
 import { passesInterestFilter, extractPrimaryCompany, isPublicCompany, checkDuplication } from "./pipeline-stages";
 import { validateSeaAnchor } from "./sea-guard";
@@ -190,127 +190,12 @@ export async function deepAnalyzeArticle(
 ): Promise<DeepAnalysisResult | null> {
   const startTime = Date.now();
 
-  const prompt = `Perform deep analysis of this news article for private banking lead intelligence.
-
-FULL ARTICLE:
-Headline: ${article.headline}
-Source: ${article.source}
-Content: ${fullContent.slice(0, 6000)}
-
-Target Regions (SEA / HK / Taiwan): ${targetRegions.join(", ")}
-
-GEOGRAPHY RULE (strict, source-backed). A lead qualifies on geography ONLY if the
-article itself contains evidence of one of these:
-  1. company_hq           — company is headquartered in a Target Region
-  2. founder_base         — a named founder currently lives / works in a Target Region
-  3. founder_roots        — a named founder has credible roots in a Target Region
-                            (born / raised / educated / family / previously based there)
-  4. operational_centre   — company has a strong operational centre in a Target Region
-                            (regional HQ, primary office, principal market with leadership presence)
-  5. wealth_event         — the article explicitly concerns a wealth liquidity event
-                            for a SEA / HK / Taiwan founder, family or private company
-
-NOT ENOUGH (must NOT pass on these alone — record each one observed in
-disqualifyingSignals so the deterministic guard can reject):
-  - sea_publisher_only      → article is published by a SEA outlet (Tech in Asia,
-                              Business Times, Straits Times, KrASIA, DealStreetAsia,
-                              The Edge, e27, SCMP, CNA, etc) but the subject company
-                              and founders are non-SEA
-  - sea_investor_only       → company is non-SEA but an investor / backer / fund is
-                              SEA-based (GIC, Temasek, Khazanah, EDBI, MUFG-SEA arm,
-                              SEA family office, etc). Investor identity does NOT
-                              establish target-region relevance.
-  - vague_apac_expansion    → vague "expanding into Asia / APAC", "Asian customers",
-                              "Asia growth strategy" with no concrete office, founder,
-                              or HQ in a Target Region
-  - sea_customers_only      → company sells to SEA customers but is not based there
-  - sea_distribution_only   → distribution / partner network in SEA only
-
-Mainland China is NOT in the Target Regions. Beijing, Shanghai, Shenzhen,
-Guangzhou, Hangzhou-based companies do NOT qualify unless they have an
-independent qualifying anchor in HK or Taiwan or another Target Region.
-
-PRIORITY SCORING:
-- 80-100 (HIGH): Clear liquidity event with a named individual. IPO filing,
-  acquisition with disclosed price, Series D+ / late-stage raise >$100M, confirmed exit.
-- ACQUISITION OF A PRIVATE TARGET-REGION COMPANY = a liquidity event for its
-  founders and shareholders BY DEFINITION. Do NOT require the article to say
-  explicitly that a person "gains wealth". If the target is private and in a
-  Target Region: named founder/CEO of the target + disclosed price ⇒ 85+;
-  named founder/CEO, price undisclosed ⇒ 70-80; no individual named ⇒ 55-65
-  (founders will be identified in enrichment — still worth a banker's look).
-- 50-79 (MEDIUM): Likely liquidity event, details missing. IPO rumors, M&A talks,
-  Series C, unicorn milestone with named founders.
-- 20-49 (LOW): Tangential — possible future liquidity. Ignore Series A/B.
-- 1-19 (REJECT): No liquidity event — general market/industry commentary, opinion.
-
-INVESTOR/BACKER WEALTH EVENTS:
-- A NAMED billionaire/UHNW investor or backer of a company in an M&A deal, IPO, or
-  major raise is HIGH priority — treat the backer as a key person.
-- Patterns: "[Name]-backed", "backed by [Name]", "[Name]'s [Company]", "investor [Name]".
-- "Richard Li-backed bolttech" in a $200M M&A = score 70+ and EXTRACT Richard Li.
-- SKIP institutional backers with no named individual (Temasek, GIC, sovereign funds).
-
-WEALTH ANGLE QUALITY — the wealthAngle field is graded; aim for 10/10:
-- 10/10: names a specific person + the liquidity event + the amount.
-- 7/10: names a person + event, amount vague.
-- 4/10: company event but no individual named.
-- 1/10: generic, no person/event.
-NEVER write "No identifiable individual" if any person (founder, exec, or named
-backer) appears — name them.
-
-WORKED EXAMPLE — "Richard Li-backed bolttech in talks to acquire MoneyHero for US$200M":
-  founderNames ["Richard Li"], investors ["Richard Li"], dealValue "$200M",
-  priorityScore 75, wealthAngle "Richard Li (billionaire backer of bolttech) positioned
-  to realize returns from the reported US$200M MoneyHero acquisition."
-
-SUBJECT COMPANY: in an acquisition ("A acquires / buys B") the subject company is
-ALWAYS the TARGET B — its founders and shareholders receive the liquidity. The
-acquirer's HQ and founders are irrelevant. In a funding round or IPO the subject
-is the company raising / listing, never its investors.
-
-Required structured output:
-- hqLocation       : "City, Country" of the SUBJECT company HQ (the acquisition
-                     target / fundraiser), or null if unclear.
-- founderLocations : array of {"name": "...", "location": "City, Country | null"} for
-                     each named founder. Use null when location is not stated.
-- seaEvidenceType  : one of "company_hq" | "founder_base" | "founder_roots"
-                     | "operational_centre" | "wealth_event" | "none"
-- seaEvidenceText  : a quoted or paraphrased passage from the article (15+ chars)
-                     that supports seaEvidenceType. MUST mention a specific Target
-                     Region city or country. Use empty string if seaEvidenceType
-                     is "none".
-- disqualifyingSignals : array of strings drawn from the NOT ENOUGH list above
-                         (e.g. ["sea_investor_only"]). Empty array if none apply.
-- regionRelevance  : true ONLY if seaEvidenceType is not "none" AND
-                     disqualifyingSignals would not by themselves be the sole
-                     reason for relevance.
-
-Extract and return JSON:
-{
-  "companyNames": ["SUBJECT company FIRST (acquisition target / fundraiser), then the acquirer/investors. Do NOT include publishers or companies only mentioned in passing"],
-  "primaryCompany": "the SUBJECT company (acquisition target / fundraiser), never the acquirer or investor",
-  "founderNames": ["SUBJECT company's founders/CEO/shareholders ONLY (they receive the liquidity). Executives of the ACQUIRER or of investors are NOT founders — omit them entirely, even if quoted. Also named billionaire investors/backers with ACTUAL NAMES. Include people described as 'backers'/'investors'/'X-backed' even if not the founder, e.g. 'Richard Li-backed bolttech' -> include 'Richard Li'. Empty array if no names."],
-  "investors": ["array of investors mentioned — include anyone described as backer, supporter, or financier"],
-  "summary": "1-2 sentence summary of what happened",
-  "keyFinancials": {
-    "fundingAmount": "e.g. $50M or null",
-    "valuation": "e.g. $500M or null",
-    "dealValue": "for M&A or null"
-  },
-  "priorityScore": 1-100,
-  "priorityLevel": "high/medium/low",
-  "matchedIndicators": ["IPO", "Series B", "Exit", etc],
-  "wealthAngle": "WHO specifically gains wealth and HOW MUCH. Name the person even if an investor/backer rather than founder (e.g. 'Richard Li (backer of bolttech) positioned to realize returns from the $200M deal'). Say 'No identifiable individual' ONLY if no person is named anywhere.",
-  "confidenceScore": 0-100,
-  "hqLocation": "City, Country or null",
-  "founderLocations": [{"name": "Founder Name", "location": "City, Country or null"}],
-  "seaEvidenceType": "company_hq | founder_base | founder_roots | operational_centre | wealth_event | none",
-  "seaEvidenceText": "supporting passage from the article (or empty string if none)",
-  "disqualifyingSignals": ["array of disqualifier strings, may be empty"],
-  "seaConnection": "Specific SEA connection sentence or null",
-  "regionRelevance": true/false
-}`;
+  const prompt = render(await getPrompt("stage6_analysis"), {
+    headline: article.headline,
+    source: article.source,
+    content: fullContent.slice(0, 6000),
+    regions: targetRegions.join(", "),
+  });
 
   try {
     const extracted = await callJsonStage<any>({
@@ -558,26 +443,6 @@ const scanProgress: Map<string, ScanProgress> = new Map();
 export function getScanProgress(scanId: string): ScanProgress | undefined {
   return scanProgress.get(scanId);
 }
-
-const DEFAULT_INTEREST_FILTER_PROMPT = `You are a lead intelligence filter for a private banker focused on ultra-high-net-worth individuals. Determine if this article describes a wealth event relevant to private banking prospecting.
-
-RELEVANT (pass these):
-- IPOs or listings of specific private companies
-- Large funding rounds (Series B+) with named founders
-- Major exits/acquisitions where a specific individual or private company receives significant proceeds
-- New ventures by wealthy founders or entrepreneurs
-- Wealth transfers, inheritance, or family office activity involving named individuals
-- Significant stake sales by named individuals
-
-REJECT (filter these out):
-- Government-to-government trade deals, bilateral agreements, or diplomatic economic pacts (e.g. "Country X signs $38B deal with Country Y")
-- Macro-economic news (GDP, inflation, interest rates, trade policy)
-- Public company stock price movements, analyst ratings, or earnings reports
-- General industry trends without a specific bankable individual or private company
-- Political news, elections, geopolitics
-- Regulatory announcements unless they directly create a liquidity event for a named individual
-
-KEY RULE: There must be a specific named person (founder, entrepreneur, family office principal) or a specific private company that could become a private banking client. If the article only mentions governments, public institutions, or unnamed "companies", reject it.`;
 
 /** Which per-scan skip counter (if any) an article outcome should increment. */
 type SkipCounter = "interestFiltered" | "noCompanySkipped" | "publicCompaniesFiltered" | "duplicatesSkipped";
@@ -862,7 +727,7 @@ export async function ingestArticleUrl(url: string, opts: ProcessOptions = {}): 
     fetchMethod: "rss",
   };
 
-  const filterPrompt = (settings.interestFilterPrompt || DEFAULT_INTEREST_FILTER_PROMPT) + await buildNegativeExamplesBlock("news");
+  const filterPrompt = (await getPrompt("stage1_interest")) + await buildNegativeExamplesBlock("news");
   const outcome = await processArticle(article, filterPrompt, settings, opts);
   if (!opts.dryRun) await storage.recordScannedUrl(url, article.source).catch(() => {});
   if (outcome.error) throw new Error(outcome.error);
@@ -984,7 +849,7 @@ export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: 
     });
 
     // Append user-flagged false positives so each thumbs-down sharpens the filter.
-    const filterPrompt = (settings.interestFilterPrompt || DEFAULT_INTEREST_FILTER_PROMPT)
+    const filterPrompt = (await getPrompt("stage1_interest"))
       + await buildNegativeExamplesBlock("news");
 
     for (let i = 0; i < uniqueArticles.length; i++) {
@@ -1074,16 +939,6 @@ export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: 
                 console.log(`Sent Telegram alert for ${newHighPriorityLeads.length} high-priority leads`);
               } catch (error) {
                 console.error("Error sending lead alert via Telegram:", error);
-              }
-            }
-
-            // Send email alert if enabled (legacy)
-            if (settings.emailEnabled && settings.alertEmail) {
-              try {
-                await sendLeadAlertEmail(settings.alertEmail, newHighPriorityLeads);
-                console.log(`Sent email alert for ${newHighPriorityLeads.length} high-priority leads`);
-              } catch (error) {
-                console.error("Error sending lead alert email:", error);
               }
             }
           }

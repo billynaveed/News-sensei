@@ -22,6 +22,8 @@ import { getHealth, type HealthCheck, type HealthReport, type HealthStatus } fro
 import { getScraperStatus } from "./scraper";
 import { getSearchStatus } from "./web-search";
 import { getResearchProgress } from "./family-research";
+import { getExamplesSummary } from "./pipeline-examples";
+import { debugPageLink } from "./telegram-formatter";
 
 const CHECK_CRON = process.env.HEALTH_MONITOR_CRON || "*/15 * * * *";
 const DIGEST_CRON = process.env.HEALTH_DIGEST_CRON || "0 8 * * *";
@@ -61,12 +63,20 @@ export function getHealthMonitorState(): HealthMonitorState {
 const escHtml = (v: unknown) =>
   String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-/** Send an operational message to the configured alert chat. Returns false when unconfigured. */
+/**
+ * Send an operational message to the configured alert chat.
+ *
+ * Every message ends with a deep link to the Debug page: a ping is only useful
+ * if the evidence behind it is one tap away on the phone.
+ *
+ * @returns false when no chat is configured (nothing was sent)
+ */
 async function notify(message: string): Promise<boolean> {
   const settings = await storage.getSettings();
   const chatId = settings?.telegramChatId;
   if (!chatId || !process.env.TELEGRAM_BOT_TOKEN) return false;
-  await sendTelegramMessage(chatId, message, "HTML", undefined, settings?.telegramTopicId ?? null);
+  const body = `${message}\n\n${debugPageLink()}`;
+  await sendTelegramMessage(chatId, body, "HTML", undefined, settings?.telegramTopicId ?? null);
   return true;
 }
 
@@ -156,6 +166,8 @@ async function collectDigestData(): Promise<DigestData> {
       WHERE scan_logs.scanned_at >= ${since}
         AND elem->>'reason' IS NOT NULL
         AND coalesce(elem->>'status', '') <> 'success'
+        AND elem->>'reason' NOT LIKE 'URL already scanned%'
+        AND elem->>'reason' NOT LIKE 'Duplicate - URL%'
       GROUP BY 1
       ORDER BY count DESC
       LIMIT 3
@@ -175,12 +187,26 @@ async function collectDigestData(): Promise<DigestData> {
   };
 }
 
+/**
+ * "12/14 passing (86%)" for the reference examples, or a plain-English reason
+ * why there is no number yet. Never throws — the digest must still go out.
+ */
+function formatExamplesLine(summary: Awaited<ReturnType<typeof getExamplesSummary>> | null): string {
+  if (!summary || !summary.total) return "not set up yet";
+  const tested = summary.passing + summary.failing;
+  if (tested === 0) return `${summary.total} taught · none re-run yet`;
+  const rate = Math.round((summary.passing / tested) * 100);
+  const untested = summary.untested ? ` · ${summary.untested} untested` : "";
+  return `${summary.passing}/${tested} passing (${rate}%)${untested}`;
+}
+
 function formatDigest(
   data: DigestData,
   scraper: Awaited<ReturnType<typeof getScraperStatus>>,
   search: ReturnType<typeof getSearchStatus>,
   families: Awaited<ReturnType<typeof getResearchProgress>>,
   health: HealthReport,
+  examples: Awaited<ReturnType<typeof getExamplesSummary>> | null,
 ): string {
   const priorityOrder = ["high", "medium", "low"];
   const byPriority = data.leadsByPriority
@@ -222,18 +248,22 @@ function formatDigest(
     `<b>Scraper:</b> ${escHtml(scraper.provider.replace("_", "."))} — ${escHtml(credits)}`,
     `<b>Search:</b> ${escHtml(searchState)} (${search.today.tavily} Tavily · ${search.today.brave} Brave today)`,
     `<b>Family research:</b> ${families.researched}/${families.total} researched`,
+    `<b>Reference examples:</b> ${escHtml(formatExamplesLine(examples))}`,
   ].join("\n");
 }
 
 async function runDigest(): Promise<void> {
   try {
-    const [data, scraper, families, health] = await Promise.all([
+    const [data, scraper, families, health, examples] = await Promise.all([
       collectDigestData(),
       getScraperStatus(),
       getResearchProgress(),
       getHealth(),
+      // The examples table is app-role-owned and created lazily; a missing
+      // table must cost us the line, not the whole digest.
+      getExamplesSummary().catch(() => null),
     ]);
-    const sent = await notify(formatDigest(data, scraper, getSearchStatus(), families, health));
+    const sent = await notify(formatDigest(data, scraper, getSearchStatus(), families, health, examples));
     state.lastDigestAt = new Date().toISOString();
     if (!sent) log("[health] digest skipped — no Telegram chat configured", "health");
   } catch (error) {

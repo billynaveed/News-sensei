@@ -13,9 +13,11 @@ import cron, { type ScheduledTask } from "node-cron";
 import { and, asc, eq, lt, or, sql } from "drizzle-orm";
 import { db } from "./db";
 import { log } from "./log";
+import { getPrompt, render } from "./prompts";
 import { callJsonStage } from "./llm-json";
 import { searchWeb } from "./web-search";
 import { upsertPersonByName } from "./contacts";
+import { normalizeNameKey, resolvePersonByName } from "./families";
 import { families, familyMembers, familyRelationships, people, type Family } from "@shared/schema";
 
 const MODEL = "anthropic/claude-sonnet-4";
@@ -24,7 +26,7 @@ const SOURCE_TAG = "family-research";
 // Budget guards. Searches are the metered resource (Tavily/Brave); the cron
 // cadence already caps LLM calls at ~24 families/day.
 const MAX_ATTEMPTS = 3;
-const SEARCHES_PER_FAMILY = 6;
+const SEARCHES_PER_FAMILY = parseInt(process.env.FAMILY_RESEARCH_SEARCHES_PER_FAMILY || "4", 10);
 const DAILY_SEARCH_CAP = parseInt(process.env.FAMILY_RESEARCH_DAILY_SEARCH_CAP || "200", 10);
 const SEEDS_PER_MARKET = parseInt(process.env.FAMILY_RESEARCH_SEEDS_PER_MARKET || "50", 10);
 const CRON = process.env.FAMILY_RESEARCH_CRON || "20 * * * *"; // hourly at :20
@@ -168,6 +170,23 @@ async function gatherSources(family: Family, anchorName: string | null) {
   return { sources: Array.from(seen.values()), searchesUsed: used };
 }
 
+/**
+ * Why a researched family cannot be trusted as-is, phrased for the review
+ * queue ("only 1 member found"). `null` means the tree is good enough to mark
+ * done without a human looking at it.
+ */
+function needsReviewReason(
+  memberCount: number,
+  edgeCount: number,
+  confidence: string,
+  sourceCount: number,
+): string | null {
+  if (memberCount < 2) return `only ${memberCount} member${memberCount === 1 ? "" : "s"} found in ${sourceCount} sources`;
+  if (edgeCount === 0) return `${memberCount} members but no relationships could be sourced`;
+  if (confidence === "low") return `low model confidence over ${sourceCount} sources`;
+  return null;
+}
+
 function canonicalEdge(from: number, to: number, type: "parent" | "spouse" | "sibling") {
   // spouse/sibling are symmetric — store lowest id first so the unique index dedupes.
   if (type !== "parent" && from > to) return { fromPersonId: to, toPersonId: from, type };
@@ -186,39 +205,32 @@ async function researchFamily(family: Family): Promise<void> {
   if (sources.length === 0) throw new Error(`no search results (searches used: ${searchesUsed}, left today: ${searchesLeftToday()})`);
 
   const context = sources.map((s, i) => `[${i + 1}] ${s.title}\nURL: ${s.url}\n${s.content}`).join("\n\n");
-  const prompt = `You are mapping the family tree of the ${family.name} (${family.country}) for a private banker.${anchor ? ` The anchor person is "${anchor}".` : ""}${family.primaryCompanies?.length ? ` Main companies: ${family.primaryCompanies.join(", ")}.` : ""}
-${existingMembers.length ? `Already-known members (reuse these exact spellings): ${existingMembers.join("; ")}.` : ""}
-
-Using ONLY the sources below, identify the family's members and how they are related. Focus on the wealth-holding core: patriarch/matriarch, spouse, children (and their spouses), grandchildren who are publicly known, siblings who co-run the business.
-
-SOURCES:
-${context}
-
-Return ONLY JSON:
-{
-  "description": "2-3 sentence family overview (business, generation in charge, succession)",
-  "netWorthEstimate": "e.g. 'US$3.2B (Forbes 2025)' or null",
-  "patriarch": "full name of the current family head, or null",
-  "members": [{"name": "Full name as most commonly written in English press", "role": "e.g. 'Founder, chairman of X' / 'Eldest son, CEO of Y'", "notes": "one line, optional", "confidence": "high|medium|low"}],
-  "relationships": [{"from": "Parent full name", "to": "Child full name", "type": "parent", "confidence": "high|medium|low", "sourceUrl": "URL from sources supporting this"}],
-  "confidence": "high|medium|low",
-  "sourceUrls": ["URLs actually used"]
-}
-
-Rules:
-- "type" is one of: "parent" (from=parent, to=child), "spouse", "sibling" (only when parents are unknown).
-- Every relationship must have a supporting sourceUrl from the list. Do NOT invent people or relationships. If the sources only support the anchor person, return just them.
-- Use one canonical spelling per person and use it consistently in members and relationships.
-- Do not include deceased ancestors unless they are needed to connect living members.`;
+  const prompt = render(await getPrompt("family_research"), {
+    familyName: family.name,
+    country: family.country ?? "",
+    anchorClause: anchor ? ` The anchor person is "${anchor}".` : "",
+    companiesClause: family.primaryCompanies?.length ? ` Main companies: ${family.primaryCompanies.join(", ")}.` : "",
+    knownMembersLine: existingMembers.length ? `Already-known members (reuse these exact spellings): ${existingMembers.join("; ")}.` : "",
+    sources: context,
+  });
 
   const out = await chatJson<ResearchOutput>(prompt, 4000);
   const members = Array.isArray(out.members) ? out.members.filter((m) => m?.name && m.name.trim().length >= 3) : [];
   const rels = Array.isArray(out.relationships) ? out.relationships : [];
 
+  // Keyed on the normalized name so a relationship written "Leng Beng Kwek"
+  // still resolves to the member listed as "Kwek Leng Beng".
   const idByName = new Map<string, number>();
-  const nameKey = (n: string) => n.trim().toLowerCase();
+  const nameKey = (n: string) => normalizeNameKey(n) || n.trim().toLowerCase();
+  let reusedVariants = 0;
   for (const m of members) {
-    const person = await upsertPersonByName(m.name.trim(), { source: SOURCE_TAG, nationality: family.country });
+    // resolvePersonByName reuses an existing people row when the LLM wrote the
+    // name with different casing, punctuation or token order.
+    const { person, reusedVariant } = await resolvePersonByName(m.name.trim(), {
+      source: SOURCE_TAG,
+      nationality: family.country,
+    });
+    if (reusedVariant) reusedVariants++;
     idByName.set(nameKey(m.name), person.id);
     await db.insert(familyMembers).values({ familyId: family.id, personId: person.id }).onConflictDoNothing();
     // Fill blanks on the person only — never overwrite existing data.
@@ -248,14 +260,21 @@ Rules:
   }
 
   const patriarchId = out.patriarch ? idByName.get(nameKey(out.patriarch)) : undefined;
-  const status = out.confidence === "low" || members.length < 2 ? "needs_review" : "done";
+  const [{ total: totalEdges } = { total: 0 }] = (await db.execute(sql`
+    SELECT count(*)::int AS total FROM family_relationships WHERE family_id = ${family.id}
+  `)).rows as { total: number }[];
+
+  const level = out.confidence || "low";
+  const reviewReason = needsReviewReason(members.length, totalEdges, level, sources.length);
+  const status = reviewReason ? "needs_review" : "done";
   await db
     .update(families)
     .set({
       description: out.description || family.description,
       netWorthEstimate: out.netWorthEstimate || family.netWorthEstimate,
       patriarchPersonId: patriarchId ?? family.patriarchPersonId,
-      confidence: out.confidence || "low",
+      // The review queue reads the reason back out of this field.
+      confidence: reviewReason ? `${level}: ${reviewReason}` : level,
       sourceUrls: Array.isArray(out.sourceUrls) ? out.sourceUrls.slice(0, 20) : sources.map((s) => s.url).slice(0, 20),
       researchStatus: status,
       researchedAt: new Date(),
@@ -264,7 +283,10 @@ Rules:
     })
     .where(eq(families.id, family.id));
 
-  log(`[family-research] ${family.name} (${family.country}): ${members.length} members, ${edges} new edges, ${sources.length} sources, confidence=${out.confidence} → ${status}`, "families");
+  log(
+    `[family-research] ${family.name} (${family.country}): ${members.length} members (${reusedVariants} reused under a variant spelling), ${edges} new edges, ${sources.length} sources, confidence=${level} → ${status}${reviewReason ? ` (${reviewReason})` : ""}`,
+    "families",
+  );
   lastRun = { at: new Date().toISOString(), familyId: family.id, name: family.name, status };
 }
 
@@ -304,7 +326,15 @@ export async function runFamilyResearchOnce(): Promise<{ researched: string | nu
       const message = (error as Error).message;
       await db
         .update(families)
-        .set({ researchStatus: "failed", researchAttempts: sql`${families.researchAttempts} + 1`, updatedAt: new Date() })
+        .set({
+          researchStatus: "failed",
+          // Same field the review queue reads for needs_review reasons, so the
+          // Failed tab can show what actually went wrong.
+          confidence: `error: ${message.slice(0, 200)}`,
+          researchAttempts: sql`${families.researchAttempts} + 1`,
+          researchedAt: new Date(),
+          updatedAt: new Date(),
+        })
         .where(eq(families.id, family.id));
       log(`[family-research] ${family.name} failed: ${message}`, "families");
       lastRun = { at: new Date().toISOString(), familyId: family.id, name: family.name, status: "failed", error: message };

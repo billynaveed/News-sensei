@@ -19,23 +19,18 @@
  *   npx tsx server/backfill-lifestyle-geo.ts --apply   # commit changes
  */
 import "dotenv/config";
-import OpenAI from "openai";
 import { and, desc, eq } from "drizzle-orm";
 import { db } from "./db";
-import { stripJsonFences } from "./json-utils";
+import { callJsonStage } from "./llm-json";
 import { validateSeaAnchor } from "./sea-guard";
 import { leads, lifestyleArticles, lifestyleLeadPeople } from "@shared/schema";
 
 const APPLY = process.argv.includes("--apply");
 const CONCURRENCY = 8;
 
-const openai = new OpenAI({
-  apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
-  baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
-  timeout: 30_000,
-  maxRetries: 2,
-});
 const MODEL = "google/gemini-2.5-flash-lite";
+/** Per-request cap this script has always used; shorter than the SDK default. */
+const LLM_TIMEOUT_MS = 30_000;
 
 /** Minimal concurrency limiter — runs `fn` over `items`, at most `n` in flight. */
 async function mapLimit<T, R>(items: T[], n: number, fn: (item: T, i: number) => Promise<R>): Promise<R[]> {
@@ -72,13 +67,13 @@ Return JSON only:
 }
 Use "none" if the only tie to Asia is a SEA publisher, a SEA investor/backer, or vague "Asia expansion".`;
 
-  const response = await openai.chat.completions.create({
+  return callJsonStage<any>({
     model: MODEL,
-    messages: [{ role: "user", content: prompt }],
+    prompt,
     temperature: 0.1,
-    response_format: { type: "json_object" },
+    label: "Lifestyle Geo Backfill",
+    timeoutMs: LLM_TIMEOUT_MS,
   });
-  return JSON.parse(stripJsonFences(response.choices[0]?.message?.content || "{}"));
 }
 
 async function main() {
