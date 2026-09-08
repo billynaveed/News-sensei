@@ -64,6 +64,13 @@ export const leads = pgTable("leads_v2", {
   pipelineReasoning: text("pipeline_reasoning"),
   category: text("category"),
   seaConnection: text("sea_connection"),
+  // Present in the live table since the v2 cutover; kept so db:push never drops data.
+  eventType: text("event_type"),
+  bankerAngle: text("banker_angle"),
+  relevanceScore: integer("relevance_score"),
+  analyzedByModel: text("analyzed_by_model"),
+  sourceId: varchar("source_id"),
+  articleId: varchar("article_id"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (t) => ({
   // Index names match scripts/v2-create-tables.sql so a future db:push reconciles
@@ -296,6 +303,20 @@ export type InsertScanLog = z.infer<typeof insertScanLogSchema>;
 export type ScanLog = typeof scanLogs.$inferSelect;
 
 // Scanned URLs table - tracks URLs already processed to prevent re-scanning
+// Reference articles Billy taught from the Debug page (learning loop); see server/pipeline-examples.ts.
+export const pipelineExamples = pgTable("pipeline_examples", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  url: text("url").notNull().unique(),
+  headline: text("headline").notNull(),
+  expected: text("expected").notNull().$type<"pass" | "reject">(),
+  note: text("note"),
+  lastResult: text("last_result"),
+  lastReason: text("last_reason"),
+  lastRunAt: timestamp("last_run_at"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+export type PipelineExample = typeof pipelineExamples.$inferSelect;
+
 export const scannedUrls = pgTable("scanned_urls", {
   urlHash: text("url_hash").primaryKey(),
   url: text("url").notNull(),
