@@ -460,11 +460,28 @@ export async function syncLifestyleToLeads(): Promise<{ synced: number; skipped:
 
   for (const article of articles) {
     try {
-      // Check if already synced
+      // Check if already synced — by URL, and by headline+source within 7 days
+      // (syndicated copies of one story arrive under different URLs).
       const existing = await storage.getLeadByUrl(article.url);
       if (existing) {
         skipped++;
         continue;
+      }
+      const headlineKey = (article.headline || article.title || "").trim();
+      if (headlineKey) {
+        const dup = await db.execute(sql`
+          SELECT id FROM leads_v2
+          WHERE lower(headline) = lower(${headlineKey})
+            AND created_at > now() - interval '7 days'
+          LIMIT 1
+        `);
+        if (dup.rows.length > 0) {
+          await db.update(lifestyleArticles)
+            .set({ status: "filtered_out", filterReason: "duplicate headline already in feed", updatedAt: new Date() })
+            .where(eq(lifestyleArticles.id, article.id));
+          skipped++;
+          continue;
+        }
       }
 
       const [source] = await db.select().from(lifestyleSources).where(eq(lifestyleSources.id, article.sourceId)).limit(1);

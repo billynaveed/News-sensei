@@ -8,7 +8,7 @@
 
 import type { Express } from "express";
 import { getHealth } from "./health";
-import { getHealthMonitorState } from "./health-monitor";
+import { getHealthMonitorState, runDigest } from "./health-monitor";
 import { storage } from "./storage";
 import { sendTelegramMessage } from "./telegram";
 
@@ -25,6 +25,15 @@ export function registerHealthRoutes(app: Express): void {
   });
 
   /** Proves the alert path end to end: same chat, same topic, same formatting. */
+  app.post("/api/health/digest", async (_req, res) => {
+    try {
+      await runDigest();
+      res.json({ ok: true });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : "Failed" });
+    }
+  });
+
   app.post("/api/health/test-alert", async (_req, res) => {
     try {
       const settings = await storage.getSettings();

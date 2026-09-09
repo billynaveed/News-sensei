@@ -333,16 +333,17 @@ export async function searchFounderResidence(
 /**
  * Get ISO 3166-1 alpha-2 country code from region name
  */
+// Tavily's `country` filter takes lowercase country NAMES, not ISO codes
+// ("Invalid country. Must be a valid country name" on "SG" — seen 2026-09-09).
+// Hong Kong and Taiwan are not in Tavily's list, so they get no filter.
 function getCountryCode(region: string): string | null {
   const regionMap: Record<string, string> = {
-    Singapore: "SG",
-    Malaysia: "MY",
-    Thailand: "TH",
-    Indonesia: "ID",
-    Philippines: "PH",
-    Vietnam: "VN",
-    "Hong Kong": "HK",
-    Taiwan: "TW",
+    Singapore: "singapore",
+    Malaysia: "malaysia",
+    Thailand: "thailand",
+    Indonesia: "indonesia",
+    Philippines: "philippines",
+    Vietnam: "vietnam",
   };
 
   return regionMap[region] || null;

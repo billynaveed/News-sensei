@@ -252,7 +252,7 @@ function formatDigest(
   ].join("\n");
 }
 
-async function runDigest(): Promise<void> {
+export async function runDigest(): Promise<void> {
   try {
     const [data, scraper, families, health, examples] = await Promise.all([
       collectDigestData(),
@@ -265,7 +265,7 @@ async function runDigest(): Promise<void> {
     ]);
     const sent = await notify(formatDigest(data, scraper, getSearchStatus(), families, health, examples));
     state.lastDigestAt = new Date().toISOString();
-    if (!sent) log("[health] digest skipped — no Telegram chat configured", "health");
+    log(sent ? "[health] daily digest sent" : "[health] digest skipped — no Telegram chat configured", "health");
   } catch (error) {
     log(`[health] digest failed: ${(error as Error).message}`, "health");
   }

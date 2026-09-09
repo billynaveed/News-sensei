@@ -165,7 +165,15 @@ async function scrapeSgxHtml(): Promise<InsertIpoFiling[]> {
  * Scrapes IDX IPO data. IDX main site is behind Cloudflare, so we use
  * ScrapingBee if available, otherwise skip gracefully.
  */
+// IDX (Cloudflare) has 502'd through scrape.do on every attempt since 2026-09-09,
+// costing ~55s per IPO scan for nothing. After a failure, skip it for 24h.
+let idxRetryAfter = 0;
+
 async function scrapeIdx(): Promise<InsertIpoFiling[]> {
+  if (Date.now() < idxRetryAfter) {
+    console.log(`[IPO] IDX: skipped until ${new Date(idxRetryAfter).toISOString()} (last fetch failed)`);
+    return [];
+  }
 
   if (activeScraper() === "none") {
     console.log("[IPO] IDX: no scraping provider configured, skipping (Cloudflare-protected)");
@@ -179,6 +187,7 @@ async function scrapeIdx(): Promise<InsertIpoFiling[]> {
     const res = await scrapeUrl(targetUrl, { render: true, timeoutMs: 45_000 });
     if (!res.ok) {
       console.warn(`[IPO] IDX scrape failed: ${res.error}`);
+      idxRetryAfter = Date.now() + 24 * 60 * 60 * 1000;
       return [];
     }
     const html = res.body;
