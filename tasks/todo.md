@@ -4,6 +4,75 @@ Current session task list with checkable progress items.
 
 ---
 
+## 2026-09-19 — Family trees: pass 2 + dedupe ✅ shipped; renderer + blocking planned
+
+**Trigger:** Billy: "it didn't seem to be crawling properly and the family tree as a visual is
+very basic". Review found: pass 1 finished 2026-09-14 (204 done / 91 needs_review), worker
+ticking `queue-empty` hourly since; 22% of members have no edge (330/1,504), 68 families are
+just the seeded patriarch, Vietnam avg 2.2 members; root cause = synthesis only ever saw
+search snippets (≤1,200 chars), never a full page. 7 exact-name duplicate people inside
+families (lifestyle scanner inserts people keyed on name+region, bypassing the shared
+upsert), ~15 overlapping seed families sharing a patriarch. `person_blocks` is still empty.
+
+### 1. Pass 2 — research with real pages ✅
+- [x] `server/family-pages.ts`: Wikipedia search (free MediaWiki API, EN + the market's own
+  language: th/id/vi/ms — Thai/Vietnamese articles carry the parents/spouse/children the
+  English ones lack) with a title-relevance filter (fuzzy hits like "Thai Chinese" rejected);
+  direct page fetch (SSRF-guarded), scrape.do only as fallback (max 1/family, never on 404);
+  family-aware extraction (infobox Spouse/Children/Relatives rows, whole "Family"/"Notable
+  members" sections incl. tables, family-word paragraphs elsewhere; 7k chars/page; 60s budget)
+- [x] `family-research.ts`: 3 pages/family fed as `[P1] FULL PAGE` blocks ahead of the snippets;
+  known members AND known edges passed back so a pass extends the tree; review decision counts
+  members/edges from the DB after the run; relationships may name roster members the model did
+  not re-list; `dedupeFamilyMembers` at the end of every run; LLM call capped at 120s
+- [x] Queue: `claimNext` = pending → failed → needs_review older than 7 days (attempts cap
+  applies), thinnest trees first; `requeueAllFamilies()` + `POST /api/families/research/requeue-all`
+  + "Re-research all" button on the progress card; `POST /api/families/:id/research?now=1`
+  researches one family immediately (research-now)
+- [x] Seeder: must name ≥2 public members, honorifics stripped (`family-names.ts`), anchors already
+  seeded in the country skipped; `POST /api/families/research/seed/:market`
+
+### 2. Dedupe + seed cleanup ✅
+- [x] `lifestyle-scanner.ts` upsertPerson → `resolvePersonByName` (was matching on name+region)
+- [x] `dedupeExactNamePeople()` (89 rows folded in 82 groups), `mergeOverlappingFamilies()`
+  (same patriarch, or ≥3 shared members = 60%+ of the smaller; survivor = fewer-word name →
+  surname most members carry → bigger tree) — 17 families merged (Wee Ee Cheong + Wee Piew →
+  Wee; Jiaravanon → Chearavanont; Le (Vinfast) + Phan (Vingroup) → Pham; Ganda → Tanoto; …);
+  `pruneThinFamilies()`; all with dryRun via `POST /api/families/maintenance/dedupe` and
+  `POST /api/families/maintenance/prune/:country`
+- [x] Vietnam: 29 one-person seeds deleted, 12 reseeded (stricter prompt; still LLM-recall-limited,
+  the pass will flag the wrong ones as needs_review)
+- [x] Verified: `npm run check` clean, `npm test` 71/71 (new `tests/family-pages.test.ts`);
+  deployed 2026-09-19 09:1x UTC; full pass requeued (261 families, thin trees first, ~11 days at
+  1/hour — `FAMILY_RESEARCH_CRON="20,50 * * * *"` halves that). Live runs: Chirathivat 18m/2e →
+  21m/4e, Chearavanont 16m/16e → 17m/20e, Kanjanapas 5m/2e → 8m/6e, Yoovidhya 6m/5e → 7m/7e in
+  18–29s each; Lua/Tejapaibul/Darmawan honestly still empty (no public tree)
+
+### 3. Planned — proper tree renderer (not started)
+- [ ] Replace `computeGenerations` + flex rows in `client/src/pages/family-detail.tsx` with a
+  genealogy layout: couple nodes (spouses share one node, children hang from the couple),
+  sibling brackets, generation labels (G1 founder / G2 / G3), collapsible branches
+- [ ] Candidates: `family-chart` (d3-based, built for this) or ELK layered layout via
+  `elkjs` + custom SVG; both handle 20+ members, pan/zoom, and lay out from the same
+  members + parent/spouse/sibling edges the API already returns
+- [ ] Node design: photo avatar (people.photo_url, fetch from Wikipedia when missing),
+  role line, net worth chip, age when known; blocked = red fill, propagated block = amber
+  outline so the conflict is visible spreading up the tree
+- [ ] "Not linked yet" strip becomes a side drawer with a one-click "attach as child of…"
+  so orphans get placed instead of parked
+- [ ] Person page (/people/:id) shows a mini-tree (parents / spouse / children) using the
+  same component
+
+### 4. Planned — make blocking easy (not started)
+- [ ] "Block" action on the lead card founder chip and on the person page (today it lives
+  only inside the family page dialog)
+- [ ] Telegram alert buttons: "⛔ Blocked" on a lead alert → block the named founder, reply
+  with the propagated relatives so Billy can confirm parents
+- [ ] Families page: a "Blocked" tab and count in the progress card; weekly note lists new
+  blocks + which leads they suppressed
+- [ ] Pipeline: a lead whose founder is blocked stays visible with the ⛔ badge (Billy's
+  2026-09-02 rule); add a settings toggle to hide once he trusts propagation
+
 ## Current Task: Family Trees + Blocked Persons (coverage conflicts)
 
 **Objective:** Model SEA wealthy families as visual trees inside Sensei, let Billy mark

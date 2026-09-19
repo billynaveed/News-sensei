@@ -871,8 +871,12 @@ export async function registerRoutes(
     }
   });
 
+  /** Queue a family for re-research; `?now=1` researches it immediately instead (extends the tree in place). */
   app.post("/api/families/:id/research", async (req, res) => {
     try {
+      if (req.query.now === "1" || req.query.now === "true") {
+        return res.json(await runFamilyResearchOnce(req.params.id));
+      }
       await requeueFamily(req.params.id);
       res.json({ ok: true });
     } catch (error) {

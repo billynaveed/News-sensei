@@ -81,7 +81,7 @@ type ResearchProgress = {
   researched: number;
   remaining: number;
   searchesLeftToday: number;
-  lastRun: { at: string; name: string | null; status: string; error?: string } | null;
+  lastRun: { at: string; name: string | null; status: string; detail?: string; error?: string } | null;
 };
 
 const RESEARCH_BADGES: Record<string, { label: string; className: string }> = {
@@ -188,6 +188,13 @@ export default function FamiliesPage() {
     onSuccess: invalidateFamilies,
   });
 
+  const requeueAllMutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest("POST", "/api/families/research/requeue-all");
+    },
+    onSuccess: invalidateFamilies,
+  });
+
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
       await apiRequest("DELETE", `/api/families/${id}`);
@@ -277,10 +284,31 @@ export default function FamiliesPage() {
                 Research agent: {progress.researched}/{progress.total} families researched
                 {progress.running && <Loader2 className="inline h-3.5 w-3.5 ml-1.5 animate-spin" />}
               </span>
-              <span className="text-xs text-muted-foreground">
-                {progress.counts.pending ?? 0} queued · {progress.counts.needs_review ?? 0} need review · {progress.counts.failed ?? 0} failed
-                {progress.lastRun?.name ? ` · last: ${progress.lastRun.name} (${progress.lastRun.status})` : ""}
-                {!progress.enabled ? " · worker disabled" : ""}
+              <span className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span>
+                  {progress.counts.pending ?? 0} queued · {progress.counts.needs_review ?? 0} need review · {progress.counts.failed ?? 0} failed
+                  {progress.lastRun?.name ? ` · last: ${progress.lastRun.name} (${progress.lastRun.detail ?? progress.lastRun.status})` : ""}
+                  {!progress.enabled ? " · worker disabled" : ""}
+                </span>
+                {/* Visible only once a pass has finished: a new pass re-reads every
+                    family with full pages and extends its tree (nothing is cleared). */}
+                {(progress.counts.pending ?? 0) === 0 && !progress.running && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7"
+                    onClick={() => {
+                      if (window.confirm(`Re-research all ${progress.total} families? Existing members and relationships are kept; the agent adds what it finds in full source pages, one family per hour.`)) {
+                        requeueAllMutation.mutate();
+                      }
+                    }}
+                    disabled={requeueAllMutation.isPending}
+                    data-testid="button-requeue-all"
+                  >
+                    {requeueAllMutation.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <RotateCw className="h-3.5 w-3.5 mr-1" />}
+                    Re-research all
+                  </Button>
+                )}
               </span>
             </div>
             <Progress value={progress.total ? (progress.researched / progress.total) * 100 : 0} className="h-2" />

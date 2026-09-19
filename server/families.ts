@@ -594,3 +594,172 @@ export async function mergePersons(sourcePersonId: number, targetPersonId: numbe
     };
   });
 }
+
+// ---------------------------------------------------------------------------
+// Maintenance: duplicates the research agent and the lifestyle scanner left
+// behind (exact-name people, seed families that are the same family twice).
+// ---------------------------------------------------------------------------
+
+/**
+ * Fold members of one family that are the same name under different rows
+ * (normalized key match). Oldest row survives. Returns how many were merged.
+ */
+export async function dedupeFamilyMembers(familyId: string): Promise<number> {
+  const rows = (await db.execute(sql`
+    SELECT p.id, p.full_name AS "fullName"
+      FROM family_members fm JOIN people p ON p.id = fm.person_id
+     WHERE fm.family_id = ${familyId} AND p.merged_into_id IS NULL
+     ORDER BY p.id ASC
+  `)).rows as { id: number; fullName: string }[];
+  const byKey = new Map<string, number>();
+  let merged = 0;
+  for (const r of rows) {
+    const key = normalizeNameKey(r.fullName);
+    if (!key) continue;
+    const survivor = byKey.get(key);
+    if (survivor === undefined) {
+      byKey.set(key, r.id);
+      continue;
+    }
+    await mergePersons(r.id, survivor);
+    merged++;
+  }
+  return merged;
+}
+
+export interface DedupeReport {
+  dryRun: boolean;
+  people: { merged: number; groups: { survivor: string; duplicates: number[] }[] };
+  families: { merged: number; pairs: { source: string; target: string; reason: string }[] };
+}
+
+/**
+ * Merge every live `people` row that shares its exact name (case- and
+ * whitespace-insensitive) with an older row. Same-name-different-person is
+ * possible in theory, but every group found so far was one tycoon inserted
+ * twice by two scanners, and the survivor keeps the other's name as an alias
+ * so nothing is lost if a split is ever needed.
+ */
+export async function dedupeExactNamePeople(dryRun = false): Promise<DedupeReport["people"]> {
+  const groups = (await db.execute(sql`
+    SELECT array_agg(id ORDER BY id) AS ids, min(full_name) AS name
+      FROM people
+     WHERE merged_into_id IS NULL
+     GROUP BY lower(regexp_replace(full_name, '\\s+', ' ', 'g'))
+    HAVING count(*) > 1
+  `)).rows as { ids: number[]; name: string }[];
+  let merged = 0;
+  const out: { survivor: string; duplicates: number[] }[] = [];
+  for (const g of groups) {
+    const [survivor, ...dups] = g.ids;
+    out.push({ survivor: `${g.name} (#${survivor})`, duplicates: dups });
+    if (dryRun) continue;
+    for (const d of dups) {
+      await mergePersons(d, survivor);
+      merged++;
+    }
+  }
+  return { merged, groups: out };
+}
+
+type OverlapPair = { sourceId: string; source: string; targetId: string; target: string; reason: string };
+
+/**
+ * Seed families that are the same family twice: same country and either the
+ * same patriarch, or at least three shared members making up 60%+ of the
+ * smaller family. The survivor is the family with the fewer-word name (the
+ * "Wee family" form over "Wee Ee Cheong family"), then the surname more of
+ * the members carry, then the bigger tree.
+ * Marriages legitimately link two families through one or two shared people
+ * (a daughter and her husband), which is why the bar is three.
+ */
+async function findOverlappingFamilies(): Promise<OverlapPair[]> {
+  const rows = (await db.execute(sql`
+    WITH sized AS (
+      SELECT f.id, f.name, f.country, f.patriarch_person_id,
+             (SELECT count(*)::int FROM family_members m WHERE m.family_id = f.id) AS members
+        FROM families f
+    ), shared AS (
+      SELECT a.id AS a_id, b.id AS b_id,
+             (SELECT count(*)::int FROM family_members m1 JOIN family_members m2 ON m1.person_id = m2.person_id
+               WHERE m1.family_id = a.id AND m2.family_id = b.id) AS n
+        FROM sized a JOIN sized b ON a.id < b.id AND a.country = b.country
+    )
+    SELECT a.id AS a_id, a.name AS a_name, a.members AS a_members,
+           b.id AS b_id, b.name AS b_name, b.members AS b_members,
+           (a.patriarch_person_id IS NOT NULL AND a.patriarch_person_id = b.patriarch_person_id) AS same_patriarch,
+           s.n AS shared,
+           -- How many people across both trees carry each family's surname
+           -- (first word of the name): "Tanoto" beats "Ganda" for a tree of Tanotos.
+           (SELECT count(*)::int FROM family_members m JOIN people p ON p.id = m.person_id
+             WHERE m.family_id IN (a.id, b.id) AND lower(p.full_name) LIKE '%' || lower(split_part(a.name, ' ', 1)) || '%') AS a_hits,
+           (SELECT count(*)::int FROM family_members m JOIN people p ON p.id = m.person_id
+             WHERE m.family_id IN (a.id, b.id) AND lower(p.full_name) LIKE '%' || lower(split_part(b.name, ' ', 1)) || '%') AS b_hits
+      FROM shared s JOIN sized a ON a.id = s.a_id JOIN sized b ON b.id = s.b_id
+     WHERE (a.patriarch_person_id IS NOT NULL AND a.patriarch_person_id = b.patriarch_person_id)
+        OR (s.n >= 3 AND s.n * 10 >= LEAST(a.members, b.members) * 6)
+     ORDER BY a.name, b.name
+  `)).rows as {
+    a_id: string; a_name: string; a_members: number;
+    b_id: string; b_name: string; b_members: number;
+    same_patriarch: boolean; shared: number; a_hits: number; b_hits: number;
+  }[];
+  const words = (name: string) => name.trim().split(/\s+/).length;
+  // Survivor: fewer-word name, then the surname more members carry, then the
+  // bigger tree, then the shorter string.
+  const rank = (name: string, hits: number, members: number) => [-words(name), hits, members, -name.length];
+  return rows.map((r) => {
+    const ra = rank(r.a_name, r.a_hits, r.a_members);
+    const rb = rank(r.b_name, r.b_hits, r.b_members);
+    const cmp = ra.findIndex((v, i) => v !== rb[i]);
+    const aWins = cmp === -1 || ra[cmp] > rb[cmp];
+    return {
+      sourceId: aWins ? r.b_id : r.a_id,
+      source: aWins ? r.b_name : r.a_name,
+      targetId: aWins ? r.a_id : r.b_id,
+      target: aWins ? r.a_name : r.b_name,
+      reason: r.same_patriarch ? "same patriarch" : `${r.shared} shared members`,
+    };
+  });
+}
+
+/**
+ * Merge overlapping seed families (see `findOverlappingFamilies`). Merging
+ * one pair can change the others (a three-way overlap collapses to one), so
+ * the search reruns after every merge instead of merging a stale list.
+ */
+export async function mergeOverlappingFamilies(dryRun = false): Promise<DedupeReport["families"]> {
+  const strip = (p: OverlapPair) => ({ source: p.source, target: p.target, reason: p.reason });
+  if (dryRun) return { merged: 0, pairs: (await findOverlappingFamilies()).map(strip) };
+  const pairs: DedupeReport["families"]["pairs"] = [];
+  for (let guard = 0; guard < 100; guard++) {
+    const [next] = await findOverlappingFamilies();
+    if (!next) break;
+    await mergeFamilies(next.sourceId, next.targetId);
+    pairs.push(strip(next));
+  }
+  return { merged: pairs.length, pairs };
+}
+
+/**
+ * Delete seed families that never became a tree: one member (the seeded
+ * anchor), no edges, still in the review queue. Used to retire the Vietnam
+ * pass-1 noise before reseeding. People rows are kept.
+ */
+export async function pruneThinFamilies(country: string, dryRun = false): Promise<{ deleted: number; names: string[] }> {
+  const rows = (await db.execute(sql`
+    SELECT f.id, f.name
+      FROM families f
+     WHERE f.country = ${country}
+       AND f.research_status = 'needs_review'
+       AND (SELECT count(*) FROM family_members m WHERE m.family_id = f.id) <= 1
+       AND NOT EXISTS (SELECT 1 FROM family_relationships r WHERE r.family_id = f.id)
+       AND NOT EXISTS (SELECT 1 FROM person_blocks b JOIN family_members m ON m.person_id = b.person_id WHERE m.family_id = f.id)
+     ORDER BY f.name
+  `)).rows as { id: string; name: string }[];
+  if (!dryRun) {
+    for (const r of rows) await deleteFamily(r.id);
+    if (rows.length) log(`[families] pruned ${rows.length} one-person seed families in ${country}`, "families");
+  }
+  return { deleted: dryRun ? 0 : rows.length, names: rows.map((r) => r.name) };
+}

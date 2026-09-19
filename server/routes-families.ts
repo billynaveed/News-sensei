@@ -2,12 +2,24 @@
  * Family review-queue endpoints.
  *
  * The original /api/families* CRUD lives in routes.ts; this module adds what
- * the review queue needs (approve, bulk approve, merge duplicates). Registered
- * from inside `registerRoutes()` so these inherit the `/api/*` auth middleware.
+ * the review queue needs (approve, bulk approve, merge duplicates) plus the
+ * maintenance actions (dedupe, requeue a full pass, reseed a market).
+ * Registered from inside `registerRoutes()` so these inherit the `/api/*`
+ * auth middleware.
  */
 
 import type { Express } from "express";
-import { approveFamily, approveReviewedFamilies, mergeFamilies, mergePersons } from "./families";
+import {
+  approveFamily,
+  approveReviewedFamilies,
+  dedupeExactNamePeople,
+  mergeFamilies,
+  mergeOverlappingFamilies,
+  mergePersons,
+  pruneThinFamilies,
+  type DedupeReport,
+} from "./families";
+import { requeueAllFamilies, seedFamilies } from "./family-research";
 
 /** Narrow an unknown body value to a non-empty id string. */
 function asId(value: unknown): string | null {
@@ -75,6 +87,56 @@ export function registerFamilyRoutes(app: Express): void {
       const message = error instanceof Error ? error.message : "Failed to merge people";
       console.error("Error merging people:", error);
       res.status(/not found|themselves|already been merged/i.test(message) ? 400 : 500).json({ message });
+    }
+  });
+
+  /** Start a new research pass over every agent-built family (trees are extended, never cleared). */
+  app.post("/api/families/research/requeue-all", async (_req, res) => {
+    try {
+      res.json({ requeued: await requeueAllFamilies() });
+    } catch (error) {
+      console.error("Error requeueing all families:", error);
+      res.status(500).json({ error: "Failed to requeue families" });
+    }
+  });
+
+  /** Seed one market again (e.g. ?market=VN after pruning its noise). */
+  app.post("/api/families/research/seed/:market", async (req, res) => {
+    try {
+      res.json(await seedFamilies(req.params.market));
+    } catch (error) {
+      console.error("Error seeding market:", error);
+      res.status(500).json({ error: (error as Error).message || "Failed to seed market" });
+    }
+  });
+
+  /**
+   * Fold exact-name duplicate people and overlapping seed families.
+   * `?dryRun=1` only reports what would change.
+   */
+  app.post("/api/families/maintenance/dedupe", async (req, res) => {
+    try {
+      const dryRun = req.query.dryRun === "1" || req.query.dryRun === "true";
+      const report: DedupeReport = {
+        dryRun,
+        people: await dedupeExactNamePeople(dryRun),
+        families: await mergeOverlappingFamilies(dryRun),
+      };
+      res.json(report);
+    } catch (error) {
+      console.error("Error deduping families:", error);
+      res.status(500).json({ error: "Failed to dedupe" });
+    }
+  });
+
+  /** Delete one-person, edge-less, still-in-review seed families of a country. */
+  app.post("/api/families/maintenance/prune/:country", async (req, res) => {
+    try {
+      const dryRun = req.query.dryRun === "1" || req.query.dryRun === "true";
+      res.json(await pruneThinFamilies(req.params.country, dryRun));
+    } catch (error) {
+      console.error("Error pruning families:", error);
+      res.status(500).json({ error: "Failed to prune families" });
     }
   });
 }
