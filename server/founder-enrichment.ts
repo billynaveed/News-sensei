@@ -1,6 +1,5 @@
-import { openai } from "./openai-client";
 import { log } from "./log";
-import { stripJsonFences } from "./json-utils";
+import { callJsonStage } from "./llm-json";
 import {
   searchFounderResidence,
   searchCompanyHeadquarters,
@@ -32,190 +31,6 @@ export interface CompanyEnrichmentResult {
   headquarters: string | null;
   businessModel: string | null;
   confidence: "high" | "medium" | "low";
-}
-
-/**
- * Enriches founder information using web search and AI analysis
- *
- * This function:
- * 1. Searches the web for information about the founder
- * 2. Uses AI to extract structured data from search results
- * 3. Attempts to find LinkedIn profile
- * 4. Generates a comprehensive biography
- *
- * @param founderName - Name of the founder/key person
- * @param companyName - Company they're associated with (helps disambiguation)
- * @param region - Geographic region (defaults to Singapore for context)
- * @returns Enriched founder information
- */
-export async function enrichFounderInfo(
-  founderName: string,
-  companyName: string,
-  region: string = "Singapore"
-): Promise<FounderEnrichmentResult> {
-  try {
-    log(`Enriching founder info: ${founderName} at ${companyName}`, "enrichment");
-
-    // Step 1: Use AI to search and synthesize information
-    // In production, this would use Google Search API or Bing Search API
-    // For now, we'll use AI with its knowledge base and suggest implementing search API
-
-    const searchQuery = `${founderName} ${companyName} ${region} founder CEO LinkedIn biography`;
-
-    const prompt = `You are a research assistant helping to gather professional information about business leaders.
-
-Search Query: "${searchQuery}"
-
-Please provide detailed information about ${founderName} who is associated with ${companyName} in ${region}.
-
-Return a JSON object with the following structure:
-{
-  "linkedInUrl": "LinkedIn profile URL if found, otherwise null",
-  "biography": "A comprehensive 2-3 paragraph biography covering their role, background, and impact",
-  "professionalBackground": "Summary of their career history and previous roles",
-  "education": "Educational background if available",
-  "notableAchievements": "Key achievements, awards, or recognitions",
-  "confidence": "high/medium/low - how confident you are in this information",
-  "sources": ["List of information sources - LinkedIn, company website, news articles, etc."]
-}
-
-Important guidelines:
-- If you cannot find specific information, use null instead of making assumptions
-- For LinkedIn URLs, only include if you're confident it's the correct person
-- Be honest about confidence level - use "low" if information is scarce or uncertain
-- Focus on factual, verifiable information
-- If the person is not well-known, it's okay to return sparse information with low confidence
-
-Return ONLY the JSON object, no markdown formatting.`;
-
-    const response = await openai.chat.completions.create({
-      model: "anthropic/claude-sonnet-4",
-      messages: [{ role: "user", content: prompt }],
-      max_completion_tokens: 1500,
-    });
-
-    const content = response.choices[0]?.message?.content;
-    if (!content) {
-      throw new Error("No response from AI");
-    }
-
-    const enrichmentData = JSON.parse(stripJsonFences(content));
-
-    const result: FounderEnrichmentResult = {
-      founderName,
-      companyName,
-      linkedInUrl: enrichmentData.linkedInUrl || null,
-      biography: enrichmentData.biography || null,
-      professionalBackground: enrichmentData.professionalBackground || null,
-      education: enrichmentData.education || null,
-      notableAchievements: enrichmentData.notableAchievements || null,
-      residenceCity: null,
-      residenceCountry: null,
-      confidence: enrichmentData.confidence || "low",
-      sources: enrichmentData.sources || [],
-    };
-
-    log(`Enrichment complete for ${founderName} (confidence: ${result.confidence})`, "enrichment");
-    return result;
-
-  } catch (error) {
-    log(`Error enriching founder info: ${error}`, "enrichment");
-
-    // Return empty result on error
-    return {
-      founderName,
-      companyName,
-      linkedInUrl: null,
-      biography: null,
-      professionalBackground: null,
-      education: null,
-      notableAchievements: null,
-      residenceCity: null,
-      residenceCountry: null,
-      confidence: "low",
-      sources: [],
-    };
-  }
-}
-
-/**
- * Enriches company information using web search and AI analysis
- *
- * @param companyName - Name of the company
- * @param region - Geographic region
- * @returns Enriched company information
- */
-export async function enrichCompanyInfo(
-  companyName: string,
-  region: string = "Singapore"
-): Promise<CompanyEnrichmentResult> {
-  try {
-    log(`Enriching company info: ${companyName}`, "enrichment");
-
-    const prompt = `You are a research assistant helping to gather information about companies.
-
-Company: ${companyName}
-Region: ${region}
-
-Please provide detailed information about this company.
-
-Return a JSON object with the following structure:
-{
-  "description": "A comprehensive 2-3 sentence description of what the company does",
-  "industry": "Primary industry/sector",
-  "founded": "Year founded if available",
-  "headquarters": "Location of headquarters",
-  "businessModel": "Brief explanation of their business model and revenue streams",
-  "confidence": "high/medium/low - how confident you are in this information"
-}
-
-Important guidelines:
-- If you cannot find specific information, use null
-- Focus on factual, verifiable information
-- Be concise but comprehensive
-- Be honest about confidence level
-
-Return ONLY the JSON object, no markdown formatting.`;
-
-    const response = await openai.chat.completions.create({
-      model: "anthropic/claude-sonnet-4",
-      messages: [{ role: "user", content: prompt }],
-      max_completion_tokens: 1000,
-    });
-
-    const content = response.choices[0]?.message?.content;
-    if (!content) {
-      throw new Error("No response from AI");
-    }
-
-    const enrichmentData = JSON.parse(stripJsonFences(content));
-
-    const result: CompanyEnrichmentResult = {
-      companyName,
-      description: enrichmentData.description || null,
-      industry: enrichmentData.industry || null,
-      founded: enrichmentData.founded || null,
-      headquarters: enrichmentData.headquarters || null,
-      businessModel: enrichmentData.businessModel || null,
-      confidence: enrichmentData.confidence || "low",
-    };
-
-    log(`Company enrichment complete for ${companyName} (confidence: ${result.confidence})`, "enrichment");
-    return result;
-
-  } catch (error) {
-    log(`Error enriching company info: ${error}`, "enrichment");
-
-    return {
-      companyName,
-      description: null,
-      industry: null,
-      founded: null,
-      headquarters: null,
-      businessModel: null,
-      confidence: "low",
-    };
-  }
 }
 
 /**
@@ -285,18 +100,12 @@ Important:
 - Focus on factual, verifiable information
 - Return ONLY the JSON object, no markdown formatting`;
 
-    const response = await openai.chat.completions.create({
+    const enrichmentData = await callJsonStage<any>({
       model: "anthropic/claude-sonnet-4",
-      messages: [{ role: "user", content: prompt }],
-      max_completion_tokens: 1500,
+      prompt,
+      maxTokens: 1500,
+      label: "Founder Enrichment",
     });
-
-    const content = response.choices[0]?.message?.content;
-    if (!content) {
-      throw new Error("No response from AI");
-    }
-
-    const enrichmentData = JSON.parse(stripJsonFences(content));
 
     // Extract web search sources
     const webSources = searchResults ? extractSearchSources(searchResults) : [];
@@ -330,10 +139,10 @@ Important:
     return result;
 
   } catch (error) {
-    log(`[Web Search] Error, falling back to knowledge-only: ${error}`, "enrichment");
-
-    // Fallback: Use knowledge-only enrichment
-    return enrichFounderInfo(founderName, companyName, region);
+    // No knowledge-only fallback: an ungrounded LLM bio presented with a
+    // confidence label is worse than an honest blank.
+    log(`[Web Search] Founder enrichment failed for ${founderName}: ${error}`, "enrichment");
+    return { founderName, companyName, linkedInUrl: null, biography: null, professionalBackground: null, education: null, notableAchievements: null, residenceCity: null, residenceCountry: null, confidence: "low", sources: [] };
   }
 }
 
@@ -393,18 +202,12 @@ Important:
 - Be concise but comprehensive
 - Return ONLY the JSON object, no markdown formatting`;
 
-    const response = await openai.chat.completions.create({
+    const enrichmentData = await callJsonStage<any>({
       model: "anthropic/claude-sonnet-4",
-      messages: [{ role: "user", content: prompt }],
-      max_completion_tokens: 1000,
+      prompt,
+      maxTokens: 1000,
+      label: "Company Enrichment",
     });
-
-    const content = response.choices[0]?.message?.content;
-    if (!content) {
-      throw new Error("No response from AI");
-    }
-
-    const enrichmentData = JSON.parse(stripJsonFences(content));
 
     // Calculate confidence based on search results
     const hasHeadquarters = !!enrichmentData.headquarters;
@@ -429,10 +232,8 @@ Important:
     return result;
 
   } catch (error) {
-    log(`[Web Search] Error, falling back to knowledge-only: ${error}`, "enrichment");
-
-    // Fallback: Use knowledge-only enrichment
-    return enrichCompanyInfo(companyName, region);
+    log(`[Web Search] Company enrichment failed for ${companyName}: ${error}`, "enrichment");
+    return { companyName, description: null, industry: null, founded: null, headquarters: null, businessModel: null, confidence: "low" };
   }
 }
 

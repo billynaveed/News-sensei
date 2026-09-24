@@ -30,6 +30,8 @@ import {
   FileText,
   Search
 } from "lucide-react";
+import { HealthCard } from "@/components/HealthCard";
+import { RejectionFunnel } from "@/components/RejectionFunnel";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { ScrapingBeeDebugEntry, ScanLog, ArticleProcessed, SourceSearched } from "@shared/schema";
 
@@ -468,6 +470,8 @@ export default function DebugPage() {
   return (
     <ScrollArea className="h-full">
       <div className="p-6 space-y-6 max-w-5xl mx-auto">
+        <HealthCard />
+        <RejectionFunnel />
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <div>
             <h1 className="text-2xl font-bold" data-testid="debug-page-title">Debug Console</h1>

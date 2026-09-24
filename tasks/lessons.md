@@ -41,7 +41,16 @@ This file captures patterns, mistakes, and rules to prevent repeat errors. Updat
 ## Categories
 
 ### Architecture Decisions
-- [Add lessons here as they emerge]
+- **Test the pipeline with a live, known-good story before declaring it healthy.** "3 leads
+  from 836 articles" looked like a quiet week; it was four stacked bugs. Billy's question
+  about one specific deal (Circle × Tazapay) exposed all of them in an hour. Keep
+  `POST /api/leads/ingest-url` as the regression probe.
+- **Every stage that decides on geography or "who is the subject" must reason about the
+  acquisition TARGET, not the acquirer.** Headlines lead with the buyer; the seller's
+  founders are the lead.
+- **Never let a paid API return null silently.** Tavily quota exhaustion and a dead
+  ScrapingBee key both degraded the pipeline for weeks without a visible signal. Fallbacks
+  (Brave, scrape.do) plus a status endpoint are the minimum; a Debug-page panel is next.
 
 ### Bug Fixes
 - [Add lessons here as they emerge]

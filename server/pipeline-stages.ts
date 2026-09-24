@@ -1,18 +1,10 @@
-import OpenAI from "openai";
-import { openai } from "./openai-client";
 import { storage } from "./storage";
 import { log } from "./log";
 import type { RawArticle } from "./adapters";
-import { stripJsonFences } from "./json-utils";
+import { callJsonStage } from "./llm-json";
+import { getPrompt, render } from "./prompts";
 
-// Local gemma4 on Mac Mini via Ollama (free but slow).
-// Disabled by default — Mac Mini was decommissioned 2026-05-18, ROADMAP §P0.
-// To re-enable: set OLLAMA_ENABLED=true in .env.
-const OLLAMA_ENABLED = process.env.OLLAMA_ENABLED === "true";
-const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || "http://100.110.246.23:11434/v1";
-const ollama = OLLAMA_ENABLED
-  ? new OpenAI({ apiKey: "ollama", baseURL: OLLAMA_BASE_URL, timeout: 120_000 })
-  : null;
+const STAGE_MODEL = "google/gemini-2.5-flash-lite";
 
 // ============================================================================
 // Pipeline Stage Result Types
@@ -110,70 +102,25 @@ export async function passesInterestFilter(
 
   const regionsStr = targetRegions.join(", ");
 
-  const prompt = `${filterPrompt}
-
-CRITICAL REGIONAL FILTER (SEA / HK / Taiwan, strict).
-Target Regions: ${regionsStr}.
-
-Pass on geography ONLY if the article itself shows ONE of:
-  (a) the SUBJECT company is HEADQUARTERED in a Target Region, OR
-  (b) a NAMED founder is BASED in a Target Region (current home / office), OR
-  (c) a NAMED founder has CREDIBLE ROOTS in a Target Region (born, raised,
-      educated, family, previously based there), OR
-  (d) the SUBJECT company has a STRONG OPERATIONAL CENTRE in a Target Region
-      (regional HQ, primary office with leadership, principal market with
-      on-the-ground leadership), OR
-  (e) the article EXPLICITLY concerns a wealth liquidity event for a
-      SEA / HK / Taiwan founder, family, or private company.
-
-REJECT — these signals alone do NOT make an article SEA-relevant:
-  - The publisher or source domain is SEA (Tech in Asia, Business Times,
-    Straits Times, KrASIA, DealStreetAsia, The Edge, e27, SCMP, CNA, Hubbis).
-    A SEA outlet covering a US / European / Mainland-China company is NOT
-    a SEA story.
-  - An investor, backer, fund, or LP is SEA-based (GIC, Temasek, Khazanah,
-    EDBI, family offices, sovereign funds, Hillhouse-LPs, etc.) but the
-    company itself is not. Investor identity does NOT establish SEA
-    relevance for the SUBJECT company.
-  - Vague "Asia expansion", "APAC growth", "Asian customers", regional
-    distribution, or partner network with no concrete office, founder, or
-    HQ in a Target Region.
-  - Mainland China entities (Beijing, Shanghai, Shenzhen, Guangzhou,
-    Hangzhou — e.g. ByteDance, Tencent, Alibaba mainland operations) are
-    NOT in scope. Mainland China is excluded; only HK and Taiwan count.
-  - Global companies (Anthropic, OpenAI, SpaceX, Stripe) where the only
-    SEA tie is a SEA backer or a SEA-published article.
-
-If you cannot point to a specific sentence in the article that establishes
-(a)–(e), mark relevant=false.
-
-Article Headline: ${article.headline}
-Article Snippet: ${article.content.slice(0, 500)}
-Source: ${article.source}
-Target Regions: ${regionsStr}
-
-Return JSON:
-{
-  "relevant": true/false,
-  "reason": "Brief explanation. If relevant, name which of (a)-(e) applies and quote the supporting passage. If not relevant, name the disqualifying signal (sea_publisher_only / sea_investor_only / vague_apac_expansion / mainland_china_only / global_company_no_sea_anchor).",
-  "confidenceScore": 0-100
-}`;
-
-  try {
-    const response = await openai.chat.completions.create({
-      model: "google/gemini-2.5-flash-lite",
-      messages: [{ role: "user", content: prompt }],
-      max_completion_tokens: 256,
-      temperature: 0.2,
-      response_format: { type: "json_object" },
+  // The editable criteria block (Stage 1) is supplied by the caller; the
+  // regional rules, article and output shape are appended from the prompt store.
+  const prompt =
+    `${filterPrompt}\n\n` +
+    render(await getPrompt("stage1_regional_rules"), {
+      regions: regionsStr,
+      headline: article.headline,
+      snippet: article.content.slice(0, 500),
+      source: article.source,
     });
 
-    const content = response.choices[0]?.message?.content;
-    if (!content) {
-      return { passes: false, reason: "No response from AI", confidenceScore: 0 };
-    }
-
-    const result = JSON.parse(stripJsonFences(content));
+  try {
+    const result = await callJsonStage<any>({
+      model: STAGE_MODEL,
+      prompt,
+      maxTokens: 256,
+      temperature: 0.2,
+      label: "S1 Interest Filter",
+    });
     const confidenceScore: number = result.confidenceScore ?? 0;
     const passes = result.relevant === true && confidenceScore > 60;
 
@@ -231,37 +178,19 @@ export async function extractPrimaryCompany(
 ): Promise<CompanyExtractionResult> {
   const startTime = Date.now();
 
-  const prompt = `Extract the PRIMARY company that this article is ABOUT (the subject), not the publisher/source.
-
-CRITICAL RULES:
-- News publishers (Bloomberg, Reuters, Nikkei, The Edge, Business Times, CNA, SCMP, Tech in Asia, KrASIA, DealStreetAsia, e27, Straits Times, Hubbis) are NEVER the primary company. They are sources.
-- If the headline says "Company X does Y — Bloomberg", the primary company is "Company X", NOT Bloomberg.
-- Use the company's commonly known name. Examples:
-  - "Digital Bank Maya" → "Maya" (also known as PayMaya, Voyager Innovations)
-  - "Grab Holdings" or "Grab" → "Grab"
-  - "GoTo Group" or "Gojek Tokopedia" → "GoTo"
-- If multiple companies are mentioned in an M&A context (A acquires B), the PRIMARY company is whichever is more relevant as a lead (usually the one being acquired/IPO-ing/raising funds).
-
-Headline: ${article.headline}
-Content: ${article.content.slice(0, 300)}
-
-Return JSON: { "companyName": "string or null", "confidenceScore": 0-100 }`;
+  const prompt = render(await getPrompt("stage2_company"), {
+    headline: article.headline,
+    content: article.content.slice(0, 500),
+  });
 
   try {
-    const response = await openai.chat.completions.create({
-      model: "google/gemini-2.5-flash-lite",
-      messages: [{ role: "user", content: prompt }],
-      max_completion_tokens: 128,
+    const result = await callJsonStage<any>({
+      model: STAGE_MODEL,
+      prompt,
+      maxTokens: 128,
       temperature: 0.2,
-      response_format: { type: "json_object" },
+      label: "S2 Company Extraction",
     });
-
-    const content = response.choices[0]?.message?.content;
-    if (!content) {
-      return { companyName: null, confidenceScore: 0 };
-    }
-
-    const result = JSON.parse(stripJsonFences(content));
     const companyName: string | null = result.companyName || null;
     const confidenceScore: number = result.confidenceScore ?? 0;
 
@@ -314,44 +243,19 @@ export async function isPublicCompany(
 ): Promise<PublicCompanyCheckResult> {
   const startTime = Date.now();
 
-  const prompt = `Determine if this company is publicly listed/traded:
-
-Company: ${companyName}
-Article Headline: ${articleHeadline}
-
-A company is PUBLIC if:
-- It trades on a stock exchange (SGX, NASDAQ, NYSE, HKEX, SET, IDX, etc)
-- Article mentions stock ticker symbols
-- Described as "publicly traded" or "listed company"
-
-A company is PRIVATE if:
-- Not yet listed
-- Article discusses FUTURE IPO (company is still private)
-- No mention of trading or stock tickers
-- Described as a startup, private company, or privately held
-
-Return JSON:
-{
-  "isPublic": true/false,
-  "reason": "Brief explanation",
-  "confidence": 0-100
-}`;
+  const prompt = render(await getPrompt("stage3_public"), {
+    companyName,
+    headline: articleHeadline,
+  });
 
   try {
-    const response = await openai.chat.completions.create({
-      model: "google/gemini-2.5-flash-lite",
-      messages: [{ role: "user", content: prompt }],
-      max_completion_tokens: 256,
+    const result = await callJsonStage<any>({
+      model: STAGE_MODEL,
+      prompt,
+      maxTokens: 256,
       temperature: 0.2,
-      response_format: { type: "json_object" },
+      label: "S3 Public Company Filter",
     });
-
-    const content = response.choices[0]?.message?.content;
-    if (!content) {
-      return { isPublic: false, reason: "No response from AI", confidenceScore: 0 };
-    }
-
-    const result = JSON.parse(stripJsonFences(content));
     const confidenceScore: number = result.confidence ?? 0;
     const isPublic = result.isPublic === true && confidenceScore > 70;
 
@@ -452,55 +356,19 @@ export async function checkDuplication(
     // Step 2: Compare new article to saved article using AI
     const existingSummary = existingSavedLead.lead.aiSummary || existingSavedLead.lead.headline;
 
-    const prompt = `Compare these two articles about the same company:
-
-SAVED ARTICLE SUMMARY:
-${existingSummary}
-
-NEW ARTICLE:
-Headline: ${newArticleHeadline}
-Snippet: ${newArticleSnippet.slice(0, 500)}
-
-Determine if the new article contains SUBSTANTIALLY NEW information.
-
-Substantially new means:
-- Different funding round or amount
-- New acquisition or exit event
-- Significant business development
-- Different time period or stage
-
-NOT substantially new:
-- Same event, different wording
-- Minor updates to same story
-- Similar information already covered
-
-Return JSON:
-{
-  "substantiallyNew": true/false,
-  "percentNew": 0-100,
-  "reason": "Explanation of what's new or why it's duplicate"
-}`;
-
-    const response = await openai.chat.completions.create({
-      model: "google/gemini-2.5-flash-lite",
-      messages: [{ role: "user", content: prompt }],
-      max_completion_tokens: 256,
-      temperature: 0.2,
-      response_format: { type: "json_object" },
+      const prompt = render(await getPrompt("stage4_dedup"), {
+      existingSummary,
+      headline: newArticleHeadline,
+      snippet: newArticleSnippet.slice(0, 500),
     });
 
-    const content = response.choices[0]?.message?.content;
-    if (!content) {
-      return {
-        isDuplicate: false,
-        isUpdate: false,
-        existingSavedLeadId: existingSavedLead.id,
-        reason: "Could not compare articles (no AI response)",
-        confidenceScore: 0,
-      };
-    }
-
-    const comparison = JSON.parse(stripJsonFences(content));
+    const comparison = await callJsonStage<any>({
+      model: STAGE_MODEL,
+      prompt,
+      maxTokens: 256,
+      temperature: 0.2,
+      label: "S4 Deduplication",
+    });
     const percentNew: number = comparison.percentNew ?? 0;
 
     if (comparison.substantiallyNew === true && percentNew > 40) {

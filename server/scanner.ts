@@ -1,9 +1,8 @@
-import { openai } from "./openai-client";
 import { storage } from "./storage";
-import { sendLeadAlertEmail } from "./sendgrid";
 import { sendLeadAlertTelegram } from "./telegram";
 import { fetchAllArticles, type RawArticle, type RssFeedWithMeta } from "./adapters";
-import { stripJsonFences } from "./json-utils";
+import { callJsonStage } from "./llm-json";
+import { getPrompt, render } from "./prompts";
 import { enrichSavedLead, formatEnrichmentForSavedLead } from "./founder-enrichment";
 import { passesInterestFilter, extractPrimaryCompany, isPublicCompany, checkDuplication } from "./pipeline-stages";
 import { validateSeaAnchor } from "./sea-guard";
@@ -12,10 +11,12 @@ import { matchesBusinessPrefilter } from "./prefilter";
 import { buildNegativeExamplesBlock } from "./feedback-prompt";
 import { linkLeadFoundersToContacts } from "./contacts";
 import { foundersKeepLead } from "./founder-geo";
+import { shouldAttemptGeoRescue, resolveCompanyHq, hqNote } from "./geo-rescue";
+import { discoverFounders } from "./founder-discovery";
+import { scrapeUrl, extractArticleText } from "./scraper";
 import { log } from "./log";
 import type { InsertLead, PriorityLevel, SourceTier, FetchMethod, SourceSearched, ArticleProcessed, ScrapingBeeDebugEntry, Settings } from "@shared/schema";
 
-const SCRAPINGBEE_API_KEY = process.env.SCRAPINGBEE_API_KEY;
 
 // ============================================================================
 // Pipeline Stages 1-4 (imported from pipeline-stages.ts)
@@ -114,71 +115,31 @@ export async function fetchFullArticleContent(
 ): Promise<FullArticleContentResult> {
   const startTime = Date.now();
 
-  // For Tier 1 sources, use premium ScrapingBee if available
-  if (sourceTier === "tier1" && SCRAPINGBEE_API_KEY) {
-    try {
-      const params = new URLSearchParams({
-        api_key: SCRAPINGBEE_API_KEY,
-        url: article.url,
-        render_js: "true",
-        premium_proxy: "true",
-        block_resources: "false",
-        extract_rules: JSON.stringify({
-          article_text: {
-            selector: "article, .article-body, .story-body, main, .content-body, .article-content",
-            type: "item",
-            output: "text",
-          },
-        }),
-      });
-
-      const response = await fetch(`https://app.scrapingbee.com/api/v1?${params.toString()}`, {
-        method: "GET",
-        headers: { Accept: "application/json" },
-        signal: AbortSignal.timeout(15000),
-      });
-
-      if (!response.ok) {
-        log(
-          `[Pipeline S5] ScrapingBee premium failed (${response.status}), falling back to existing content`,
-          "pipeline"
-        );
-        return buildFallbackResult(article, startTime);
-      }
-
-      const data = await response.json();
-      const fullContent: string = data.article_text || "";
-
-      if (fullContent.length > article.content.length) {
-        const result: FullArticleContentResult = {
-          fullContent,
-          fetchMethod: "scrapingbee_premium",
-          contentLength: fullContent.length,
-        };
-
+  // Fetch the full page through the scraping provider when the snippet is thin
+  // or the source is Tier 1 (paywalled/premium). Deep analysis needs the body:
+  // a 300-char RSS snippet rarely names founders or deal terms.
+  const minChars = parseInt(process.env.SCRAPER_S5_MIN_CHARS || "1500", 10);
+  if (sourceTier === "tier1" || article.content.length < minChars) {
+    const scraped = await scrapeUrl(article.url, { timeoutMs: 20_000 });
+    if (scraped.ok) {
+      const { text } = extractArticleText(scraped.body);
+      if (text.length > article.content.length) {
         logPipelineDecision({
           stage: 5,
           stageName: "Full Article Fetch",
           articleHeadline: article.headline,
-          decision: "PREMIUM FETCH",
-          reason: `Fetched ${fullContent.length} chars via ScrapingBee premium`,
+          decision: "SCRAPED",
+          reason: `Fetched ${text.length} chars via ${scraped.provider}${scraped.cost ? ` (${scraped.cost} credits)` : ""}`,
           confidenceScore: 95,
           durationMs: Date.now() - startTime,
         });
-
-        return result;
+        return { fullContent: text, fetchMethod: "scraped", contentLength: text.length };
       }
-
-      // Premium fetch returned less content than snippet; use existing
-      return buildFallbackResult(article, startTime);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : "Unknown error";
-      log(`[Pipeline S5] Premium fetch error: ${errorMessage}, using existing content`, "pipeline");
-      return buildFallbackResult(article, startTime);
+    } else if (scraped.provider !== "none") {
+      log(`[Pipeline S5] scrape failed (${scraped.error}), falling back to existing content`, "pipeline");
     }
   }
 
-  // For non-Tier 1 sources or when ScrapingBee is unavailable
   return buildFallbackResult(article, startTime);
 }
 
@@ -229,131 +190,21 @@ export async function deepAnalyzeArticle(
 ): Promise<DeepAnalysisResult | null> {
   const startTime = Date.now();
 
-  const prompt = `Perform deep analysis of this news article for private banking lead intelligence.
-
-FULL ARTICLE:
-Headline: ${article.headline}
-Source: ${article.source}
-Content: ${fullContent.slice(0, 6000)}
-
-Target Regions (SEA / HK / Taiwan): ${targetRegions.join(", ")}
-
-GEOGRAPHY RULE (strict, source-backed). A lead qualifies on geography ONLY if the
-article itself contains evidence of one of these:
-  1. company_hq           — company is headquartered in a Target Region
-  2. founder_base         — a named founder currently lives / works in a Target Region
-  3. founder_roots        — a named founder has credible roots in a Target Region
-                            (born / raised / educated / family / previously based there)
-  4. operational_centre   — company has a strong operational centre in a Target Region
-                            (regional HQ, primary office, principal market with leadership presence)
-  5. wealth_event         — the article explicitly concerns a wealth liquidity event
-                            for a SEA / HK / Taiwan founder, family or private company
-
-NOT ENOUGH (must NOT pass on these alone — record each one observed in
-disqualifyingSignals so the deterministic guard can reject):
-  - sea_publisher_only      → article is published by a SEA outlet (Tech in Asia,
-                              Business Times, Straits Times, KrASIA, DealStreetAsia,
-                              The Edge, e27, SCMP, CNA, etc) but the subject company
-                              and founders are non-SEA
-  - sea_investor_only       → company is non-SEA but an investor / backer / fund is
-                              SEA-based (GIC, Temasek, Khazanah, EDBI, MUFG-SEA arm,
-                              SEA family office, etc). Investor identity does NOT
-                              establish target-region relevance.
-  - vague_apac_expansion    → vague "expanding into Asia / APAC", "Asian customers",
-                              "Asia growth strategy" with no concrete office, founder,
-                              or HQ in a Target Region
-  - sea_customers_only      → company sells to SEA customers but is not based there
-  - sea_distribution_only   → distribution / partner network in SEA only
-
-Mainland China is NOT in the Target Regions. Beijing, Shanghai, Shenzhen,
-Guangzhou, Hangzhou-based companies do NOT qualify unless they have an
-independent qualifying anchor in HK or Taiwan or another Target Region.
-
-PRIORITY SCORING:
-- 80-100 (HIGH): Clear liquidity event with a named individual. IPO filing,
-  acquisition with disclosed price, Series D+ / late-stage raise >$100M, confirmed exit.
-- 50-79 (MEDIUM): Likely liquidity event, details missing. IPO rumors, M&A talks,
-  Series C, unicorn milestone with named founders.
-- 20-49 (LOW): Tangential — possible future liquidity. Ignore Series A/B.
-- 1-19 (REJECT): No liquidity event — general market/industry commentary, opinion.
-
-INVESTOR/BACKER WEALTH EVENTS:
-- A NAMED billionaire/UHNW investor or backer of a company in an M&A deal, IPO, or
-  major raise is HIGH priority — treat the backer as a key person.
-- Patterns: "[Name]-backed", "backed by [Name]", "[Name]'s [Company]", "investor [Name]".
-- "Richard Li-backed bolttech" in a $200M M&A = score 70+ and EXTRACT Richard Li.
-- SKIP institutional backers with no named individual (Temasek, GIC, sovereign funds).
-
-WEALTH ANGLE QUALITY — the wealthAngle field is graded; aim for 10/10:
-- 10/10: names a specific person + the liquidity event + the amount.
-- 7/10: names a person + event, amount vague.
-- 4/10: company event but no individual named.
-- 1/10: generic, no person/event.
-NEVER write "No identifiable individual" if any person (founder, exec, or named
-backer) appears — name them.
-
-WORKED EXAMPLE — "Richard Li-backed bolttech in talks to acquire MoneyHero for US$200M":
-  founderNames ["Richard Li"], investors ["Richard Li"], dealValue "$200M",
-  priorityScore 75, wealthAngle "Richard Li (billionaire backer of bolttech) positioned
-  to realize returns from the reported US$200M MoneyHero acquisition."
-
-Required structured output:
-- hqLocation       : "City, Country" of the subject company HQ, or null if unclear.
-- founderLocations : array of {"name": "...", "location": "City, Country | null"} for
-                     each named founder. Use null when location is not stated.
-- seaEvidenceType  : one of "company_hq" | "founder_base" | "founder_roots"
-                     | "operational_centre" | "wealth_event" | "none"
-- seaEvidenceText  : a quoted or paraphrased passage from the article (15+ chars)
-                     that supports seaEvidenceType. MUST mention a specific Target
-                     Region city or country. Use empty string if seaEvidenceType
-                     is "none".
-- disqualifyingSignals : array of strings drawn from the NOT ENOUGH list above
-                         (e.g. ["sea_investor_only"]). Empty array if none apply.
-- regionRelevance  : true ONLY if seaEvidenceType is not "none" AND
-                     disqualifyingSignals would not by themselves be the sole
-                     reason for relevance.
-
-Extract and return JSON:
-{
-  "companyNames": ["array of all companies mentioned"],
-  "primaryCompany": "the main company this article is about",
-  "founderNames": ["founders, key people, AND named billionaire investors/backers with ACTUAL NAMES. Include people described as 'backers'/'investors'/'X-backed' even if not the founder, e.g. 'Richard Li-backed bolttech' -> include 'Richard Li'. Empty array if no names."],
-  "investors": ["array of investors mentioned — include anyone described as backer, supporter, or financier"],
-  "summary": "1-2 sentence summary of what happened",
-  "keyFinancials": {
-    "fundingAmount": "e.g. $50M or null",
-    "valuation": "e.g. $500M or null",
-    "dealValue": "for M&A or null"
-  },
-  "priorityScore": 1-100,
-  "priorityLevel": "high/medium/low",
-  "matchedIndicators": ["IPO", "Series B", "Exit", etc],
-  "wealthAngle": "WHO specifically gains wealth and HOW MUCH. Name the person even if an investor/backer rather than founder (e.g. 'Richard Li (backer of bolttech) positioned to realize returns from the $200M deal'). Say 'No identifiable individual' ONLY if no person is named anywhere.",
-  "confidenceScore": 0-100,
-  "hqLocation": "City, Country or null",
-  "founderLocations": [{"name": "Founder Name", "location": "City, Country or null"}],
-  "seaEvidenceType": "company_hq | founder_base | founder_roots | operational_centre | wealth_event | none",
-  "seaEvidenceText": "supporting passage from the article (or empty string if none)",
-  "disqualifyingSignals": ["array of disqualifier strings, may be empty"],
-  "seaConnection": "Specific SEA connection sentence or null",
-  "regionRelevance": true/false
-}`;
+  const prompt = render(await getPrompt("stage6_analysis"), {
+    headline: article.headline,
+    source: article.source,
+    content: fullContent.slice(0, 6000),
+    regions: targetRegions.join(", "),
+  });
 
   try {
-    const response = await openai.chat.completions.create({
+    const extracted = await callJsonStage<any>({
       model: "google/gemini-2.5-flash-lite",
-      messages: [{ role: "user", content: prompt }],
-      max_completion_tokens: 2000,
+      prompt,
+      maxTokens: 3000,
       temperature: 0.2,
+      label: "S6 Deep Analysis",
     });
-
-    const content = response.choices[0]?.message?.content;
-    if (!content) {
-      log("[Pipeline S6] No response from AI for deep analysis", "pipeline");
-      return null;
-    }
-
-    const extracted = JSON.parse(stripJsonFences(content));
 
     // Reject if not relevant to target regions (LLM verdict)
     if (extracted.regionRelevance === false) {
@@ -593,26 +444,6 @@ export function getScanProgress(scanId: string): ScanProgress | undefined {
   return scanProgress.get(scanId);
 }
 
-const DEFAULT_INTEREST_FILTER_PROMPT = `You are a lead intelligence filter for a private banker focused on ultra-high-net-worth individuals. Determine if this article describes a wealth event relevant to private banking prospecting.
-
-RELEVANT (pass these):
-- IPOs or listings of specific private companies
-- Large funding rounds (Series B+) with named founders
-- Major exits/acquisitions where a specific individual or private company receives significant proceeds
-- New ventures by wealthy founders or entrepreneurs
-- Wealth transfers, inheritance, or family office activity involving named individuals
-- Significant stake sales by named individuals
-
-REJECT (filter these out):
-- Government-to-government trade deals, bilateral agreements, or diplomatic economic pacts (e.g. "Country X signs $38B deal with Country Y")
-- Macro-economic news (GDP, inflation, interest rates, trade policy)
-- Public company stock price movements, analyst ratings, or earnings reports
-- General industry trends without a specific bankable individual or private company
-- Political news, elections, geopolitics
-- Regulatory announcements unless they directly create a liquidity event for a named individual
-
-KEY RULE: There must be a specific named person (founder, entrepreneur, family office principal) or a specific private company that could become a private banking client. If the article only mentions governments, public institutions, or unnamed "companies", reject it.`;
-
 /** Which per-scan skip counter (if any) an article outcome should increment. */
 type SkipCounter = "interestFiltered" | "noCompanySkipped" | "publicCompaniesFiltered" | "duplicatesSkipped";
 
@@ -636,16 +467,27 @@ interface ArticleOutcome {
  * to update counters/logs — extracted from scanForLeads so each stage is legible
  * and the orchestration stays flat. Behavior is identical to the prior inline loop.
  */
+export interface ProcessOptions {
+  /**
+   * Judge only: run the decision stages (S1-S3, S5-S6b) but skip dedup gates
+   * and never persist a lead. Used by the nightly reference-example run, where
+   * an article that is already a lead must still be judged on its merits.
+   */
+  dryRun?: boolean;
+}
+
 async function processArticle(
   article: RawArticle,
   filterPrompt: string,
   settings: Settings,
+  opts: ProcessOptions = {},
 ): Promise<ArticleOutcome> {
   const base = {
     headline: article.headline,
     source: article.source,
     region: article.region,
     fetchMethod: article.fetchMethod,
+    url: article.url,
   };
 
   // --- Pre-check 0: Cheap keyword pre-filter (no API call) ---
@@ -654,7 +496,7 @@ async function processArticle(
   }
 
   // --- Pre-check 1: URL dedup (free, no API call) ---
-  const existingLead = await storage.getLeadByUrl(article.url);
+  const existingLead = opts.dryRun ? undefined : await storage.getLeadByUrl(article.url);
   if (existingLead) {
     return {
       processed: { ...base, status: "skipped", reason: "Duplicate - URL already in database" },
@@ -664,13 +506,35 @@ async function processArticle(
 
   try {
     // --- Stage 1: Interest Filter (cheap 256-token call) ---
-    const interestResult = await passesInterestFilter(article, filterPrompt, settings.regions);
+    let interestResult = await passesInterestFilter(article, filterPrompt, settings.regions);
+    let verifiedNote: string | null = null;
+    if (!interestResult.passes && shouldAttemptGeoRescue(article, interestResult.reason)) {
+      // --- Stage 1b: Geography rescue. S1 only sees the snippet, so a SEA
+      // company whose HQ isn't stated there gets rejected as "non-SEA". For
+      // deal-shaped articles, verify the subject company's HQ before giving up.
+      const probe = await extractPrimaryCompany(article);
+      if (probe.companyName) {
+        const hq = await resolveCompanyHq(probe.companyName);
+        if (hq.isSea) {
+          verifiedNote = hqNote(hq);
+          interestResult = {
+            passes: true,
+            reason: `hq_verified (${hq.resolvedVia}): ${probe.companyName} — ${[hq.hqCity, hq.hqCountry].filter(Boolean).join(", ") || hq.founderBase}; S1 had said: ${interestResult.reason}`,
+            confidenceScore: hq.confidence,
+          };
+          log(`[Pipeline S1b] RESCUED "${article.headline}" — ${verifiedNote}`, "pipeline");
+        } else {
+          log(`[Pipeline S1b] no rescue for ${probe.companyName} (${hq.resolvedVia}: ${hq.hqCountry ?? "unknown"})`, "pipeline");
+        }
+      }
+    }
     if (!interestResult.passes) {
       return {
         processed: { ...base, status: "skipped", reason: `S1 Interest filter: ${interestResult.reason}` },
         bump: "interestFiltered",
       };
     }
+    if (verifiedNote) article = { ...article, content: `${verifiedNote} ${article.content}` };
 
     // --- Stage 2: Extract Primary Company ---
     const companyResult = await extractPrimaryCompany(article);
@@ -692,7 +556,7 @@ async function processArticle(
     }
 
     // --- Stage 4a: In-database company+story dedup (last 7 days) ---
-    const recentLeads = await storage.getRecentLeadsByCompany(companyName, 7);
+    const recentLeads = opts.dryRun ? [] : await storage.getRecentLeadsByCompany(companyName, 7);
     if (recentLeads && recentLeads.length > 0) {
       return {
         processed: { ...base, status: "skipped", reason: `S4a Already have ${recentLeads.length} lead(s) about ${companyName} from past 7 days` },
@@ -701,7 +565,7 @@ async function processArticle(
     }
 
     // --- Stage 4b: Smart Deduplication (against saved leads) ---
-    const dedupResult = await checkDuplication(companyName, article.headline, article.content.slice(0, 500));
+    const dedupResult = opts.dryRun ? { isDuplicate: false } as Awaited<ReturnType<typeof checkDuplication>> : await checkDuplication(companyName, article.headline, article.content.slice(0, 500));
     if (dedupResult.isDuplicate) {
       return {
         processed: { ...base, status: "skipped", reason: `S4b Duplicate: ${dedupResult.reason}` },
@@ -712,12 +576,27 @@ async function processArticle(
     // --- Stage 5: Full Article Content (Tier 1 only, uses ScrapingBee) ---
     const sourceTier = article.sourceTier || "tier3";
     const contentResult = await fetchFullArticleContent(article, sourceTier as SourceTier);
-    const fullContent = contentResult.fullContent;
+    const fullContent = verifiedNote ? `${verifiedNote} ${contentResult.fullContent}` : contentResult.fullContent;
 
     // --- Stage 6: Deep Analysis ---
     const deepResult = await deepAnalyzeArticle(article, fullContent, settings.regions);
     if (!deepResult) {
       return { processed: { ...base, status: "skipped", reason: "S6 Deep analysis rejected (not relevant or error)" } };
+    }
+
+    // --- Stage 6a: Founder discovery. Wire stories about an acquisition often
+    // name only the acquirer's people; the target's founders are the lead.
+    // Runs for every medium+ lead: the model often names whoever is quoted
+    // (an acquirer exec) rather than the target's founders. Discovered founders
+    // go first; names the article gave are kept after them.
+    if ((deepResult.leadData.priorityScore ?? 0) >= 50) {
+      const found = await discoverFounders(companyName, article.region || settings.regions[0] || null);
+      if (found.length > 0) {
+        const existing = (deepResult.leadData.founderNames || []).filter((n) => !found.some((f) => f.name.toLowerCase() === n.toLowerCase()));
+        deepResult.leadData.founderNames = [...found.map((f) => f.name), ...existing];
+        const roles = found.map((f) => `${f.name}${f.role ? ` (${f.role})` : ""}${f.location ? `, ${f.location}` : ""}`).join("; ");
+        deepResult.leadData.aiSummary = `${deepResult.leadData.aiSummary || ""} ${companyName} founders (web-identified): ${roles}.`.trim();
+      }
     }
 
     // --- Stage 6b: Founder geography (ask the model where the person lives) ---
@@ -756,12 +635,21 @@ async function processArticle(
     // --- Save lead with enrichment data ---
     const lead = {
       ...deepResult.leadData,
+      keyFinancials: deepResult.keyFinancials,
+      wealthAngle: deepResult.wealthAngle || null,
+      seaConnection: deepResult.seaConnection || null,
       founderLinkedInUrl: enrichResult?.founderLinkedInUrl || null,
       founderBio: enrichResult?.founderBio || null,
       companyDescription: enrichResult?.companyDescription || null,
       fetchMethod: contentResult.fetchMethod || article.fetchMethod,
       pipelineReasoning,
     };
+
+    if (opts.dryRun) {
+      return {
+        processed: { ...base, status: "success", reason: `[dry run] ${deepResult.leadData.priorityLevel} priority (score ${deepResult.leadData.priorityScore}) — ${companyName}; founders: ${(deepResult.leadData.founderNames || []).join(", ") || "none"}` },
+      };
+    }
 
     await storage.createLead(lead as InsertLead);
 
@@ -790,6 +678,62 @@ async function processArticle(
       error: `Error processing "${article.headline}": ${errorMessage}`,
     };
   }
+}
+
+/**
+ * Push one article URL through the full pipeline on demand (e.g. a deal Billy
+ * saw elsewhere). Fetches the page, extracts title + body, and runs the same
+ * processArticle as a scan. Returns the outcome so the caller sees why an
+ * article was rejected, if it was.
+ */
+export async function ingestArticleUrl(url: string, opts: ProcessOptions = {}): Promise<{ outcome: ArticleProcessed; leadId?: string }> {
+  const settings = await storage.getSettings();
+  if (!settings) throw new Error("Settings not configured");
+
+  // Direct fetch first (free); scraping provider when the site blocks bots
+  // (CoinDesk 429s plain fetches) or renders client-side (Tech in Asia).
+  let html = "";
+  let via = "direct";
+  try {
+    const res = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36", Accept: "text/html" },
+      redirect: "follow",
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (res.ok) html = await res.text();
+  } catch { /* fall through to scraper */ }
+  let extracted = html ? extractArticleText(html) : { title: "", text: "", publishedAt: null };
+  if (!extracted.title || extracted.text.length < 200) {
+    const scraped = await scrapeUrl(url, { timeoutMs: 30_000 });
+    if (scraped.ok) { extracted = extractArticleText(scraped.body); via = scraped.provider; }
+    if (!extracted.title || extracted.text.length < 200) {
+      const rendered = await scrapeUrl(url, { render: true, timeoutMs: 60_000 });
+      if (rendered.ok) { extracted = extractArticleText(rendered.body); via = `${rendered.provider}+render`; }
+    }
+  }
+  const headline = extracted.title;
+  const content = extracted.text.slice(0, 8000);
+  if (!headline || content.length < 200) throw new Error("Could not extract article text from page (direct fetch and scraper both failed)");
+  log(`[Ingest] fetched ${url} via ${via} (${content.length} chars)`, "pipeline");
+  const published = extracted.publishedAt;
+  const article: RawArticle = {
+    headline,
+    url,
+    source: `${new URL(url).hostname.replace(/^www\./, "")} (manual)`,
+    sourceTier: "tier2",
+    publishedAt: published ? new Date(published) : new Date(),
+    content,
+    region: settings.regions[0] || "Singapore",
+    fetchMethod: "rss",
+  };
+
+  const filterPrompt = (await getPrompt("stage1_interest")) + await buildNegativeExamplesBlock("news");
+  const outcome = await processArticle(article, filterPrompt, settings, opts);
+  if (!opts.dryRun) await storage.recordScannedUrl(url, article.source).catch(() => {});
+  if (outcome.error) throw new Error(outcome.error);
+  const created = outcome.lead ? await storage.getLeadByUrl(url) : undefined;
+  log(`[Ingest] ${url} → ${outcome.processed.status}: ${outcome.processed.reason}`, "pipeline");
+  return { outcome: outcome.processed, leadId: created?.id };
 }
 
 export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: number; matchesFound: number; newLeads: number; duplicatesSkipped: number; scanId: string }> {
@@ -905,7 +849,7 @@ export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: 
     });
 
     // Append user-flagged false positives so each thumbs-down sharpens the filter.
-    const filterPrompt = (settings.interestFilterPrompt || DEFAULT_INTEREST_FILTER_PROMPT)
+    const filterPrompt = (await getPrompt("stage1_interest"))
       + await buildNegativeExamplesBlock("news");
 
     for (let i = 0; i < uniqueArticles.length; i++) {
@@ -995,16 +939,6 @@ export async function scanForLeads(scanId?: string): Promise<{ articlesScanned: 
                 console.log(`Sent Telegram alert for ${newHighPriorityLeads.length} high-priority leads`);
               } catch (error) {
                 console.error("Error sending lead alert via Telegram:", error);
-              }
-            }
-
-            // Send email alert if enabled (legacy)
-            if (settings.emailEnabled && settings.alertEmail) {
-              try {
-                await sendLeadAlertEmail(settings.alertEmail, newHighPriorityLeads);
-                console.log(`Sent email alert for ${newHighPriorityLeads.length} high-priority leads`);
-              } catch (error) {
-                console.error("Error sending lead alert email:", error);
               }
             }
           }

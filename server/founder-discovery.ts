@@ -1,0 +1,81 @@
+/**
+ * Founder discovery for leads whose article names no individual.
+ *
+ * A $400M acquisition of a private SEA company is a founder liquidity event
+ * even when the wire story only names the acquirer's executives. Rather than
+ * shipping a lead with an empty founder list, look the founders up (one web
+ * search + a tiny LLM read) so Stage 6b geography and Stage 7 enrichment have
+ * names to work with. Results are cached in research_cache for 90 days.
+ */
+
+import { db } from "./db";
+import { researchCache } from "@shared/schema";
+import { and, eq, gt, sql } from "drizzle-orm";
+import { searchWeb } from "./web-search";
+import { callJsonStage } from "./llm-json";
+import { log } from "./log";
+import { getPrompt, render } from "./prompts";
+
+const CACHE_ENTITY = "company_founders";
+const CACHE_TTL_DAYS = 90;
+
+export interface DiscoveredFounder {
+  name: string;
+  role: string | null;
+  location: string | null;
+}
+
+export async function discoverFounders(companyName: string, hint?: string | null): Promise<DiscoveredFounder[]> {
+  const name = companyName.trim();
+  if (name.length < 2) return [];
+
+  const cutoff = new Date(Date.now() - CACHE_TTL_DAYS * 86_400_000);
+  const [cached] = await db
+    .select({ result: researchCache.result })
+    .from(researchCache)
+    .where(and(eq(researchCache.entityType, CACHE_ENTITY), sql`lower(${researchCache.query}) = ${name.toLowerCase()}`, gt(researchCache.createdAt, cutoff)))
+    .limit(1);
+  if (cached) return cached.result as DiscoveredFounder[];
+
+  // Two short queries: search engines punish long/quoted strings.
+  const queries = [`${name} founders CEO${hint ? ` ${hint}` : ""}`, `who founded ${name}`];
+  const seen = new Map<string, { title: string; url: string; content: string }>();
+  let answer: string | undefined;
+  for (const q of queries) {
+    const search = await searchWeb(q, { maxResults: 6, includeAnswer: true });
+    answer = answer || search?.answer;
+    for (const r of search?.results ?? []) if (r.url && !seen.has(r.url)) seen.set(r.url, r);
+    if (seen.size >= 6) break;
+  }
+  const results = Array.from(seen.values());
+  if (results.length === 0) return [];
+  const search = { answer };
+
+  const context = results.map((r, i) => `[${i + 1}] ${r.title}\n${r.url}\n${(r.content || "").slice(0, 600)}`).join("\n\n");
+  const prompt = render(await getPrompt("founder_discovery"), {
+    companyName: name,
+    hintSuffix: hint ? ` (${hint})` : "",
+    answerBlock: search?.answer ? `Search summary: ${search.answer}\n\n` : "",
+    results: context,
+  });
+
+  try {
+    const parsed = await callJsonStage<any>({
+      model: "google/gemini-2.5-flash-lite",
+      prompt,
+      maxTokens: 300,
+      temperature: 0.1,
+      label: "FounderDiscovery",
+    });
+    const founders: DiscoveredFounder[] = (Array.isArray(parsed.founders) ? parsed.founders : [])
+      .filter((f: any) => f && typeof f.name === "string" && f.name.trim().split(/\s+/).length >= 2)
+      .slice(0, 5)
+      .map((f: any) => ({ name: f.name.trim(), role: f.role || null, location: f.location || null }));
+    await db.insert(researchCache).values({ query: name, entityType: CACHE_ENTITY, result: founders }).catch(() => {});
+    log(`[FounderDiscovery] ${name}: ${founders.map((f) => f.name).join(", ") || "none found"}`, "pipeline");
+    return founders;
+  } catch (error) {
+    log(`[FounderDiscovery] failed for ${name}: ${(error as Error).message}`, "pipeline");
+    return [];
+  }
+}

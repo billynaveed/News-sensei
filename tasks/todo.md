@@ -4,24 +4,275 @@ Current session task list with checkable progress items.
 
 ---
 
-## Current Task: [Task Name]
+## 2026-09-19 — Family trees: pass 2 + dedupe ✅ shipped; renderer + blocking planned
 
-**Objective:** [Clear statement of what needs to be accomplished]
+**Trigger:** Billy: "it didn't seem to be crawling properly and the family tree as a visual is
+very basic". Review found: pass 1 finished 2026-09-14 (204 done / 91 needs_review), worker
+ticking `queue-empty` hourly since; 22% of members have no edge (330/1,504), 68 families are
+just the seeded patriarch, Vietnam avg 2.2 members; root cause = synthesis only ever saw
+search snippets (≤1,200 chars), never a full page. 7 exact-name duplicate people inside
+families (lifestyle scanner inserts people keyed on name+region, bypassing the shared
+upsert), ~15 overlapping seed families sharing a patriarch. `person_blocks` is still empty.
 
-**Approach:** [High-level strategy or architectural decision]
+### 1. Pass 2 — research with real pages ✅
+- [x] `server/family-pages.ts`: Wikipedia search (free MediaWiki API, EN + the market's own
+  language: th/id/vi/ms — Thai/Vietnamese articles carry the parents/spouse/children the
+  English ones lack) with a title-relevance filter (fuzzy hits like "Thai Chinese" rejected);
+  direct page fetch (SSRF-guarded), scrape.do only as fallback (max 1/family, never on 404);
+  family-aware extraction (infobox Spouse/Children/Relatives rows, whole "Family"/"Notable
+  members" sections incl. tables, family-word paragraphs elsewhere; 7k chars/page; 60s budget)
+- [x] `family-research.ts`: 3 pages/family fed as `[P1] FULL PAGE` blocks ahead of the snippets;
+  known members AND known edges passed back so a pass extends the tree; review decision counts
+  members/edges from the DB after the run; relationships may name roster members the model did
+  not re-list; `dedupeFamilyMembers` at the end of every run; LLM call capped at 120s
+- [x] Queue: `claimNext` = pending → failed → needs_review older than 7 days (attempts cap
+  applies), thinnest trees first; `requeueAllFamilies()` + `POST /api/families/research/requeue-all`
+  + "Re-research all" button on the progress card; `POST /api/families/:id/research?now=1`
+  researches one family immediately (research-now)
+- [x] Seeder: must name ≥2 public members, honorifics stripped (`family-names.ts`), anchors already
+  seeded in the country skipped; `POST /api/families/research/seed/:market`
 
-### Checklist
-- [ ] Step 1
-- [ ] Step 2
-- [ ] Step 3
+### 2. Dedupe + seed cleanup ✅
+- [x] `lifestyle-scanner.ts` upsertPerson → `resolvePersonByName` (was matching on name+region)
+- [x] `dedupeExactNamePeople()` (89 rows folded in 82 groups), `mergeOverlappingFamilies()`
+  (same patriarch, or ≥3 shared members = 60%+ of the smaller; survivor = fewer-word name →
+  surname most members carry → bigger tree) — 17 families merged (Wee Ee Cheong + Wee Piew →
+  Wee; Jiaravanon → Chearavanont; Le (Vinfast) + Phan (Vingroup) → Pham; Ganda → Tanoto; …);
+  `pruneThinFamilies()`; all with dryRun via `POST /api/families/maintenance/dedupe` and
+  `POST /api/families/maintenance/prune/:country`
+- [x] Vietnam: 29 one-person seeds deleted, 12 reseeded (stricter prompt; still LLM-recall-limited,
+  the pass will flag the wrong ones as needs_review)
+- [x] Verified: `npm run check` clean, `npm test` 71/71 (new `tests/family-pages.test.ts`);
+  deployed 2026-09-19 09:1x UTC; full pass requeued (261 families, thin trees first, ~11 days at
+  1/hour — `FAMILY_RESEARCH_CRON="20,50 * * * *"` halves that). Live runs: Chirathivat 18m/2e →
+  21m/4e, Chearavanont 16m/16e → 17m/20e, Kanjanapas 5m/2e → 8m/6e, Yoovidhya 6m/5e → 7m/7e in
+  18–29s each; Lua/Tejapaibul/Darmawan honestly still empty (no public tree)
 
-**Verification:**
-- [ ] Code runs without errors
-- [ ] Tests pass (if applicable)
-- [ ] Demonstrated correctness
-- [ ] No unintended side effects
+### 3. Planned — proper tree renderer (not started)
+- [ ] Replace `computeGenerations` + flex rows in `client/src/pages/family-detail.tsx` with a
+  genealogy layout: couple nodes (spouses share one node, children hang from the couple),
+  sibling brackets, generation labels (G1 founder / G2 / G3), collapsible branches
+- [ ] Candidates: `family-chart` (d3-based, built for this) or ELK layered layout via
+  `elkjs` + custom SVG; both handle 20+ members, pan/zoom, and lay out from the same
+  members + parent/spouse/sibling edges the API already returns
+- [ ] Node design: photo avatar (people.photo_url, fetch from Wikipedia when missing),
+  role line, net worth chip, age when known; blocked = red fill, propagated block = amber
+  outline so the conflict is visible spreading up the tree
+- [ ] "Not linked yet" strip becomes a side drawer with a one-click "attach as child of…"
+  so orphans get placed instead of parked
+- [ ] Person page (/people/:id) shows a mini-tree (parents / spouse / children) using the
+  same component
+
+### 4. Planned — make blocking easy (not started)
+- [ ] "Block" action on the lead card founder chip and on the person page (today it lives
+  only inside the family page dialog)
+- [ ] Telegram alert buttons: "⛔ Blocked" on a lead alert → block the named founder, reply
+  with the propagated relatives so Billy can confirm parents
+- [ ] Families page: a "Blocked" tab and count in the progress card; weekly note lists new
+  blocks + which leads they suppressed
+- [ ] Pipeline: a lead whose founder is blocked stays visible with the ⛔ badge (Billy's
+  2026-09-02 rule); add a settings toggle to hide once he trusts propagation
+
+## Current Task: Family Trees + Blocked Persons (coverage conflicts)
+
+**Objective:** Model SEA wealthy families as visual trees inside Sensei, let Billy mark
+people as "blocked" (covered by another banker) with relationship-aware propagation
+(child blocked ⇒ parents blocked for sure; siblings/spouse optional), surface ⛔ badges
+on leads naming blocked people, and run a slow in-server research agent over ~2 weeks
+to build trees for the top ~50 families per SEA market (SG, ID, MY, TH, PH, VN — ~300
+families).
+
+**Decisions (Billy, 2026-09-02):**
+- Scope: top ~50 families per SEA market (~300 families), no HK for now
+- Runtime: research worker runs inside the Sensei server via node-cron (~1 family/hour)
+- Feed behavior: blocked leads stay visible with a ⛔ "Blocked — covered" badge (no
+  hiding until propagation is trusted); filter option to hide later
+
+**Approach:** Build on what exists — `people` table (has familyName/father/mother/spouse
+fields + aliases), `contact_meta` side-table pattern (app role can't ALTER people —
+see memory/db-superuser-ownership), Tavily/Brave `web-search.ts`, `research.ts`
+(claude-sonnet-4 via gateway), node-cron `scheduler.ts`. New tables are app-role-owned
+via the `ensure-*-table.ts` pattern. Blocks are ALWAYS human-applied; the agent never
+auto-blocks. Every researched relationship stores its source URL + confidence.
+
+### Data model (new tables, keyed to people.id)
+- `families`: id, name, country, primaryCompanies[], description, patriarchPersonId,
+  netWorthEstimate, researchStatus (pending|researching|done|failed|needs_review),
+  researchAttempts, researchedAt, confidence, sourceUrls[], timestamps
+- `family_members`: familyId + personId junction (unique pair) — a person can appear
+  in two families (marriage)
+- `family_relationships`: familyId, fromPersonId, toPersonId,
+  type (parent|spouse|sibling), confidence, sourceUrl, notes. Canonical direction:
+  parent→child; siblings usually derived from shared parents but storable directly
+  when research only knows "sibling"
+- `person_blocks`: personId (unique), reason, coveredBy (which bank/banker),
+  origin (direct|propagated), originPersonId, createdAt. Unblocking a direct block
+  cascade-deletes its propagated rows
+
+### Phases
+**Phase 1 — Blocking core (works today, before any research)** ✅ 2026-09-02
+- [x] Schema + ensure-tables for the 4 tables (ensure-families-tables.ts, runs at boot)
+- [x] POST /api/persons/:id/block (alsoBlock[]) / DELETE unblock (cascades propagated);
+  GET /api/founders/blocked (names+aliases+familyId for feed matching)
+- [x] Manual family/member/relationship CRUD (server/families.ts + routes)
+- [x] Dashboard: ⛔ badge (red, links to family) on founder names matching blocked
+  persons incl. aliases; hide-blocked filter deferred until propagation is trusted
+
+**Phase 2 — Families tab UI** ✅ 2026-09-02
+- [x] /families route: list w/ search, country chips, member/blocked counts, research badges
+- [x] Family detail: generational tree (relaxation layout + measured SVG connectors;
+  solid parent, dotted spouse, dashed sibling; unlinked members shown separately)
+- [x] Person panel: details + relationships (add/remove) + Block/Unblock + remove-from-family
+- [x] Block dialog: parents PRE-CHECKED, spouse/siblings/children opt-in, coveredBy/reason,
+  shows "Block N people" count
+- [x] Lead cards: blocked founder badges link to their family page
+
+**Phase 3 — Research agent (in-server, slow burn)** ✅ 2026-09-02
+- [x] Seed: `seedFamilies()` asks claude-sonnet-4 for ~50 families/market (name,
+  anchor person, companies, net worth) → families rows as researchStatus=pending with
+  the anchor upserted into people + family_members. Idempotent on (name, country).
+  Ran 2026-09-02: 295 families (SG 50, ID 48, MY 50, TH 48, PH 49, VN 50)
+- [x] `server/family-research.ts` worker: node-cron `20 * * * *` (1 family/hour) +
+  a startup tick after 90s; per family 6 searches (web-search.ts) → sonnet strict
+  JSON (members, relations, confidence, source URLs) → upsertPersonByName reuse →
+  family_members/relationships (onConflictDoNothing; fills blank familyName/bio only);
+  low confidence or <2 members ⇒ needs_review; failures retry up to 3 attempts;
+  rows stuck in "researching" reset to pending at boot
+- [x] Endpoints: GET /api/families/research/progress, POST .../research/seed,
+  POST .../research/run (one tick now), POST /api/families/:id/research (requeue)
+- [x] Families tab progress bar ("N/295 families researched", queued/review/failed, last run)
+- [x] Budget guard: FAMILY_RESEARCH_DAILY_SEARCH_CAP (default 200 searches/day);
+  FAMILY_RESEARCH_ENABLED=false disables; FAMILY_RESEARCH_CRON overrides cadence
+- Verified: first tick researched the Wee family (SG) → 8 members, 7 sourced edges,
+  confidence high; tree renders (spouse dotted, parent lines)
+- Known seed noise: a few LLM seeds mis-attribute companies/countries (e.g. a
+  Malaysian entry citing a Singapore company); research pass + needs_review queue
+  are where these surface. Phase 4 review UI will handle them.
+
+**Phase 4 — Polish (after data flows)**
+- [ ] needs_review queue UI; person merge/dedupe review
+- [ ] "Re-research family" button; per-person lazy enrichment on view
+
+**Verification (Phases 1-2, done 2026-09-02 on dev :5100 against live DB):**
+- [x] npm run check clean; ensure-families-tables creates app-role tables at boot (no ALTER people)
+- [x] Blocked test child → father auto-proposed & propagated ({"blocked":2}); person panel
+  explains "Blocked because X is blocked. Covered by TestBank."
+- [x] Unblock direct → propagated blocks cascade-deleted ({"removed":2})
+- [x] Tree renders: 2 generations, spouse dotted line, parent connectors, red blocked nodes
+- [x] Dashboard lead card shows ⛔ badge on the blocked founder only (sibling stays normal)
+- [x] Test data fully cleaned (people/family/blocks/lead + temp auth session removed)
+- [x] Worker researched the Wee family end-to-end with correct tree + sources (Phase 3)
+- Deployed to production 2026-09-02 03:34 UTC (build + service restart, smoke check passed).
 
 ---
+
+## Program 2 (approved by Billy 2026-09-08 evening) — running as 4 parallel workstreams
+
+Billy's answers: 1 family review queue OK · 2 leads↔families/contacts OK · 3 Telegram as the
+phone product YES · 4 prompts in Settings YES · 5 Tavily fixed by Billy (he asked why so many
+searches: 763 of ~1067 since Sep 1 were the family worker at 6/family; now 4/family + cache) ·
+6 person page/history YES · 7 weekly "what I learned" note YES · 8 hygiene OK.
+
+- [x] **T — Telegram + weekly note** (server/telegram*.ts, health-monitor.ts, weekly-note.ts)
+- [x] **F — Family review queue** (families.ts, family-research.ts, routes-families.ts, families UI)
+- [x] **P — Prompts in Settings** (schema pipeline_prompts, prompts.ts, routes-prompts.ts, settings.tsx,
+      pipeline-stages.ts/scanner.ts load prompts)
+- [x] **L — Lead↔family/contact chips + person page** (dashboard.tsx, routes-people.ts, person.tsx)
+- [x] **Me** — routes wired, ensure-* retired, LLM sites converted, SendGrid removed, deployed 2026-09-08 ~21:30 UTC
+- Open: weekly note "dismissed" count is approximate (no status_changed_at column); the 16 old
+  failed families show no reason until requeued; Founders page name now links to /people/:id
+
+## Current Program (approved by Billy 2026-09-08): make Sensei self-improving, observable, robust
+
+**Decisions (Billy):** 1 learning loop over hard-coded rules (it teaches itself, he teaches it);
+2 visual errors in Sensei + Telegram pings when things go bad; 3 prompts editable/versioned in
+settings with reference articles; 4 schema consolidation — do it via one-time ownership reassign
+(local Postgres, superuser available) rather than migrations; 5-8 approved as proposed.
+
+### Phase D — DB ownership + schema consolidation ✅ 2026-09-08
+- [x] Ownership: all 54 public tables + sequences now owned by newsuser (ALTER TABLE per table;
+  REASSIGN OWNED failed because postgres is the bootstrap role). Done 2026-09-08.
+- [x] Drift inspected via information_schema (drizzle-kit pull is broken in this install):
+  `db:push` would DROP 27 legacy tables (v1 `leads` 1632 rows, `saved_leads` 2, `contacts` 10,
+  `*_v2` draft tables, lifestyle_leads, publications, scrape_log, …) and 6 unused columns on
+  leads_v2 (analyzed_by_model, article_id, banker_angle, event_type, relevance_score, source_id).
+- [x] Billy OK'd 2026-09-08: 27 legacy tables dumped to
+  /root/backups/sensei/legacy-tables-20260908-2050.sql.gz (2.3 MB) and dropped. Unique
+  constraints renamed to Drizzle naming, missing FKs/indexes added; `npm run db:push` is now a
+  clean no-op and the schema mechanism going forward. The 6 live leads_v2 columns were kept
+  (they hold data) and added to schema.ts. ensure-*-table.ts files can be retired one by one.
+
+### Phase A — Health + alerting ✅ deployed 2026-09-08 20:09 UTC
+- [x] `server/health.ts`: checks for DB, LLM gateway (last call ok/err via openai-client wrapper),
+  scraper credits, web-search quota, last scan age/errors, Stage-6 parse failures, family worker,
+  Telegram send. Each: ok | warn | error + message. `GET /api/health`.
+- [x] `server/health-monitor.ts`: cron every 15 min; Telegram on transition to warn/error (re-ping
+  after 6h if still bad; recovery message); daily 08:00 SGT digest.
+- [x] UI: header banner (red/amber → /debug) + Debug "System health" card replacing Integrations.
+
+### Phase B — Learning loop ✅ deployed 2026-09-08 20:09 UTC
+- [x] `pipeline_examples` table + server/pipeline-examples.ts (list/upsert/delete/summary/run)
+- [x] GET /api/pipeline/funnel (per stage + reason with samples), examples CRUD endpoints
+- [x] client/src/components/RejectionFunnel.tsx mounted on Debug: funnel bars, "Should pass" /
+  "Should reject" / re-run per article, "What Sensei has been taught" with re-check-all
+- [x] Prompts learn: feedback-prompt.ts now emits negatives + positives (flagged misses + last 5
+  saved leads) under the existing export, so every scan's S1 prompt carries both
+- [x] scanner.ts: `url` on ArticleProcessed entries + dryRun mode (skips dedup gates, never persists)
+- [x] Nightly examples cron (examples-cron.ts, 03:30 SGT) + POST /api/pipeline/examples/run; pass
+  rate on the Debug page ("What Sensei has been taught"). Digest line for it: TODO
+
+### Phase E — Refactor + deletions ✅ (partial, see notes)
+- [x] `callJsonStage()` (server/llm-json.ts) replaces 12 call sites; 6 remain (telegram-commands,
+  lifestyle-scanner ×2, backfill-lifestyle-geo ×2, ipo-scanner needs a systemPrompt option)
+- [x] Deleted: Ollama client, gpt-4o-mini reprocess script, knowledge-only enrichers.
+  SendGrid still wired via routes.ts + settings — remove in a follow-up with the Settings UI
+
+### Phase C — Prompts in settings (after A/B/D)
+- [ ] `pipeline_prompts` + versions; Settings editor with "test against examples"
+
+### Phase F — Budgets + UX
+- [x] web-search.ts: `priority: "background"` draws from SEARCH_BACKGROUND_DAILY_CAP (120/day);
+  live calls never wait; family-research.ts searches are "background"
+- [x] Feed sort: priority band (high/med/low) then newest — a week-old 90 no longer pins above today's 85
+- [x] Radar duplicates already collapse on the dashboard (existing bestLeadIds dedup); deal value +
+  wealth angle already render on the card — they were just never persisted until today
+
+## 2026-09-08 — Pipeline: catch SEA deals reported by non-SEA outlets (Circle × Tazapay $400M) ✅
+
+**Trigger:** Billy asked whether the pipeline caught Circle's $400M acquisition of Singapore's
+Tazapay. It hadn't: no subscribed source ran it, and a Tazapay article from Tech in Asia had
+been rejected at Stage 1 as "sea_publisher_only" (85% of weekly rejects carry that reason).
+
+**Root causes + fixes (all verified end-to-end on dev, then deployed):**
+- [x] Coverage: `fetchFromDealRadar` in adapters.ts — 6 source-independent Google News
+  keyword queries ("Singapore-based" + deal terms, per-market variants, SEA founder exits),
+  always on (DEAL_RADAR_ENABLED=false disables). Found 16 Tazapay articles in 2s.
+- [x] Stage 1b geography rescue (`server/geo-rescue.ts`): S1 only sees headline+500 chars,
+  so a SEA company whose HQ isn't in the snippet is rejected. For deal-shaped articles
+  rejected on geography alone, verify the subject's HQ (research_cache → companies table →
+  one web search + flash-lite read; 60 lookups/day cap) and rescue with a "[Verified: …]"
+  note that flows into S6. 
+- [x] Stage 2/6 subject selection: acquisitions now resolve to the TARGET (Tazapay), never
+  the acquirer (Circle). companyNames[0] = subject, so S7 enriches the right company.
+- [x] Stage 6 scoring: acquisition of a private target-region company = liquidity event by
+  definition (85+ with named founder + price; 55-65 with nobody named). Was scoring 25.
+- [x] Stage 6a founder discovery (`server/founder-discovery.ts`): for medium+ leads, look up
+  the subject company's founders (2 short searches + flash-lite), put them FIRST; acquirer
+  executives are excluded from founderNames. Tazapay → Rahul Shinghal (CEO, Singapore),
+  Arul Kumaravel, Saroj Mishra, Kanupriya Sharda; LinkedIn found in S7.
+- [x] keyFinancials / wealthAngle / seaConnection were computed by S6 but never persisted —
+  now written to leads_v2.
+- [x] web-search.ts: Tavily plan is over its usage limit (432 "exceeds your plan"); searchWeb
+  now falls back to Brave on quota errors, breaker-open, and final failure instead of null.
+- [x] `POST /api/leads/ingest-url {url}`: push any article through the full pipeline on demand.
+- [x] Scraping made provider-agnostic (`server/scraper.ts`): scrape.do (trial, 1000 req/month,
+  key in .env as SCRAPE_DO_API_KEY) replaces the dead ScrapingBee key (401). Used by S5 (now
+  for any article with <1500 chars, not only tier1), RSS-via-proxy, homepage discovery, IDX
+  IPO page, and ingest fallback. `GET /api/scraper/status` shows credits. CoinDesk (429 on
+  direct fetch) = 1 credit; Tech in Asia rendered = 5 credits.
+- Result: lead 8c568b5f… on the dashboard — high (85), $400M, four founders, LinkedIn.
+- Not done: Debug-page panel for scraper/search quota (endpoint exists); per-source Google
+  News toggle is still off in settings (radar covers the deal case).
 
 ## Completed Tasks
 

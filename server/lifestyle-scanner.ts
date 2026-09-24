@@ -1,8 +1,7 @@
 import Parser from "rss-parser";
-import { openai } from "./openai-client";
+import { callJsonStage } from "./llm-json";
 import { tavily } from "@tavily/core";
 import * as cheerio from "cheerio";
-import { stripJsonFences } from "./json-utils";
 import { and, desc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import { db } from "./db";
 import { log } from "./log";
@@ -10,6 +9,7 @@ import { sendTelegramMessage } from "./telegram";
 import { validateSeaAnchor } from "./sea-guard";
 import { priorityLevelFor } from "./lead-scoring";
 import { isPublicHttpUrl } from "./url-safety";
+import { resolvePersonByName } from "./families";
 import { buildNegativeExamplesBlock } from "./feedback-prompt";
 import { foundersKeepLead } from "./founder-geo";
 import {
@@ -130,30 +130,26 @@ async function fetchRssArticles(source: typeof lifestyleSources.$inferSelect) {
   })).filter((a) => a.url);
 }
 
+/**
+ * People are shared with the lead pipeline and the family trees, so the same
+ * spelling-tolerant resolver is used everywhere. (The old name+region lookup
+ * here created a second row for anyone the pipeline had already seen under a
+ * different region — 82 exact-name duplicate groups by 2026-09-19.)
+ */
 async function upsertPerson(fullName: string, region: string, sourceName: string) {
-  const normalized = fullName.trim();
-  const existing = await db.select().from(people).where(and(eq(people.fullName, normalized), eq(people.region, region), isNull(people.mergedIntoId))).limit(1);
-  if (existing[0]) {
+  const { person } = await resolvePersonByName(fullName, { source: sourceName });
+  if (!person.region || !person.lastName) {
     const [updated] = await db.update(people)
       .set({
-        mentionCount: sql`${people.mentionCount} + 1`,
-        lastMentionedAt: new Date(),
-        sources: sql`array_append(COALESCE(${people.sources}, ARRAY[]::text[]), ${sourceName})`,
+        region: person.region ?? region,
+        lastName: person.lastName ?? (fullName.trim().split(" ").slice(-1)[0] || fullName.trim()),
         updatedAt: new Date(),
       })
-      .where(eq(people.id, existing[0].id))
+      .where(eq(people.id, person.id))
       .returning();
     return updated;
   }
-
-  const createdRows = await db.insert(people).values({
-    fullName: normalized,
-    lastName: normalized.split(" ").slice(-1)[0] || normalized,
-    region,
-    lastMentionedAt: new Date(),
-    sources: [sourceName],
-  }).returning();
-  return createdRows[0];
+  return person;
 }
 
 async function upsertCompany(name: string, articleUrl: string) {
@@ -193,14 +189,12 @@ Return:
   "eventType": "wedding" | "charity" | "property" | "business" | "social" | "style" | "other"
 }`;
 
-  const response = await openai.chat.completions.create({
+  return callJsonStage<any>({
     model: MODEL,
-    messages: [{ role: "user", content: prompt }],
+    prompt,
     temperature: 0.1,
-    response_format: { type: "json_object" },
+    label: "Lifestyle Classify",
   });
-
-  return JSON.parse(stripJsonFences(response.choices[0]?.message?.content || '{"relevant":false,"reason":"empty","confidence":0,"eventType":"other"}'));
 }
 
 export async function extractStructuredLifestyleData(article: typeof lifestyleArticles.$inferSelect, source: typeof lifestyleSources.$inferSelect) {
@@ -245,14 +239,12 @@ Schema:
   "sea_evidence_text": "supporting passage from the article (or empty string if none)"
 }`;
 
-  const response = await openai.chat.completions.create({
+  const parsed = await callJsonStage<any>({
     model: MODEL,
-    messages: [{ role: "user", content: prompt }],
+    prompt,
     temperature: 0.1,
-    response_format: { type: "json_object" },
+    label: "Lifestyle Extract",
   });
-
-  const parsed = JSON.parse(stripJsonFences(response.choices[0]?.message?.content || "{}"));
 
   // Geography gate — same Target-Region rule (SEA + HK + Taiwan) as the main
   // news pipeline (scanner.ts). The lifestyle path historically had no location
@@ -465,11 +457,28 @@ export async function syncLifestyleToLeads(): Promise<{ synced: number; skipped:
 
   for (const article of articles) {
     try {
-      // Check if already synced
+      // Check if already synced — by URL, and by headline+source within 7 days
+      // (syndicated copies of one story arrive under different URLs).
       const existing = await storage.getLeadByUrl(article.url);
       if (existing) {
         skipped++;
         continue;
+      }
+      const headlineKey = (article.headline || article.title || "").trim();
+      if (headlineKey) {
+        const dup = await db.execute(sql`
+          SELECT id FROM leads_v2
+          WHERE lower(headline) = lower(${headlineKey})
+            AND created_at > now() - interval '7 days'
+          LIMIT 1
+        `);
+        if (dup.rows.length > 0) {
+          await db.update(lifestyleArticles)
+            .set({ status: "filtered_out", filterReason: "duplicate headline already in feed", updatedAt: new Date() })
+            .where(eq(lifestyleArticles.id, article.id));
+          skipped++;
+          continue;
+        }
       }
 
       const [source] = await db.select().from(lifestyleSources).where(eq(lifestyleSources.id, article.sourceId)).limit(1);

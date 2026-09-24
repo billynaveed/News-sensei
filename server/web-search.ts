@@ -15,6 +15,32 @@ const BRAVE_API_KEY = process.env.BRAVE_API_KEY;
 // Circuit breaker state
 let circuitBreakerOpen = false;
 let circuitBreakerResetTime = 0;
+let lastQuotaError: { at: string; message: string } | null = null;
+const BACKGROUND_DAILY_CAP = parseInt(process.env.SEARCH_BACKGROUND_DAILY_CAP || "120", 10);
+const searchStats = { day: "", tavily: 0, brave: 0, failures: 0, background: 0, backgroundDenied: 0 };
+function touchSearchStats() { const d = new Date().toISOString().slice(0, 10); if (searchStats.day !== d) { searchStats.day = d; searchStats.tavily = 0; searchStats.brave = 0; searchStats.failures = 0; searchStats.background = 0; searchStats.backgroundDenied = 0; } }
+
+/** Background callers ask first; live callers never wait. */
+function takeBackgroundSlot(): boolean {
+  touchSearchStats();
+  if (searchStats.background >= BACKGROUND_DAILY_CAP) { searchStats.backgroundDenied++; return false; }
+  searchStats.background++;
+  return true;
+}
+
+/** For the Debug page: which search provider is live and whether quota is exhausted. */
+export function getSearchStatus() {
+  touchSearchStats();
+  return {
+    tavilyConfigured: !!TAVILY_API_KEY,
+    braveConfigured: !!BRAVE_API_KEY,
+    breakerOpen: circuitBreakerOpen && Date.now() < circuitBreakerResetTime,
+    breakerResetsAt: circuitBreakerOpen ? new Date(circuitBreakerResetTime).toISOString() : null,
+    lastQuotaError,
+    backgroundDailyCap: BACKGROUND_DAILY_CAP,
+    today: { ...searchStats },
+  };
+}
 const CIRCUIT_BREAKER_TIMEOUT = 60000; // 1 minute
 
 interface TavilySearchResult {
@@ -33,6 +59,12 @@ interface TavilySearchResponse {
 }
 
 interface SearchOptions {
+  /**
+   * "live" (default) = a lead being processed right now; always served.
+   * "background" = batch work (family research); draws from a daily cap so it
+   * can never starve live enrichment of the shared Tavily/Brave quota.
+   */
+  priority?: "live" | "background";
   searchDepth?: "basic" | "advanced";
   maxResults?: number;
   includeAnswer?: boolean;
@@ -66,6 +98,7 @@ async function searchWithBrave(
     // Brave free tier can 422 on complex quoted queries — simplify
     const cleanQuery = query.replace(/"/g, '');
     console.info(`[Web Search] Brave query: "${cleanQuery}"`);
+    touchSearchStats(); searchStats.brave++;
     const startTime = Date.now();
 
     params.set("q", cleanQuery);
@@ -118,6 +151,11 @@ export async function searchWeb(
   query: string,
   options: SearchOptions = {}
 ): Promise<TavilySearchResponse | null> {
+  if (options.priority === "background" && !takeBackgroundSlot()) {
+    console.warn(`[Web Search] background cap (${BACKGROUND_DAILY_CAP}/day) reached, skipping: "${query.slice(0, 60)}"`);
+    return null;
+  }
+
   // If Tavily is not configured, try Brave
   if (!TAVILY_API_KEY) {
     return searchWithBrave(query, options);
@@ -126,8 +164,8 @@ export async function searchWeb(
   // Check circuit breaker
   if (circuitBreakerOpen) {
     if (Date.now() < circuitBreakerResetTime) {
-      console.warn("[Web Search] Circuit breaker open, skipping search");
-      return null;
+      console.warn("[Web Search] Circuit breaker open, using Brave");
+      return searchWithBrave(query, options);
     }
     // Reset circuit breaker
     circuitBreakerOpen = false;
@@ -166,6 +204,7 @@ export async function searchWeb(
       if (excludeDomains) searchOptions.excludeDomains = excludeDomains;
 
       console.info(`[Web Search] Query: "${query}" (attempt ${attempt + 1}/${maxRetries})`);
+      touchSearchStats(); searchStats.tavily++;
 
       const response = await Promise.race([
         tvly.search(query, searchOptions),
@@ -191,6 +230,17 @@ export async function searchWeb(
     } catch (error: any) {
       const isLastAttempt = attempt === maxRetries - 1;
 
+      // Plan quota exhausted (Tavily 432 / "usage limit"): retrying won't help.
+      // Open the breaker so we stop paying the timeout, and serve from Brave.
+      const msg = String(error?.message || "");
+      if (error.response?.status === 432 || /usage limit|exceeds your plan|quota/i.test(msg)) {
+        circuitBreakerOpen = true;
+        circuitBreakerResetTime = Date.now() + 30 * 60 * 1000;
+        lastQuotaError = { at: new Date().toISOString(), message: msg.slice(0, 160) };
+        console.warn(`[Web Search] Tavily quota exhausted (${msg.slice(0, 80)}) — falling back to Brave for 30 min`);
+        return searchWithBrave(query, options);
+      }
+
       // Handle rate limiting (429)
       if (error.response?.status === 429) {
         const delay = baseDelay * Math.pow(2, attempt) + Math.random() * 1000;
@@ -209,9 +259,9 @@ export async function searchWeb(
         // Open circuit breaker after repeated failures
         circuitBreakerOpen = true;
         circuitBreakerResetTime = Date.now() + CIRCUIT_BREAKER_TIMEOUT;
-        console.warn("[Web Search] Circuit breaker opened for 1 minute");
+        console.warn("[Web Search] Circuit breaker opened for 1 minute — falling back to Brave");
 
-        return null;
+        return searchWithBrave(query, options);
       }
 
       // Exponential backoff for retries
@@ -283,16 +333,17 @@ export async function searchFounderResidence(
 /**
  * Get ISO 3166-1 alpha-2 country code from region name
  */
+// Tavily's `country` filter takes lowercase country NAMES, not ISO codes
+// ("Invalid country. Must be a valid country name" on "SG" — seen 2026-09-09).
+// Hong Kong and Taiwan are not in Tavily's list, so they get no filter.
 function getCountryCode(region: string): string | null {
   const regionMap: Record<string, string> = {
-    Singapore: "SG",
-    Malaysia: "MY",
-    Thailand: "TH",
-    Indonesia: "ID",
-    Philippines: "PH",
-    Vietnam: "VN",
-    "Hong Kong": "HK",
-    Taiwan: "TW",
+    Singapore: "singapore",
+    Malaysia: "malaysia",
+    Thailand: "thailand",
+    Indonesia: "indonesia",
+    Philippines: "philippines",
+    Vietnam: "vietnam",
   };
 
   return regionMap[region] || null;

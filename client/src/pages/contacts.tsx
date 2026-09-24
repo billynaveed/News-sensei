@@ -1,3 +1,4 @@
+import { Link } from "wouter";
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -127,7 +128,7 @@ function ContactCard({
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <h3 className="truncate text-base font-semibold">{contact.fullName}</h3>
+              <h3 className="truncate text-base font-semibold"><Link href={`/people/${contact.id}`} className="hover:underline">{contact.fullName}</Link></h3>
               {isSaved && <Badge variant="secondary" size="sm">Saved</Badge>}
               {isMuted && <Badge variant="outline" size="sm" className="text-zinc-500">Muted</Badge>}
               {contact.remindAt && (

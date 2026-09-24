@@ -3,19 +3,37 @@ import { createServer, type Server } from "http";
 import { z } from "zod";
 import crypto from "crypto";
 import { storage } from "./storage";
-import { sendTestEmail, sendLeadAlertEmail } from "./sendgrid";
 import { sendTestTelegramMessage, getTelegramUpdates, type TelegramUpdate } from "./telegram";
 import { handleUpdate as handleTelegramUpdate } from "./telegram-bot";
-import { scanForLeads, getScanProgress, enrichLeadWithWebSearch } from "./scanner";
-import { ensureLeadFeedbackTable } from "./ensure-lead-feedback-table";
-import { ensureContactMetaTable } from "./ensure-contact-meta-table";
+import { scanForLeads, getScanProgress, enrichLeadWithWebSearch, ingestArticleUrl } from "./scanner";
+import { getResearchProgress, runFamilyResearchOnce, seedFamilies, requeueFamily } from "./family-research";
+import { getScraperStatus } from "./scraper";
+import { listExamples, upsertExample, deleteExample, getExamplesSummary } from "./pipeline-examples";
+import { startExamplesCron, runExamplesNow } from "./examples-cron";
+import { registerHealthRoutes } from "./routes-health";
+import { registerPeopleRoutes } from "./routes-people";
+import { registerPromptRoutes } from "./routes-prompts";
+import { registerFamilyRoutes } from "./routes-families";
+import { seedPromptsFromSettings } from "./prompts";
+import { buildWeeklyNote, sendWeeklyNoteNow } from "./weekly-note";
+import { getSearchStatus } from "./web-search";
+import {
+  listFamilies,
+  createFamily,
+  deleteFamily,
+  getFamilyDetail,
+  addFamilyMember,
+  removeFamilyMember,
+  addRelationship,
+  deleteRelationship,
+  blockPersons,
+  unblockPerson,
+  listBlockedPersons,
+} from "./families";
 import { listContacts, getContactArticles, updateContactMeta, createContactByName, createContactsFromLink, countDueContacts, muteByNames } from "./contacts";
 import { migrateSavedLeads } from "./migrate-saved-leads";
-import { ensureSavedLeadsTable } from "./ensure-saved-leads-table";
 import { enrichSavedLead, formatEnrichmentForSavedLead } from "./founder-enrichment";
 import { restartScheduler } from "./scheduler";
-import { ensureIpoFilingsTable } from "./ensure-ipo-table";
-import { ensureResearchCacheTable } from "./ensure-research-cache-table";
 import { scanForIpoFilings, getAllIpoFilings, getIpoFilingById, backfillIpoAnalysis } from "./ipo-scanner";
 import { generateRegistrationOptions, verifyRegistrationResponse, generateAuthenticationOptions, verifyAuthenticationResponse } from "@simplewebauthn/server";
 import type { LeadStatus, IpoExchange } from "@shared/schema";
@@ -52,11 +70,23 @@ async function getCredentialCount(): Promise<number> {
   return creds.length;
 }
 
+// Valid tokens are cached in memory for a few minutes: sessions live ~1 year,
+// and without this every single /api request pays a DB roundtrip up front.
+const sessionCache = new Map<string, { expiresAt: number; cachedAt: number }>();
+const SESSION_CACHE_TTL_MS = 5 * 60 * 1000;
+
 async function validateSessionToken(token: string | undefined): Promise<boolean> {
   if (!token) return false;
+  const now = Date.now();
+  const cached = sessionCache.get(token);
+  if (cached && now - cached.cachedAt < SESSION_CACHE_TTL_MS) {
+    return cached.expiresAt > now;
+  }
   const sessions = await db.select().from(authSessions).where(eq(authSessions.token, token));
   if (sessions.length === 0) return false;
-  return new Date(sessions[0].expiresAt) > new Date();
+  const expiresAt = new Date(sessions[0].expiresAt).getTime();
+  sessionCache.set(token, { expiresAt, cachedAt: now });
+  return expiresAt > now;
 }
 
 async function isAuthenticated(req: Request): Promise<boolean> {
@@ -175,49 +205,22 @@ export async function registerRoutes(
     }
   });
 
-  // Ensure saved_leads table exists
+  // Schema is managed by `npm run db:push` (see memory/db-superuser-ownership).
+  // Boot-time sanity check only: a missing table is a deploy error, not
+  // something to paper over at runtime.
   try {
-    const created = await ensureSavedLeadsTable();
-    if (created) {
-      console.log("saved_leads table was created");
-    }
+    const expected = ["leads_v2", "saved_leads_v2", "ui_lead_feedback", "contact_meta", "pipeline_examples", "families", "family_members", "family_relationships", "person_blocks", "ipo_filings", "research_cache"];
+    const present = new Set(((await db.execute(sql`SELECT tablename FROM pg_tables WHERE schemaname = 'public'`)).rows as { tablename: string }[]).map((r) => r.tablename));
+    const missing = expected.filter((t) => !present.has(t));
+    if (missing.length) console.error(`[schema] MISSING TABLES: ${missing.join(", ")} — run \`npm run db:push\``);
   } catch (error) {
-    console.error("Error ensuring saved_leads table:", error);
+    console.error("[schema] sanity check failed:", error);
   }
-
-  // Ensure lead_feedback table exists
-  try {
-    await ensureLeadFeedbackTable();
-  } catch (error) {
-    console.error("Error ensuring lead_feedback table:", error);
-  }
-
-  // Ensure contact_meta table exists
-  try {
-    await ensureContactMetaTable();
-  } catch (error) {
-    console.error("Error ensuring contact_meta table:", error);
-  }
-
-  // Ensure ipo_filings table exists
-  try {
-    const created = await ensureIpoFilingsTable();
-    if (created) {
-      console.log("ipo_filings table was created");
-    }
-  } catch (error) {
-    console.error("Error ensuring ipo_filings table:", error);
-  }
-
-  // Ensure research_cache table exists
-  try {
-    const created = await ensureResearchCacheTable();
-    if (created) {
-      console.log("research_cache table was created");
-    }
-  } catch (error) {
-    console.error("Error ensuring research_cache table:", error);
-  }
+  // Prompts: the live Stage 1 prompt lived in settings.interest_filter_prompt;
+  // seed it as version 1 so behaviour does not change when prompts move to
+  // pipeline_prompts. Idempotent.
+  await seedPromptsFromSettings();
+  startExamplesCron();
 
   // Ensure webauthn tables exist
   try {
@@ -682,6 +685,318 @@ export async function registerRoutes(
     }
   });
 
+  registerHealthRoutes(app);
+  registerPeopleRoutes(app);
+  registerPromptRoutes(app);
+  registerFamilyRoutes(app);
+
+  // Weekly "what I learned" note: preview (text) and manual send.
+  app.get("/api/weekly-note/preview", async (_req, res) => {
+    try {
+      res.json({ text: await buildWeeklyNote() });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : "Failed" });
+    }
+  });
+  app.post("/api/weekly-note/send", async (_req, res) => {
+    try {
+      res.json(await sendWeeklyNoteNow());
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : "Failed" });
+    }
+  });
+
+  app.get("/api/search/status", (_req, res) => {
+    res.json(getSearchStatus());
+  });
+
+  app.get("/api/scraper/status", async (_req, res) => {
+    try {
+      res.json(await getScraperStatus());
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : "Failed" });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Learning loop: rejection funnel + reference examples
+  // ---------------------------------------------------------------------------
+
+  /** Aggregate the last N scans' per-article decisions by stage and reason. */
+  app.get("/api/pipeline/funnel", async (req, res) => {
+    try {
+      const scans = Math.min(50, Math.max(1, parseInt(String(req.query.scans ?? "12"), 10) || 12));
+      const rows = (await db.execute(sql`
+        SELECT sl.scanned_at AS "scannedAt", a.value AS article
+        FROM scan_logs sl, jsonb_array_elements(sl.articles_processed::jsonb) a
+        WHERE sl.id IN (SELECT id FROM scan_logs ORDER BY scanned_at DESC LIMIT ${scans})
+      `)).rows as { scannedAt: string; article: any }[];
+      const stageOf = (reason: string, status: string): string => {
+        if (status === "success") return "Lead created";
+        if (status === "error") return "Error";
+        const m = reason.match(/^(Pre-filter|Duplicate|URL already|S\d[ab]?)/i);
+        if (!m) return "Other";
+        const k = m[1].toLowerCase();
+        if (k.startsWith("pre")) return "S0 Pre-filter";
+        if (k.startsWith("dup") || k.startsWith("url")) return "Dedup";
+        return m[1].toUpperCase();
+      };
+      const reasonKey = (reason: string): string => {
+        const sig = reason.match(/(sea_publisher_only|sea_investor_only|vague_apac_expansion|mainland_china_only|global_company_no_sea_anchor|sea_customers_only|sea_distribution_only|not_wealth_event|hq_verified|Already have|Public company|No company|no business keywords|already scanned|Deep analysis rejected|Geo:)/i);
+        return sig ? sig[1] : reason.replace(/^S\d[ab]? [^:]*: ?/, "").slice(0, 70);
+      };
+      const stages: Record<string, { count: number; reasons: Record<string, { count: number; samples: { headline: string; source: string; url?: string; reason: string; scannedAt: string }[] }> }> = {};
+      const includeDedup = req.query.includeDedup === "true";
+      for (const r of rows) {
+        const a = r.article || {};
+        const reason = String(a.reason || "");
+        if (!includeDedup && /already scanned within retention window/i.test(reason)) continue;
+        const stage = stageOf(reason, String(a.status || ""));
+        const key = reasonKey(reason);
+        stages[stage] ??= { count: 0, reasons: {} };
+        stages[stage].count++;
+        stages[stage].reasons[key] ??= { count: 0, samples: [] };
+        const bucket = stages[stage].reasons[key];
+        bucket.count++;
+        if (bucket.samples.length < 25) bucket.samples.push({ headline: a.headline, source: a.source, url: a.url, reason, scannedAt: r.scannedAt });
+      }
+      res.json({ scans, articles: Object.values(stages).reduce((n, st) => n + st.count, 0), stages });
+    } catch (error) {
+      console.error("Error building funnel:", error);
+      res.status(500).json({ error: "Failed to build funnel" });
+    }
+  });
+
+  app.get("/api/pipeline/examples", async (_req, res) => {
+    try {
+      res.json({ examples: await listExamples(), summary: await getExamplesSummary() });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to list examples" });
+    }
+  });
+
+  app.post("/api/pipeline/examples", async (req, res) => {
+    try {
+      const { url, headline, expected, note } = req.body ?? {};
+      if (typeof url !== "string" || !/^https?:\/\//.test(url) || typeof headline !== "string" || !["pass", "reject"].includes(expected)) {
+        return res.status(400).json({ error: "url, headline and expected (pass|reject) required" });
+      }
+      await upsertExample({ url, headline, expected, note: typeof note === "string" ? note : null });
+      res.json({ ok: true });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to save example" });
+    }
+  });
+
+  app.post("/api/pipeline/examples/run", async (_req, res) => {
+    try {
+      res.json(await runExamplesNow());
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : "Failed to run examples" });
+    }
+  });
+
+  app.delete("/api/pipeline/examples/:id", async (req, res) => {
+    try {
+      await deleteExample(req.params.id);
+      res.json({ ok: true });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to delete example" });
+    }
+  });
+
+  // Manual ingest: run one article URL through the full lead pipeline.
+  app.post("/api/leads/ingest-url", async (req, res) => {
+    try {
+      const { url } = req.body ?? {};
+      if (typeof url !== "string" || !/^https?:\/\//.test(url)) return res.status(400).json({ error: "url required" });
+      res.json(await ingestArticleUrl(url));
+    } catch (error) {
+      console.error("Error ingesting URL:", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : "Failed to ingest URL" });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Families + blocked persons (coverage conflicts)
+  // ---------------------------------------------------------------------------
+
+  app.get("/api/families", async (req, res) => {
+    try {
+      const q = typeof req.query.q === "string" ? req.query.q : undefined;
+      const country = typeof req.query.country === "string" ? req.query.country : undefined;
+      res.json(await listFamilies(q, country));
+    } catch (error) {
+      console.error("Error listing families:", error);
+      res.status(500).json({ error: "Failed to list families" });
+    }
+  });
+
+  app.post("/api/families", async (req, res) => {
+    try {
+      const { name, country, description } = req.body ?? {};
+      if (typeof name !== "string" || name.trim().length < 2) return res.status(400).json({ error: "name required" });
+      res.json(await createFamily({ name, country, description }));
+    } catch (error) {
+      console.error("Error creating family:", error);
+      res.status(500).json({ error: "Failed to create family" });
+    }
+  });
+
+  // Research agent (static paths must precede /api/families/:id)
+  app.get("/api/families/research/progress", async (_req, res) => {
+    try {
+      res.json(await getResearchProgress());
+    } catch (error) {
+      console.error("Error fetching research progress:", error);
+      res.status(500).json({ error: "Failed to fetch research progress" });
+    }
+  });
+
+  app.post("/api/families/research/seed", async (_req, res) => {
+    try {
+      res.json(await seedFamilies());
+    } catch (error) {
+      console.error("Error seeding families:", error);
+      res.status(500).json({ error: "Failed to seed families" });
+    }
+  });
+
+  app.post("/api/families/research/run", async (_req, res) => {
+    try {
+      res.json(await runFamilyResearchOnce());
+    } catch (error) {
+      console.error("Error running family research:", error);
+      res.status(500).json({ error: "Failed to run family research" });
+    }
+  });
+
+  /** Queue a family for re-research; `?now=1` researches it immediately instead (extends the tree in place). */
+  app.post("/api/families/:id/research", async (req, res) => {
+    try {
+      if (req.query.now === "1" || req.query.now === "true") {
+        return res.json(await runFamilyResearchOnce(req.params.id));
+      }
+      await requeueFamily(req.params.id);
+      res.json({ ok: true });
+    } catch (error) {
+      console.error("Error requeueing family research:", error);
+      res.status(500).json({ error: "Failed to requeue family" });
+    }
+  });
+
+  app.get("/api/families/:id", async (req, res) => {
+    try {
+      const detail = await getFamilyDetail(req.params.id);
+      if (!detail) return res.status(404).json({ error: "Family not found" });
+      res.json(detail);
+    } catch (error) {
+      console.error("Error fetching family:", error);
+      res.status(500).json({ error: "Failed to fetch family" });
+    }
+  });
+
+  app.delete("/api/families/:id", async (req, res) => {
+    try {
+      await deleteFamily(req.params.id);
+      res.json({ ok: true });
+    } catch (error) {
+      console.error("Error deleting family:", error);
+      res.status(500).json({ error: "Failed to delete family" });
+    }
+  });
+
+  app.post("/api/families/:id/members", async (req, res) => {
+    try {
+      const { name, relation } = req.body ?? {};
+      if (typeof name !== "string" || name.trim().length < 2) return res.status(400).json({ error: "name required" });
+      const validRel =
+        relation &&
+        typeof relation.toPersonId === "number" &&
+        ["parent_of", "child_of", "spouse_of", "sibling_of"].includes(relation.type)
+          ? relation
+          : undefined;
+      res.json(await addFamilyMember(req.params.id, name.trim(), validRel));
+    } catch (error) {
+      console.error("Error adding family member:", error);
+      res.status(500).json({ error: "Failed to add member" });
+    }
+  });
+
+  app.delete("/api/families/:id/members/:personId", async (req, res) => {
+    try {
+      const personId = parseInt(req.params.personId, 10);
+      if (!Number.isFinite(personId)) return res.status(400).json({ error: "invalid personId" });
+      await removeFamilyMember(req.params.id, personId);
+      res.json({ ok: true });
+    } catch (error) {
+      console.error("Error removing family member:", error);
+      res.status(500).json({ error: "Failed to remove member" });
+    }
+  });
+
+  app.post("/api/families/:id/relationships", async (req, res) => {
+    try {
+      const { fromPersonId, toPersonId, type } = req.body ?? {};
+      if (
+        typeof fromPersonId !== "number" ||
+        typeof toPersonId !== "number" ||
+        !["parent", "spouse", "sibling"].includes(type)
+      ) {
+        return res.status(400).json({ error: "fromPersonId, toPersonId, type(parent|spouse|sibling) required" });
+      }
+      res.json((await addRelationship(req.params.id, fromPersonId, toPersonId, type)) ?? { ok: true });
+    } catch (error) {
+      console.error("Error adding relationship:", error);
+      res.status(500).json({ error: error instanceof Error ? error.message : "Failed to add relationship" });
+    }
+  });
+
+  app.delete("/api/relationships/:id", async (req, res) => {
+    try {
+      await deleteRelationship(req.params.id);
+      res.json({ ok: true });
+    } catch (error) {
+      console.error("Error deleting relationship:", error);
+      res.status(500).json({ error: "Failed to delete relationship" });
+    }
+  });
+
+  // Blocking is always a human action; alsoBlock carries the relatives Billy
+  // ticked in the propagation dialog (parents pre-checked client-side).
+  app.post("/api/persons/:personId/block", async (req, res) => {
+    try {
+      const personId = parseInt(req.params.personId, 10);
+      if (!Number.isFinite(personId)) return res.status(400).json({ error: "invalid personId" });
+      const { alsoBlock, reason, coveredBy } = req.body ?? {};
+      const also = Array.isArray(alsoBlock) ? alsoBlock.filter((n: unknown) => typeof n === "number") : [];
+      res.json(await blockPersons(personId, also, reason, coveredBy));
+    } catch (error) {
+      console.error("Error blocking person:", error);
+      res.status(500).json({ error: "Failed to block" });
+    }
+  });
+
+  app.delete("/api/persons/:personId/block", async (req, res) => {
+    try {
+      const personId = parseInt(req.params.personId, 10);
+      if (!Number.isFinite(personId)) return res.status(400).json({ error: "invalid personId" });
+      res.json(await unblockPerson(personId));
+    } catch (error) {
+      console.error("Error unblocking person:", error);
+      res.status(500).json({ error: "Failed to unblock" });
+    }
+  });
+
+  app.get("/api/founders/blocked", async (_req, res) => {
+    try {
+      res.json(await listBlockedPersons());
+    } catch (error) {
+      console.error("Error listing blocked persons:", error);
+      res.status(500).json({ error: "Failed to list blocked" });
+    }
+  });
+
   app.post("/api/contacts/from-link", async (req, res) => {
     try {
       const { url } = req.body ?? {};
@@ -774,20 +1089,6 @@ export async function registerRoutes(
     }
   });
 
-  // Test email endpoint
-  app.post("/api/test-email", async (req, res) => {
-    try {
-      const settings = await storage.getSettings();
-      if (!settings?.alertEmail) {
-        return res.status(400).json({ error: "No alert email configured" });
-      }
-      await sendTestEmail(settings.alertEmail);
-      res.json({ success: true, message: "Test email sent" });
-    } catch (error) {
-      console.error("Error sending test email:", error);
-      res.status(500).json({ error: "Failed to send test email" });
-    }
-  });
 
   // Test Telegram endpoint
   app.post("/api/test-telegram", async (req, res) => {

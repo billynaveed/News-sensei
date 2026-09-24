@@ -1,8 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "./db";
 import { researchCache } from "@shared/schema";
-import { openai } from "./openai-client";
-import { stripJsonFences } from "./json-utils";
+import { callJsonStage } from "./llm-json";
 import { searchWeb, formatSearchContext } from "./web-search";
 import { log } from "./log";
 
@@ -52,13 +51,12 @@ RULES:
 - If the results do not clearly establish their current country of residence, set in_target_region = null.
 Return JSON only: {"location":"country/city per the evidence (or empty)","in_target_region": true | false | null}`;
 
-      const res = await openai.chat.completions.create({
+      const parsed = await callJsonStage<any>({
         model: MODEL,
-        messages: [{ role: "user", content: prompt }],
+        prompt,
         temperature: 0,
-        response_format: { type: "json_object" },
+        label: "FounderGeo",
       });
-      const parsed = JSON.parse(stripJsonFences(res.choices[0]?.message?.content || "{}"));
       v = {
         inTarget: typeof parsed.in_target_region === "boolean" ? parsed.in_target_region : null,
         location: String(parsed.location || ""),

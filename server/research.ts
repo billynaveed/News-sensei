@@ -5,12 +5,11 @@
  * into a UHNW private banking dossier.
  */
 
-import { openai } from "./openai-client";
 import { storage } from "./storage";
 import { db } from "./db";
 import { researchCache } from "@shared/schema";
 import { eq, and, gt, ilike, or, sql } from "drizzle-orm";
-import { stripJsonFences } from "./json-utils";
+import { callJsonStage } from "./llm-json";
 
 
 const BRAVE_API_KEY = process.env.BRAVE_API_KEY;
@@ -271,14 +270,13 @@ IMPORTANT:
 - Talking points should be personal and show the banker has done homework`;
 
   try {
-    const response = await openai.chat.completions.create({
+    const parsed = await callJsonStage<any>({
       model: "anthropic/claude-sonnet-4",
-      messages: [{ role: "user", content: prompt }],
-      max_completion_tokens: 3000,
+      prompt,
+      maxTokens: 3000,
       temperature: 0.3,
+      label: "Research Dossier",
     });
-
-    const parsed = JSON.parse(stripJsonFences(response.choices[0].message.content || "{}"));
 
     const result: ResearchResult = {
       name: parsed.name || query,

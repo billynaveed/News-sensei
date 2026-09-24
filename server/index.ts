@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express, { type Request, Response, NextFunction } from "express";
+import compression from "compression";
 import cookieParser from "cookie-parser";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
@@ -7,8 +8,12 @@ import { createServer } from "http";
 import { startBot, stopBot, enableWebhookMode } from "./telegram-bot";
 import { setWebhook, deleteWebhook } from "./telegram";
 import { startScheduler, stopScheduler } from "./scheduler";
+import { startFamilyResearch, stopFamilyResearch } from "./family-research";
+import { startHealthMonitor, stopHealthMonitor } from "./health-monitor";
+import { startWeeklyNote, stopWeeklyNote } from "./weekly-note";
 
 const app = express();
+app.use(compression());
 app.use(cookieParser());
 const httpServer = createServer(app);
 
@@ -59,7 +64,12 @@ app.use((req, res, next) => {
     if (path.startsWith("/api")) {
       let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
       if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
+        // Don't stringify big list payloads (/api/leads is megabytes — doing so
+        // on every request blocks the event loop and floods journald).
+        const body = Array.isArray(capturedJsonResponse) && capturedJsonResponse.length > 10
+          ? `[Array(${capturedJsonResponse.length})]`
+          : JSON.stringify(capturedJsonResponse);
+        logLine += ` :: ${body.length > 300 ? body.slice(0, 300) + "…" : body}`;
       }
 
       log(logLine);
@@ -134,6 +144,9 @@ app.use((req, res, next) => {
 
       // Start scan scheduler
       startScheduler().catch(err => log(`Failed to start scheduler: ${err}`, "error"));
+      startFamilyResearch();
+      startHealthMonitor();
+      startWeeklyNote();
     },
   );
 
@@ -141,6 +154,9 @@ app.use((req, res, next) => {
   process.on('SIGTERM', async () => {
     log('SIGTERM received, shutting down gracefully...');
     stopScheduler();
+    stopFamilyResearch();
+    stopHealthMonitor();
+    stopWeeklyNote();
     await stopBot();
     httpServer.close(() => {
       log('Server closed');
@@ -151,6 +167,9 @@ app.use((req, res, next) => {
   process.on('SIGINT', async () => {
     log('SIGINT received, shutting down gracefully...');
     stopScheduler();
+    stopFamilyResearch();
+    stopHealthMonitor();
+    stopWeeklyNote();
     await stopBot();
     httpServer.close(() => {
       log('Server closed');

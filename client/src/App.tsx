@@ -6,6 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { HealthBanner } from "@/components/HealthBanner";
 import { LockScreen } from "@/components/lock-screen";
 import { useAuth } from "@/hooks/use-auth";
 import Dashboard from "@/pages/dashboard";
@@ -17,6 +18,9 @@ import IpoFilingsPage from "@/pages/ipo-filings";
 import LifestyleLeadsPage from "@/pages/lifestyle-leads";
 import ContactsPage from "@/pages/contacts";
 import FeedbackPage from "@/pages/feedback";
+import FamiliesPage from "@/pages/families";
+import FamilyDetailPage from "@/pages/family-detail";
+import PersonPage from "@/pages/person";
 import NotFound from "@/pages/not-found";
 
 function Router() {
@@ -24,6 +28,9 @@ function Router() {
     <Switch>
       <Route path="/" component={Dashboard} />
       <Route path="/contacts" component={ContactsPage} />
+      <Route path="/families" component={FamiliesPage} />
+      <Route path="/families/:id" component={FamilyDetailPage} />
+      <Route path="/people/:id" component={PersonPage} />
       <Route path="/feedback" component={FeedbackPage} />
       <Route path="/saved-leads" component={SavedLeadsPage} />
       <Route path="/settings" component={SettingsPage} />
@@ -63,6 +70,7 @@ function App() {
               <header className="flex items-center justify-between gap-4 p-3 border-b border-border bg-background sticky top-0 z-50">
                 <SidebarTrigger data-testid="button-sidebar-toggle" />
                 <div className="flex items-center gap-2">
+                  <HealthBanner />
                   <ThemeToggle />
                 </div>
               </header>

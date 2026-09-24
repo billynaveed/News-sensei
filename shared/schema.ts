@@ -1,4 +1,4 @@
-import { pgTable, text, varchar, integer, serial, timestamp, boolean, json, jsonb, real, index } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, serial, timestamp, boolean, json, jsonb, real, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { sql } from "drizzle-orm";
@@ -22,7 +22,7 @@ export type User = typeof users.$inferSelect;
 export type LeadStatus = "new" | "reviewed" | "saved" | "contacted" | "dismissed";
 export type PriorityLevel = "high" | "medium" | "low";
 export type SourceTier = "tier1" | "tier2" | "tier3";
-export type FetchMethod = "rss" | "google_news" | "scrapingbee" | "scrapingbee_premium";
+export type FetchMethod = "rss" | "google_news" | "scrapingbee" | "scrapingbee_premium" | "scraped";
 
 /** Financial metrics extracted during deep analysis (Stage 6 of the pipeline) */
 export interface KeyFinancials {
@@ -64,6 +64,13 @@ export const leads = pgTable("leads_v2", {
   pipelineReasoning: text("pipeline_reasoning"),
   category: text("category"),
   seaConnection: text("sea_connection"),
+  // Present in the live table since the v2 cutover; kept so db:push never drops data.
+  eventType: text("event_type"),
+  bankerAngle: text("banker_angle"),
+  relevanceScore: integer("relevance_score"),
+  analyzedByModel: text("analyzed_by_model"),
+  sourceId: varchar("source_id"),
+  articleId: varchar("article_id"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 }, (t) => ({
   // Index names match scripts/v2-create-tables.sql so a future db:push reconciles
@@ -85,7 +92,7 @@ export const insertLeadSchema = createInsertSchema(leads).omit({
   sourceTier: z.enum(["tier1", "tier2", "tier3"]),
   priorityLevel: z.enum(["high", "medium", "low"]),
   status: z.enum(["new", "reviewed", "saved", "contacted", "dismissed"]).optional(),
-  fetchMethod: z.enum(["rss", "google_news", "scrapingbee", "scrapingbee_premium"]).nullable().optional(),
+  fetchMethod: z.enum(["rss", "google_news", "scrapingbee", "scrapingbee_premium", "scraped"]).nullable().optional(),
 });
 
 export type InsertLead = z.infer<typeof insertLeadSchema>;
@@ -268,6 +275,8 @@ export interface ArticleProcessed {
   status: "success" | "skipped" | "error";
   reason?: string;
   fetchMethod?: FetchMethod;
+  /** Article URL, so a rejection on the Debug page can be re-run or turned into an example. */
+  url?: string;
 }
 
 // Scan logs for tracking scraping activity
@@ -294,6 +303,20 @@ export type InsertScanLog = z.infer<typeof insertScanLogSchema>;
 export type ScanLog = typeof scanLogs.$inferSelect;
 
 // Scanned URLs table - tracks URLs already processed to prevent re-scanning
+// Reference articles Billy taught from the Debug page (learning loop); see server/pipeline-examples.ts.
+export const pipelineExamples = pgTable("pipeline_examples", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  url: text("url").notNull().unique(),
+  headline: text("headline").notNull(),
+  expected: text("expected").notNull().$type<"pass" | "reject">(),
+  note: text("note"),
+  lastResult: text("last_result"),
+  lastReason: text("last_reason"),
+  lastRunAt: timestamp("last_run_at"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+export type PipelineExample = typeof pipelineExamples.$inferSelect;
+
 export const scannedUrls = pgTable("scanned_urls", {
   urlHash: text("url_hash").primaryKey(),
   url: text("url").notNull(),
@@ -619,7 +642,7 @@ export const contactMeta = pgTable("contact_meta", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   personId: integer("person_id").notNull().unique(),
   email: text("email"),
-  status: text("status").notNull().$type<"active" | "saved" | "deleted">().default("active"),
+  status: text("status").notNull().$type<"active" | "saved" | "muted" | "deleted">().default("active"),
   remindAt: timestamp("remind_at"),
   notes: text("notes"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
@@ -627,3 +650,106 @@ export const contactMeta = pgTable("contact_meta", {
 });
 export type ContactMeta = typeof contactMeta.$inferSelect;
 export type ContactStatus = "active" | "saved" | "deleted";
+
+// ---------------------------------------------------------------------------
+// Families + blocked persons (coverage conflicts). All four tables are
+// app-role-owned (ensure-families-tables.ts) and keyed to people.id so we
+// never ALTER the superuser-owned people table. Blocks are ALWAYS applied by
+// a human — research agents only propose trees, never block.
+// ---------------------------------------------------------------------------
+
+// researchStatus doubles as the research-agent queue:
+// pending → researching → done | failed | needs_review. "manual" families
+// (created by hand) are skipped by the agent.
+export const families = pgTable("families", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  country: text("country"),
+  primaryCompanies: text("primary_companies").array(),
+  description: text("description"),
+  patriarchPersonId: integer("patriarch_person_id"),
+  netWorthEstimate: text("net_worth_estimate"),
+  researchStatus: text("research_status").notNull().default("manual"),
+  researchAttempts: integer("research_attempts").notNull().default(0),
+  researchedAt: timestamp("researched_at"),
+  confidence: text("confidence"),
+  sourceUrls: text("source_urls").array(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+export type Family = typeof families.$inferSelect;
+
+// A person can belong to two families (marriage), hence a junction.
+export const familyMembers = pgTable("family_members", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  familyId: varchar("family_id").notNull(),
+  personId: integer("person_id").notNull(),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (t) => ({
+  memberUnique: uniqueIndex("family_members_family_person_uq").on(t.familyId, t.personId),
+}));
+export type FamilyMember = typeof familyMembers.$inferSelect;
+
+// Canonical directions: parent→child ("parent"), spouse (either direction),
+// sibling only when parents are unknown (else derived from shared parents).
+export const familyRelationships = pgTable("family_relationships", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  familyId: varchar("family_id").notNull(),
+  fromPersonId: integer("from_person_id").notNull(),
+  toPersonId: integer("to_person_id").notNull(),
+  type: text("type").notNull().$type<"parent" | "spouse" | "sibling">(),
+  confidence: text("confidence"),
+  sourceUrl: text("source_url"),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (t) => ({
+  relUnique: uniqueIndex("family_rel_uq").on(t.fromPersonId, t.toPersonId, t.type),
+}));
+export type FamilyRelationship = typeof familyRelationships.$inferSelect;
+
+// origin "direct" = Billy blocked this person; "propagated" = blocked because
+// originPersonId was (child blocked ⇒ parents blocked for sure). Unblocking a
+// direct block cascade-deletes its propagated rows.
+export const personBlocks = pgTable("person_blocks", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  personId: integer("person_id").notNull().unique(),
+  reason: text("reason"),
+  coveredBy: text("covered_by"),
+  origin: text("origin").notNull().$type<"direct" | "propagated">().default("direct"),
+  originPersonId: integer("origin_person_id"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+});
+export type PersonBlock = typeof personBlocks.$inferSelect;
+
+// ============================================================================
+// Pipeline prompts (editable + versioned from Settings)
+// ============================================================================
+// Every LLM prompt the pipeline uses has a code default (server/prompts.ts
+// DEFAULT_PROMPTS). A row here overrides the default for that key; deleting the
+// row reverts to the default. Bodies are templates using {{placeholder}} vars
+// rendered by server/prompts.ts `render()`.
+
+export const pipelinePrompts = pgTable("pipeline_prompts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  /** Stable identifier, e.g. "stage1_interest". See PROMPT_KEYS in server/prompts.ts. */
+  key: text("key").notNull().unique(),
+  body: text("body").notNull(),
+  /** Bumped on every save; matches the newest pipeline_prompt_versions row. */
+  version: integer("version").notNull().default(1),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedBy: text("updated_by"),
+});
+export type PipelinePrompt = typeof pipelinePrompts.$inferSelect;
+
+/** Append-only history: one row per save, so any version can be reverted to. */
+export const pipelinePromptVersions = pgTable("pipeline_prompt_versions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  key: text("key").notNull(),
+  version: integer("version").notNull(),
+  body: text("body").notNull(),
+  note: text("note"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (t) => ({
+  keyVersionUnique: uniqueIndex("pipeline_prompt_versions_key_version_uq").on(t.key, t.version),
+}));
+export type PipelinePromptVersion = typeof pipelinePromptVersions.$inferSelect;
