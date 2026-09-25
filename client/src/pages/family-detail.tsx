@@ -5,6 +5,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { FamilyTree } from "@/components/FamilyTree";
+import { BlockPersonDialog } from "@/components/BlockPersonDialog";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -401,9 +402,25 @@ export default function FamilyDetailPage() {
       />
 
       {blockTarget && (
-        <BlockDialog
-          member={blockTarget}
-          detail={detail}
+        <BlockPersonDialog
+          personId={blockTarget.id}
+          fullName={blockTarget.fullName}
+          relatives={(() => {
+            const r = computeRelatives(blockTarget.id, detail.relationships);
+            const byId = new Map(detail.members.map((m) => [m.id, m]));
+            const rows: { personId: number; fullName: string; kind: "parent" | "child" | "spouse" | "sibling"; blocked: boolean }[] = [];
+            const push = (ids: number[], kind: "parent" | "child" | "spouse" | "sibling") => {
+              for (const id of ids) {
+                const m = byId.get(id);
+                if (m) rows.push({ personId: m.id, fullName: m.fullName, kind, blocked: m.blocked });
+              }
+            };
+            push(r.parents, "parent");
+            push(r.spouses, "spouse");
+            push(r.siblings, "sibling");
+            push(r.children, "child");
+            return rows;
+          })()}
           onOpenChange={(o) => !o && setBlockTargetId(null)}
           onBlocked={() => {
             setBlockTargetId(null);
@@ -756,124 +773,6 @@ function AddMemberDialog({
 }
 
 // ---------------------------------------------------------------------------
-function BlockDialog({
-  member,
-  detail,
-  onOpenChange,
-  onBlocked,
-}: {
-  member: Member;
-  detail: FamilyDetail;
-  onOpenChange: (o: boolean) => void;
-  onBlocked: () => void;
-}) {
-  const byId = new Map(detail.members.map((m) => [m.id, m]));
-  const relatives = useMemo(() => computeRelatives(member.id, detail.relationships), [member.id, detail.relationships]);
-
-  // Billy's rule: a blocked child means the parents are blocked for sure —
-  // parents come pre-checked. Siblings/spouse/children are opt-in.
-  const [checked, setChecked] = useState<Record<number, boolean>>(() =>
-    Object.fromEntries(relatives.parents.map((id) => [id, true])),
-  );
-  const [coveredBy, setCoveredBy] = useState("");
-  const [reason, setReason] = useState("Covered by another banker");
-
-  const blockMutation = useMutation({
-    mutationFn: async () => {
-      const alsoBlock = Object.entries(checked)
-        .filter(([, v]) => v)
-        .map(([id]) => parseInt(id, 10));
-      await apiRequest("POST", `/api/persons/${member.id}/block`, {
-        alsoBlock,
-        reason: reason || null,
-        coveredBy: coveredBy || null,
-      });
-    },
-    onSuccess: onBlocked,
-  });
-
-  const groups: { label: string; ids: number[] }[] = [
-    { label: "Parents", ids: relatives.parents },
-    { label: "Spouse", ids: relatives.spouses },
-    { label: "Siblings", ids: relatives.siblings },
-    { label: "Children", ids: relatives.children },
-  ];
-  const anyRelatives = groups.some((g) => g.ids.length > 0);
-  const selectedCount = Object.values(checked).filter(Boolean).length;
-
-  return (
-    <Dialog open onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Ban className="h-4 w-4 text-red-500" /> Block {member.fullName}
-          </DialogTitle>
-          <DialogDescription>
-            Blocked people are flagged with ⛔ on leads — they're covered elsewhere and can't be approached.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="space-y-3">
-          {anyRelatives && (
-            <div>
-              <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-1.5">
-                Also block relatives?
-              </div>
-              <div className="space-y-2">
-                {groups.map((g) =>
-                  g.ids
-                    .map((id) => byId.get(id))
-                    .filter((p): p is Member => !!p && !p.blocked)
-                    .map((p) => (
-                      <label key={p.id} className="flex items-center gap-2 text-sm cursor-pointer">
-                        <Checkbox
-                          checked={!!checked[p.id]}
-                          onCheckedChange={(v) => setChecked((s) => ({ ...s, [p.id]: !!v }))}
-                          data-testid={`checkbox-block-${p.id}`}
-                        />
-                        <span className="font-medium">{p.fullName}</span>
-                        <span className="text-xs text-muted-foreground">({g.label.toLowerCase()})</span>
-                      </label>
-                    )),
-                )}
-              </div>
-              {relatives.parents.length > 0 && (
-                <p className="text-xs text-muted-foreground mt-1.5">
-                  Parents are pre-checked — a blocked child means the parents are covered too.
-                </p>
-              )}
-            </div>
-          )}
-          <div>
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Covered by (optional)</label>
-            <Input value={coveredBy} onChange={(e) => setCoveredBy(e.target.value)} placeholder="Bank / banker name" />
-          </div>
-          <div>
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Reason</label>
-            <Input value={reason} onChange={(e) => setReason(e.target.value)} />
-          </div>
-        </div>
-        <DialogFooter>
-          <Button
-            variant="destructive"
-            onClick={() => blockMutation.mutate()}
-            disabled={blockMutation.isPending}
-            data-testid="button-block-confirm"
-          >
-            {blockMutation.isPending && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
-            Block {1 + selectedCount} {1 + selectedCount === 1 ? "person" : "people"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-// ---------------------------------------------------------------------------
-/**
- * Fold this family into another one — the seeder produced duplicates like
- * "Kwek family" and "Kwek Leng Beng family". Members and relationships move to
- * the target (duplicates skipped) and this family is deleted.
- */
 function MergeFamilyDialog({
   open,
   onOpenChange,

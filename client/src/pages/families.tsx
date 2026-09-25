@@ -55,7 +55,7 @@ export type FamilySummary = {
   blockedCount: number;
 };
 
-type ReviewView = "all" | "needs_review" | "failed";
+type ReviewView = "all" | "needs_review" | "failed" | "blocked";
 
 const CONFIDENCE_BADGES: Record<string, string> = {
   high: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20",
@@ -72,6 +72,16 @@ function isBulkApprovable(f: FamilySummary): boolean {
     (f.confidenceLevel === "medium" || f.confidenceLevel === "high")
   );
 }
+
+type BlockedPerson = {
+  personId: number;
+  fullName: string;
+  origin: "direct" | "propagated";
+  reason: string | null;
+  coveredBy: string | null;
+  originName: string | null;
+  familyId: string | null;
+};
 
 type ResearchProgress = {
   enabled: boolean;
@@ -104,6 +114,10 @@ export default function FamiliesPage() {
   const { data: familiesData, isLoading } = useQuery<FamilySummary[]>({
     queryKey: ["/api/families"],
   });
+  const { data: blocked = [] } = useQuery<BlockedPerson[]>({
+    queryKey: ["/api/founders/blocked"],
+  });
+
   const { data: progress } = useQuery<ResearchProgress>({
     queryKey: ["/api/families/research/progress"],
     refetchInterval: 60_000,
@@ -330,6 +344,10 @@ export default function FamiliesPage() {
               <XCircle className="h-3.5 w-3.5 mr-1.5 text-red-500" />
               Failed ({reviewCounts.failed})
             </TabsTrigger>
+            <TabsTrigger value="blocked" data-testid="tab-families-blocked">
+              <Ban className="h-3.5 w-3.5 mr-1.5 text-red-500" />
+              Blocked ({blocked.length})
+            </TabsTrigger>
           </TabsList>
         </Tabs>
         {/* Always visible on the queue so the rule is discoverable, disabled
@@ -391,7 +409,43 @@ export default function FamiliesPage() {
         )}
       </div>
 
-      {isLoading ? (
+      {view === "blocked" ? (
+        <Card>
+          <CardContent className="p-4">
+            {blocked.length === 0 ? (
+              <p className="py-6 text-center text-sm text-muted-foreground">
+                Nobody is marked as covered yet. Open a person and use “Mark as covered” when
+                another banker already has the relationship — blocking a child marks the
+                parents too.
+              </p>
+            ) : (
+              <ul className="divide-y" data-testid="list-blocked">
+                {blocked.map((b) => (
+                  <li key={b.personId} className="flex flex-wrap items-center gap-2 py-2 text-sm">
+                    <Link href={`/people/${b.personId}`} className="font-medium hover:text-primary">
+                      {b.fullName}
+                    </Link>
+                    <Badge
+                      variant="outline"
+                      className={b.origin === "propagated"
+                        ? "border-amber-500/40 text-amber-600 dark:text-amber-400"
+                        : "border-red-500/40 text-red-600 dark:text-red-400"}
+                    >
+                      {b.origin === "propagated" ? `via ${b.originName ?? "a relative"}` : "direct"}
+                    </Badge>
+                    {b.coveredBy && <span className="text-muted-foreground">covered by {b.coveredBy}</span>}
+                    {b.familyId && (
+                      <Link href={`/families/${b.familyId}`} className="ml-auto text-xs text-muted-foreground hover:text-primary">
+                        open family
+                      </Link>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
+      ) : isLoading ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {Array.from({ length: 4 }).map((_, i) => (
             <Skeleton key={i} className="h-28" />

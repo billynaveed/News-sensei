@@ -414,6 +414,18 @@ function relationLabel(type: string, personIsFrom: boolean): string {
 }
 
 /**
+ * The same edge as a machine-readable kind, from THIS person's point of view,
+ * so the block dialog can pre-check parents without parsing English.
+ */
+export type RelationKindFromPerson = "parent" | "child" | "spouse" | "sibling" | "other";
+function relationKind(type: string, personIsFrom: boolean): RelationKindFromPerson {
+  if (type === "parent") return personIsFrom ? "child" : "parent";
+  if (type === "spouse") return "spouse";
+  if (type === "sibling") return "sibling";
+  return "other";
+}
+
+/**
  * Everything known about one person, stacked for a pre-call read: identity,
  * companies, contact meta, family memberships + relationships, coverage block,
  * and a merged timeline of every lead that names them plus their notes.
@@ -459,7 +471,8 @@ export async function getPersonProfile(personId: number) {
              r.source_url AS "sourceUrl",
              (r.from_person_id = ${personId}) AS "personIsFrom",
              other.id AS "personId",
-             other.full_name AS "fullName"
+             other.full_name AS "fullName",
+             EXISTS (SELECT 1 FROM person_blocks pb WHERE pb.person_id = other.id) AS "blocked"
         FROM family_relationships r
         JOIN people other
           ON other.id = CASE WHEN r.from_person_id = ${personId} THEN r.to_person_id ELSE r.from_person_id END
@@ -582,6 +595,8 @@ export async function getPersonProfile(personId: number) {
       familyId: (r.familyId ?? null) as string | null,
       sourceUrl: (r.sourceUrl ?? null) as string | null,
       relation: relationLabel(String(r.type), !!r.personIsFrom),
+      kind: relationKind(String(r.type), !!r.personIsFrom),
+      blocked: !!r.blocked,
     })),
     block: block
       ? {

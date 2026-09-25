@@ -196,9 +196,20 @@ upsert), ~15 overlapping seed families sharing a patriarch. `person_blocks` is s
   became offsets. Never put `hover-elevate` on an absolutely positioned element
 - [ ] Person page (/people/:id) mini-tree (parents / spouse / children) using the same component
 
-### 4. Planned — make blocking easy (not started)
-- [ ] "Block" action on the lead card founder chip and on the person page (today it lives
-  only inside the family page dialog)
+### 4. Make blocking easy — ✅ in progress (2026-09-25)
+- [x] `client/src/components/BlockPersonDialog.tsx` — the block dialog extracted from the
+  family page so the family tree and the person page share one implementation. Parents come
+  pre-checked (Billy's rule), spouse/siblings/children are opt-in, reason + "covered by"
+- [x] Person page: "Mark as covered" / "Unblock" buttons. Blocking was previously reachable
+  ONLY from inside a family tree, which is why `person_blocks` had stayed empty since 09-02
+- [x] `getPersonProfile` relationships now carry a machine-readable `kind`
+  (parent/child/spouse/sibling) and each relative's `blocked` flag, so the dialog does not
+  parse English labels
+- [x] Families page: a "Blocked" tab listing every covered person, direct vs "via <relative>",
+  who covers them, with links to the person and their family
+- [x] Verified end to end: blocking Wee Ee Cheong propagated to his father Wee Cho Yaw
+  (direct + propagated rows), and the tree renders him red and his father amber "via family"
+- [ ] "Block" action on the lead card founder chip
 - [ ] Telegram alert buttons: "⛔ Blocked" on a lead alert → block the named founder, reply
   with the propagated relatives so Billy can confirm parents
 - [ ] Families page: a "Blocked" tab and count in the progress card; weekly note lists new

@@ -23,6 +23,7 @@ import {
   ExternalLink,
   Loader2,
   MapPin,
+  ShieldCheck,
   StickyNote,
   TreePine,
   Users,
@@ -30,6 +31,7 @@ import {
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { BlockPersonDialog } from "@/components/BlockPersonDialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -77,6 +79,8 @@ type PersonProfile = {
     fullName: string;
     familyId: string | null;
     relation: string;
+    kind?: "parent" | "child" | "spouse" | "sibling" | "other";
+    blocked?: boolean;
   }[];
   block: {
     origin: "direct" | "propagated";
@@ -230,6 +234,8 @@ export default function PersonPage() {
   const personId = Number.parseInt(params?.id ?? "", 10);
   const validId = Number.isFinite(personId) && personId > 0;
 
+  const [blockOpen, setBlockOpen] = useState(false);
+
   const { data, isLoading, isError } = useQuery<PersonProfile>({
     queryKey: [`/api/people/${personId}/profile`],
     enabled: validId,
@@ -250,6 +256,13 @@ export default function PersonPage() {
   const mute = useMutation({
     mutationFn: async (fullName: string) => {
       await apiRequest("POST", "/api/founders/mute", { names: [fullName] });
+    },
+    onSuccess: invalidate,
+  });
+
+  const unblock = useMutation({
+    mutationFn: async () => {
+      await apiRequest("DELETE", `/api/persons/${personId}/block`);
     },
     onSuccess: invalidate,
   });
@@ -280,6 +293,15 @@ export default function PersonPage() {
   }
 
   const { person, companies, contact, families, relationships, block, timeline } = data;
+
+  const relativesForBlock = relationships
+    .filter((r) => r.kind && r.kind !== "other")
+    .map((r) => ({
+      personId: r.personId,
+      fullName: r.fullName,
+      kind: r.kind as "parent" | "child" | "spouse" | "sibling",
+      blocked: r.blocked,
+    }));
   const isSavedContact = contact?.status === "saved";
   const isMuted = contact?.status === "muted";
   const location = [person.city, person.region, person.nationality].filter(Boolean).join(" · ");
@@ -338,6 +360,17 @@ export default function PersonPage() {
                       <TreePine className="h-4 w-4 mr-1.5" /> Open family
                     </Button>
                   </Link>
+                )}
+                {/* Coverage conflicts used to be reachable only from inside a
+                    family tree, which is why no block had ever been recorded. */}
+                {block ? (
+                  <Button size="sm" variant="outline" disabled={unblock.isPending} onClick={() => unblock.mutate()} data-testid="button-unblock-person">
+                    <ShieldCheck className="mr-1.5 h-4 w-4" /> Unblock
+                  </Button>
+                ) : (
+                  <Button size="sm" variant="outline" onClick={() => setBlockOpen(true)} data-testid="button-block-person">
+                    <Ban className="mr-1.5 h-4 w-4" /> Mark as covered
+                  </Button>
                 )}
               </div>
             </div>
@@ -447,6 +480,16 @@ export default function PersonPage() {
           </CardContent>
         </Card>
       </div>
+
+      {blockOpen && (
+        <BlockPersonDialog
+          personId={personId}
+          fullName={person.fullName}
+          relatives={relativesForBlock}
+          onOpenChange={(o) => !o && setBlockOpen(false)}
+          onBlocked={() => { setBlockOpen(false); invalidate(); }}
+        />
+      )}
     </div>
   );
 }
