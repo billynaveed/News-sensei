@@ -19,6 +19,7 @@ import {
   splitHonorifics,
   titleCaseName,
   toVCard,
+  foldVCardLine,
   buildCardNote,
   formatScanDate,
 } from "../server/card-normalize";
@@ -305,4 +306,19 @@ check("vcard: fax typed as FAX", vcf.includes("TEL;TYPE=WORK,FAX:"));
 check("vcard: organisation present", vcf.includes("ORG:Genting Berhad"));
 check("vcard: note carries where we met and the scan date", vcf.includes("NOTE:Met at SFF 2026 — Card scanned 25 Sep 2026"));
 check("vcard: uses CRLF line endings", vcf.includes("\r\n"));
+check(
+  "vcard: no line exceeds 75 octets (RFC 6350 folding)",
+  vcf.split("\r\n").every((l) => Buffer.byteLength(l, "utf8") <= 75),
+  vcf.split("\r\n").filter((l) => Buffer.byteLength(l, "utf8") > 75).join(" | "),
+);
+eq("fold: a short line is untouched", foldVCardLine("FN:Jane Low"), "FN:Jane Low");
+check("fold: a long line is split with a leading space", foldVCardLine("NOTE:" + "x".repeat(200)).includes("\r\n "));
+check(
+  "fold: multi-byte characters are never split",
+  foldVCardLine("NOTE:" + "é".repeat(60)).split("\r\n").map((l) => l.replace(/^ /, "")).join("") === "NOTE:" + "é".repeat(60),
+);
+check(
+  "fold: an em dash survives folding",
+  foldVCardLine("NOTE:" + "a".repeat(70) + "—end").split("\r\n").map((l) => l.replace(/^ /, "")).join("").includes("—end"),
+);
 check("vcard: a card with no phones still renders", toVCard(sparse).includes("FN:Jane Low"));

@@ -28,10 +28,10 @@ import {
   AlertTriangle,
   Camera,
   CheckCircle2,
-  Download,
   Loader2,
   Maximize2,
   RefreshCw,
+  Smartphone,
   ScanLine,
   Trash2,
   Upload,
@@ -170,7 +170,7 @@ function ReviewPanel({
   onZoom,
 }: {
   card: BusinessCard;
-  onSaved: () => void;
+  onSaved: (saved: { personId: number; fullName: string }) => void;
   onDiscarded: () => void;
   onZoom: (image: string) => void;
 }) {
@@ -194,11 +194,10 @@ function ReviewPanel({
       return (await res.json()) as { personId: number; fullName: string };
     },
     onSuccess: (data) => {
-      toast({
-        title: "Contact saved",
-        description: `${data.fullName} is now in Sensei.`,
-      });
-      onSaved();
+      // Deliberately NOT clearing the panel: saving writes to Sensei, it does
+      // not put anything on the phone, and a card that vanished left no route
+      // to the address book.
+      onSaved(data);
     },
     onError: (e: Error) =>
       toast({
@@ -356,13 +355,14 @@ function ReviewPanel({
               <RefreshCw className="h-4 w-4" />
             )}
           </Button>
-          <Button variant="outline" size="icon" title="Download vCard" asChild>
+          <Button variant="outline" size="icon" title="Contact card for your phone (.vcf)" asChild>
             <a
               href={`/api/cards/${card.id}/vcard`}
-              download
+              target="_blank"
+              rel="noopener noreferrer"
               data-testid="link-card-vcard"
             >
-              <Download className="h-4 w-4" />
+              <Smartphone className="h-4 w-4" />
             </a>
           </Button>
           <Button
@@ -604,6 +604,7 @@ export default function ScanPage() {
   const [eventNote, setEventNote] = useState("");
   const [dragging, setDragging] = useState(false);
   const [zoomed, setZoomed] = useState<string | null>(null);
+  const [justSaved, setJustSaved] = useState<{ cardId: string; personId: number; fullName: string } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<HTMLInputElement>(null);
 
@@ -801,7 +802,37 @@ export default function ScanPage() {
         </TabsList>
       </Tabs>
 
-      {isLoading ? (
+      {justSaved ? (
+        <Card data-testid="card-saved-handoff">
+          <CardContent className="space-y-4 p-6 text-center">
+            <div className="flex items-center justify-center gap-2 text-emerald-600 dark:text-emerald-400">
+              <CheckCircle2 className="h-5 w-5" />
+              <span className="font-medium">{justSaved.fullName} saved to Sensei</span>
+            </div>
+            <p className="mx-auto max-w-md text-sm text-muted-foreground">
+              That saved them in Sensei only — it does not touch your phone. Open the contact
+              card below and iPhone will offer to add them to Contacts.
+            </p>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <Button asChild size="lg" data-testid="button-add-to-phone">
+                <a href={`/api/cards/${justSaved.cardId}/vcard`} target="_blank" rel="noopener noreferrer">
+                  <Smartphone className="mr-2 h-4 w-4" /> Add to my phone
+                </a>
+              </Button>
+              <Button variant="outline" asChild>
+                <a href={`/people/${justSaved.personId}`} data-testid="link-open-person">Open in Sensei</a>
+              </Button>
+              <Button variant="ghost" onClick={() => setJustSaved(null)} data-testid="button-next-card">
+                Done
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Scanning through the Telegram bot sends this card straight to your phone, so there
+              it is a single tap.
+            </p>
+          </CardContent>
+        </Card>
+      ) : isLoading ? (
         <div className="py-12 text-center text-sm text-muted-foreground">
           <Loader2 className="h-5 w-5 animate-spin mx-auto mb-2" /> Loading…
         </div>
@@ -859,7 +890,10 @@ export default function ScanPage() {
           {selected && (
             <ReviewPanel
               card={selected}
-              onSaved={() => {
+              onSaved={(result) => {
+                // Hold the card id: saving removes it from the queue, so the
+                // hand-off screen cannot live inside the panel itself.
+                setJustSaved({ cardId: selected.id, ...result });
                 setSelectedId(null);
                 refresh();
               }}

@@ -685,6 +685,29 @@ export function buildCardNote(parts: {
   return pieces.length ? pieces.join(" — ") : null;
 }
 
+/**
+ * RFC 6350 §3.2 line folding: no line may exceed 75 octets, and a continuation
+ * starts with a single space. Folding is done on BYTE boundaries without
+ * splitting a multi-byte character, so an em dash or a Chinese name in a NOTE
+ * cannot be cut in half and corrupt the import.
+ */
+export function foldVCardLine(line: string): string {
+  const bytes = Buffer.from(line, "utf8");
+  if (bytes.length <= 75) return line;
+  const out: string[] = [];
+  let start = 0;
+  let limit = 75;
+  while (start < bytes.length) {
+    let end = Math.min(start + limit, bytes.length);
+    // Walk back off a continuation byte (10xxxxxx) so a character stays whole.
+    while (end > start && end < bytes.length && (bytes[end] & 0xc0) === 0x80) end--;
+    out.push(bytes.subarray(start, end).toString("utf8"));
+    start = end;
+    limit = 74; // continuation lines carry a leading space
+  }
+  return out.join("\r\n ");
+}
+
 function vcardEscape(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\n/g, "\\n");
 }
@@ -714,7 +737,7 @@ export function toVCard(card: ParsedCard, extra?: { note?: string | null; scanne
   if (note) lines.push(`NOTE:${vcardEscape(note)}`);
   lines.push(`REV:${new Date().toISOString()}`);
   lines.push("END:VCARD");
-  return lines.join("\r\n");
+  return lines.map(foldVCardLine).join("\r\n");
 }
 
 /** A safe ASCII filename for the vCard attachment. */

@@ -51,6 +51,21 @@ real structural problems, not cosmetics:
   ipo-filings and scan did not). `<main>` is now `overflow-y-auto`, so no page can be clipped
   again and new pages need no workaround. Verified by wheel-scrolling all 8 pages
 
+**"It says it saved but I cant see the contact in my iOS":** saving writes to Sensei; nothing
+pushes a contact to the phone. The save had worked (Editha I. Alcantara = person 3336) — the
+hand-off was missing and the vCard was a bare download icon.
+- [x] After saving, the page now shows a hand-off screen: "saved to Sensei only — it does not
+  touch your phone", with a primary **Add to my phone** button, Open in Sensei, and Done.
+  It lives at PAGE level: saving removes the card from the queue, so a panel-level success
+  state unmounted immediately (that was the first attempt, caught in the browser)
+- [x] vCard is served `Content-Disposition: inline` (was `attachment`): on iOS an attachment
+  lands in Files and never reaches Contacts, while inline `text/vcard` makes Safari offer
+  "Add to Contacts". `?download=1` still forces the attachment form for desktop
+- [x] RFC 6350 §3.2 line folding (`foldVCardLine`): lines were up to 118 octets against a
+  75-octet limit, which strict parsers reject. Folds on byte boundaries so an em dash or a
+  Chinese name in a NOTE is never split
+- [x] The header vCard button is a phone icon titled "Contact card for your phone (.vcf)"
+
 ### Still worth doing (from this scan)
 - [ ] Auto-crop/deskew the card out of the background before storing and before the model
   sees it (his photo is a card on a wooden table; every commercial scanner does this)

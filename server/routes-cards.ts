@@ -151,13 +151,24 @@ export function registerCardRoutes(app: Express): void {
     }
   });
 
-  /** Download the contact as a .vcf the phone can import. */
+  /**
+   * The contact as a .vcf the phone can import.
+   *
+   * Served INLINE by default: on iOS, `attachment` drops the file into Files
+   * and the contact never reaches the address book without three more taps,
+   * whereas an inline text/vcard makes Safari offer "Add to Contacts"
+   * directly. `?download=1` forces the attachment form for desktop.
+   */
   app.get("/api/cards/:id/vcard", async (req, res) => {
     try {
       const result = await cardVCard(req.params.id);
       if (!result) return res.status(404).json({ error: "Card not found or not parsed yet" });
+      const asAttachment = req.query.download === "1";
       res.setHeader("Content-Type", "text/vcard; charset=utf-8");
-      res.setHeader("Content-Disposition", `attachment; filename="${vcardFilename(result.parsed)}"`);
+      res.setHeader(
+        "Content-Disposition",
+        `${asAttachment ? "attachment" : "inline"}; filename="${vcardFilename(result.parsed)}"`,
+      );
       res.send(result.vcf);
     } catch (error) {
       console.error("Error building vCard:", error);
