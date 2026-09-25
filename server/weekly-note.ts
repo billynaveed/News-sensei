@@ -88,6 +88,7 @@ interface WeeklyData {
   scraper: Awaited<ReturnType<typeof getScraperStatus>> | null;
   search: ReturnType<typeof getSearchStatus> | null;
   families: Awaited<ReturnType<typeof getResearchProgress>> | null;
+  blocks: { direct: string[]; propagated: number };
 }
 
 /** Leads created in the window, bucketed by priority band. */
@@ -188,11 +189,30 @@ async function collectRejections(weekStart: Date, previousStart: Date): Promise<
  * Each source is individually fault-tolerant: a missing table or a dead
  * scraper API costs one section, never the whole note.
  */
+/**
+ * Coverage blocks recorded this week. Worth its own line: a block is a human
+ * decision that quietly changes which leads are worth chasing, and until now
+ * nothing ever reported that it happened.
+ */
+async function collectBlocks(weekStart: Date): Promise<{ direct: string[]; propagated: number }> {
+  const rows = (await db.execute(sql`
+    SELECT p.full_name AS "fullName", pb.origin
+      FROM person_blocks pb
+      JOIN people p ON p.id = pb.person_id
+     WHERE pb.created_at >= ${weekStart}
+     ORDER BY pb.created_at ASC
+  `)).rows as { fullName: string; origin: string }[];
+  return {
+    direct: rows.filter((r) => r.origin === "direct").map((r) => r.fullName),
+    propagated: rows.filter((r) => r.origin !== "direct").length,
+  };
+}
+
 async function collectWeeklyData(now = new Date()): Promise<WeeklyData> {
   const weekStart = new Date(now.getTime() - WEEK_MS);
   const previousStart = new Date(now.getTime() - 2 * WEEK_MS);
 
-  const [leadsByPriority, actions, taught, examples, rejections, scraper, search, families] = await Promise.all([
+  const [leadsByPriority, actions, taught, examples, rejections, scraper, search, families, blocks] = await Promise.all([
     collectLeadCounts(weekStart).catch(() => []),
     collectActions(weekStart).catch(() => ({ saved: 0, dismissed: 0, muted: 0 })),
     collectTaught(weekStart).catch(() => [] as TaughtExample[]),
@@ -201,6 +221,7 @@ async function collectWeeklyData(now = new Date()): Promise<WeeklyData> {
     getScraperStatus().catch(() => null),
     Promise.resolve().then(() => getSearchStatus()).catch(() => null),
     getResearchProgress().catch(() => null),
+    collectBlocks(weekStart).catch(() => ({ direct: [], propagated: 0 })),
   ]);
 
   return {
@@ -211,6 +232,7 @@ async function collectWeeklyData(now = new Date()): Promise<WeeklyData> {
     taught,
     examples,
     rejections,
+    blocks,
     scraper,
     search,
     families,
@@ -392,6 +414,14 @@ export async function buildWeeklyNote(now = new Date()): Promise<string> {
     .map((line) => `• ${escapeHtml(line)}`)
     .join("\n");
 
+  // A block is a human decision that quietly changes which leads are worth
+  // chasing, so it belongs in the note rather than only in the database.
+  const blockLine = data.blocks.direct.length
+    ? `Marked covered: ${data.blocks.direct.slice(0, 4).join(", ")}` +
+      (data.blocks.direct.length > 4 ? ` and ${data.blocks.direct.length - 4} more` : "") +
+      (data.blocks.propagated > 0 ? ` (+${data.blocks.propagated} ${plural(data.blocks.propagated, "relative")} blocked with them)` : "")
+    : "No new coverage conflicts this week.";
+
   return [
     `🧠 <b>What I learned this week</b>`,
     `<i>${escapeHtml(formatDateRange(data.weekStart, now))}</i>`,
@@ -420,6 +450,7 @@ export async function buildWeeklyNote(now = new Date()): Promise<string> {
     "",
     `<b>Families</b>`,
     `  ${escapeHtml(familyLine)}`,
+    `  ${escapeHtml(blockLine)}`,
     "",
     debugPageLink(),
   ].join("\n");

@@ -210,7 +210,9 @@ upsert), ~15 overlapping seed families sharing a patriarch. `person_blocks` is s
   `hover-elevate` utility sets `position: relative` at a higher specificity than Tailwind's
   `absolute`, so every absolutely-positioned card fell into normal flow and its coordinates
   became offsets. Never put `hover-elevate` on an absolutely positioned element
-- [ ] Person page (/people/:id) mini-tree (parents / spouse / children) using the same component
+- [x] Person page (/people/:id) shows an "Immediate family" mini-tree — parents above,
+  spouse beside, children below — rendered by the same `FamilyTree` component, with a link
+  through to the full tree
 
 ### 4. Make blocking easy — ✅ in progress (2026-09-25)
 - [x] `client/src/components/BlockPersonDialog.tsx` — the block dialog extracted from the
@@ -233,9 +235,11 @@ upsert), ~15 overlapping seed families sharing a patriarch. `person_blocks` is s
   a silent block would be worse than none
 - [ ] Telegram alert buttons: "⛔ Blocked" on a lead alert → block the named founder, reply
   with the propagated relatives so Billy can confirm parents
-- [ ] Weekly note lists new blocks + which leads they suppressed
-- [ ] Pipeline: a lead whose founder is blocked stays visible with the ⛔ badge (Billy's
-  2026-09-02 rule); add a settings toggle to hide once he trusts propagation
+- [x] Weekly note carries a coverage line: who was marked covered this week and how many
+  relatives were blocked with them ("No new coverage conflicts this week." when none)
+- [x] Pipeline: a covered lead still shows with the ⛔ badge (Billy's 2026-09-02 rule), and
+  Settings now has "Hide leads about covered people", off by default. When on, a lead is
+  hidden only if EVERY person it names is covered — the same shape as the mute rule
 
 ## Current Task: Family Trees + Blocked Persons (coverage conflicts)
 

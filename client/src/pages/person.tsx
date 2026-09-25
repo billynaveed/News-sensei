@@ -9,7 +9,7 @@
 
 import { useEffect, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { Link, useRoute } from "wouter";
+import { Link, useLocation, useRoute } from "wouter";
 import { format } from "date-fns";
 import {
   ArrowLeft,
@@ -33,6 +33,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { BlockPersonDialog } from "@/components/BlockPersonDialog";
+import { FamilyTree } from "@/components/FamilyTree";
+import type { LayoutEdge, LayoutPerson } from "@/lib/family-layout";
 import { FollowUpDraftDialog } from "@/components/FollowUpDraftDialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -236,6 +238,7 @@ export default function PersonPage() {
   const personId = Number.parseInt(params?.id ?? "", 10);
   const validId = Number.isFinite(personId) && personId > 0;
 
+  const [, navigate] = useLocation();
   const [blockOpen, setBlockOpen] = useState(false);
   const [draftOpen, setDraftOpen] = useState(false);
 
@@ -296,6 +299,23 @@ export default function PersonPage() {
   }
 
   const { person, companies, contact, families, relationships, block, timeline } = data;
+
+  // Immediate family only: this person plus whoever they are directly linked
+  // to. Built from the same shape the full tree uses, so the two agree.
+  const miniTree: { people: LayoutPerson[]; edges: LayoutEdge[] } = (() => {
+    const people: LayoutPerson[] = [
+      { id: person.id, fullName: person.fullName, blocked: !!block, blockOrigin: block?.origin ?? null },
+      ...relationships.map((r) => ({ id: r.personId, fullName: r.fullName, blocked: !!r.blocked, blockOrigin: null })),
+    ];
+    const edges: LayoutEdge[] = [];
+    for (const r of relationships) {
+      if (r.kind === "parent") edges.push({ fromPersonId: r.personId, toPersonId: person.id, type: "parent" });
+      else if (r.kind === "child") edges.push({ fromPersonId: person.id, toPersonId: r.personId, type: "parent" });
+      else if (r.kind === "spouse") edges.push({ fromPersonId: person.id, toPersonId: r.personId, type: "spouse" });
+      else if (r.kind === "sibling") edges.push({ fromPersonId: person.id, toPersonId: r.personId, type: "sibling" });
+    }
+    return { people, edges };
+  })();
 
   const relativesForBlock = relationships
     .filter((r) => r.kind && r.kind !== "other")
@@ -458,6 +478,28 @@ export default function PersonPage() {
             )}
           </CardContent>
         </Card>
+
+        {/* ---- Immediate family ---- */}
+        {relationships.length > 0 && (
+          <Card>
+            <CardContent className="p-4">
+              <div className="mb-2 flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                <Users className="h-3.5 w-3.5" /> Immediate family
+              </div>
+              <FamilyTree
+                people={miniTree.people}
+                edges={miniTree.edges}
+                selectedId={person.id}
+                onSelect={(id) => id !== person.id && navigate(`/people/${id}`)}
+              />
+              {primaryFamily && (
+                <Link href={`/families/${primaryFamily.familyId}`} className="mt-2 inline-block text-xs text-muted-foreground hover:text-primary">
+                  See the whole {primaryFamily.familyName ?? "family"} tree →
+                </Link>
+              )}
+            </CardContent>
+          </Card>
+        )}
 
         {/* ---- Notes ---- */}
         <Card>

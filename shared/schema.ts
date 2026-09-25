@@ -175,6 +175,12 @@ export const settings = pgTable("settings", {
   googleNewsEnabled: boolean("google_news_enabled").notNull().default(false),
   rssEnabled: boolean("rss_enabled").notNull().default(true),
   scrapingBeeEnabled: boolean("scrapingbee_enabled").notNull().default(false),
+  /**
+   * Hide leads whose named people are ALL covered by another banker. Off by
+   * default: Billy's 2026-09-02 rule was that blocked leads stay visible with
+   * a ⛔ badge until propagation has earned trust.
+   */
+  hideBlockedLeads: boolean("hide_blocked_leads").notNull().default(false),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
 

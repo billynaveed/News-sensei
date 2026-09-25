@@ -697,6 +697,12 @@ export default function Dashboard() {
   const { data: blockedPersons } = useQuery<(BlockedInfo & { fullName: string; aliases: string[] | null })[]>({
     queryKey: ["/api/founders/blocked"],
   });
+  // Billy's rule is that covered leads stay visible with a ⛔ badge, so this
+  // is opt-in and off by default.
+  const { data: settings } = useQuery<{ hideBlockedLeads?: boolean }>({
+    queryKey: ["/api/settings"],
+  });
+
   const blockedMap = useMemo(() => {
     const map = new Map<string, BlockedInfo>();
     for (const b of blockedPersons ?? []) {
@@ -882,6 +888,14 @@ export default function Dashboard() {
         return false;
       }
     }
+    // Covered people: same shape as the mute rule — hide the lead only when
+    // EVERY named person is covered, and only when the setting is on.
+    if (settings?.hideBlockedLeads && blockedMap.size > 0) {
+      const named = (lead.founderNames ?? []).filter(Boolean);
+      if (named.length > 0 && named.every((f) => blockedMap.has(f.toLowerCase().trim()))) {
+        return false;
+      }
+    }
     // Status filter - saved and dismissed articles are excluded from active feed
     if (filters.status === "active" && (lead.status === "dismissed" || lead.status === "saved")) return false;
     if (filters.status === "contacted" && lead.status !== "contacted") return false;
@@ -941,7 +955,7 @@ export default function Dashboard() {
     if (age !== 0) return age;
     return b.priorityScore - a.priorityScore;
   });
-  }, [leads, mutedSet, filters]);
+  }, [leads, mutedSet, filters, settings?.hideBlockedLeads, blockedMap]);
 
   // Pagination — 20 cards per page (also keeps re-renders cheap, so actions feel instant).
   const totalPages = Math.max(1, Math.ceil(filteredLeads.length / PAGE_SIZE));

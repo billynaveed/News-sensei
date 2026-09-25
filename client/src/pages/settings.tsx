@@ -5,27 +5,28 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import {
-  Save,
-  Plus,
-  X,
-  Globe,
-  BrainCircuit,
+  Ban,
   Bell,
-  Loader2,
-  Clock,
-  Newspaper,
-  ExternalLink,
-  Rss,
-  Search,
-  Trash2,
+  BrainCircuit,
   ChevronDown,
   ChevronRight,
-  Send,
-  Info,
-  RotateCcw,
+  Clock,
+  ExternalLink,
   FlaskConical,
+  GitCompare,
+  Globe,
   History,
-  GitCompare
+  Info,
+  Loader2,
+  Newspaper,
+  Plus,
+  RotateCcw,
+  Rss,
+  Save,
+  Search,
+  Send,
+  Trash2,
+  X,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -78,6 +79,7 @@ const settingsSchema = z.object({
   googleNewsEnabled: z.boolean(),
   rssEnabled: z.boolean(),
   scrapingBeeEnabled: z.boolean(),
+  hideBlockedLeads: z.boolean(),
 });
 
 type SettingsFormData = z.infer<typeof settingsSchema>;
@@ -1235,6 +1237,7 @@ export default function SettingsPage() {
       summaryLength: "brief",
       scanFrequency: "hourly",
       logRetentionDays: 2,
+      hideBlockedLeads: false,
       googleNewsEnabled: false,
       rssEnabled: true,
       scrapingBeeEnabled: false,
@@ -1248,6 +1251,7 @@ export default function SettingsPage() {
         summaryLength: settings.summaryLength as "brief" | "detailed" | "actionable",
         scanFrequency: (settings.scanFrequency as "hourly" | "daily" | "weekly" | "manual") ?? "hourly",
         logRetentionDays: settings.logRetentionDays ?? 2,
+        hideBlockedLeads: settings.hideBlockedLeads ?? false,
         googleNewsEnabled: settings.googleNewsEnabled ?? false,
         rssEnabled: settings.rssEnabled ?? true,
         scrapingBeeEnabled: settings.scrapingBeeEnabled ?? false,
@@ -1455,6 +1459,35 @@ export default function SettingsPage() {
                     <FormDescription>
                       Length of AI-generated summaries.
                     </FormDescription>
+                  </FormItem>
+                )}
+              />
+
+              <Separator />
+
+              <FormField
+                control={form.control}
+                name="hideBlockedLeads"
+                render={({ field }) => (
+                  <FormItem className="flex flex-row items-center justify-between gap-4">
+                    <div className="space-y-0.5 flex-1">
+                      <FormLabel className="flex items-center gap-2">
+                        <Ban className="h-4 w-4 text-muted-foreground" />
+                        Hide leads about covered people
+                      </FormLabel>
+                      <FormDescription>
+                        Off by default: a covered lead still shows with a ⛔ badge, so you can
+                        see what propagation is doing. Turn this on once you trust it, and a
+                        lead is hidden only when EVERY person it names is covered.
+                      </FormDescription>
+                    </div>
+                    <FormControl>
+                      <Switch
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                        data-testid="switch-hide-blocked-leads"
+                      />
+                    </FormControl>
                   </FormItem>
                 )}
               />
