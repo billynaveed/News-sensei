@@ -17,6 +17,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import {
   AlertTriangle,
@@ -24,6 +25,7 @@ import {
   CheckCircle2,
   Download,
   Loader2,
+  Maximize2,
   RefreshCw,
   ScanLine,
   Trash2,
@@ -43,6 +45,7 @@ interface NormalizedPhone {
   slot: "mobile" | "office" | "fax" | "other";
   label: string | null;
   raw: string;
+  inheritedPrefix?: boolean;
 }
 
 interface ParsedCard {
@@ -82,10 +85,11 @@ interface BusinessCard {
   createdAt: string;
 }
 
+/** Labels say what to DO, not what state a row is in ("Ready" told nobody anything). */
 const STATUS_BADGE: Record<string, { label: string; className: string; icon: typeof CheckCircle2 }> = {
-  parsed: { label: "Ready", className: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400", icon: CheckCircle2 },
-  needs_review: { label: "Needs review", className: "bg-amber-500/10 text-amber-600 dark:text-amber-400", icon: AlertTriangle },
-  failed: { label: "Failed", className: "bg-red-500/10 text-red-600 dark:text-red-400", icon: XCircle },
+  parsed: { label: "Check & save", className: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400", icon: CheckCircle2 },
+  needs_review: { label: "Needs a fix", className: "bg-amber-500/10 text-amber-600 dark:text-amber-400", icon: AlertTriangle },
+  failed: { label: "Couldn't read", className: "bg-red-500/10 text-red-600 dark:text-red-400", icon: XCircle },
   saved: { label: "Saved", className: "bg-blue-500/10 text-blue-600 dark:text-blue-400", icon: UserCheck },
 };
 
@@ -221,9 +225,42 @@ function ReviewPanel({
 
   if (!draft) return null;
 
+  const displayName = [draft.honorific, draft.fullName].filter(Boolean).join(" ") || "(no name found)";
+  const subtitle = [draft.jobTitle, draft.company].filter(Boolean).join(" · ");
+
   return (
     <Card>
+      {/* The actions live at the TOP and stick there. A phone photo of a card
+          is tall, and when the buttons sat only at the bottom of the form they
+          were ~800px below the fold: the page looked like a dead end. */}
+      <div className="sticky top-0 z-10 rounded-t-md border-b bg-card/95 backdrop-blur px-4 py-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="font-semibold leading-tight truncate" data-testid="text-card-heading">{displayName}</div>
+            {subtitle && <div className="text-xs text-muted-foreground truncate">{subtitle}</div>}
+          </div>
+          <div className="flex items-center gap-2">
+            <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending || !draft.fullName.trim()} data-testid="button-card-save">
+              {saveMutation.isPending ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <UserCheck className="h-4 w-4 mr-1.5" />}
+              Save contact
+            </Button>
+            <Button variant="outline" size="icon" title="Re-read with AI" onClick={() => reparseMutation.mutate()} disabled={reparseMutation.isPending} data-testid="button-card-reparse">
+              {reparseMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+            </Button>
+            <Button variant="outline" size="icon" title="Download vCard" asChild>
+              <a href={`/api/cards/${card.id}/vcard`} download data-testid="link-card-vcard"><Download className="h-4 w-4" /></a>
+            </Button>
+            <Button variant="ghost" size="icon" title="Discard" onClick={() => deleteMutation.mutate()} data-testid="button-card-discard">
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      </div>
       <CardContent className="p-4 space-y-4">
+        <p className="text-sm text-muted-foreground">
+          Check the details below, correct anything wrong, then save.
+          {card.model && <span className="ml-1 opacity-70">Read by {card.model.split("/").pop()}.</span>}
+        </p>
         {card.duplicates && card.duplicates.length > 0 && (
           <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm" data-testid="card-duplicate-warning">
             <div className="font-medium text-amber-700 dark:text-amber-400 flex items-center gap-1.5">
@@ -288,6 +325,11 @@ function ReviewPanel({
                   className={p.e164 ? "" : "border-amber-500/60"}
                 />
                 {p.label && <span className="text-xs text-muted-foreground w-12 shrink-0">{p.label}</span>}
+                {p.inheritedPrefix && (
+                  <span className="text-xs text-amber-600 dark:text-amber-400 shrink-0" title={`Printed as "${p.raw}"; the area code was taken from the other number on this card`}>
+                    area code added
+                  </span>
+                )}
                 {!p.e164 && <span className="text-xs text-amber-600 dark:text-amber-400 shrink-0">unreadable</span>}
               </div>
             ))}
@@ -310,24 +352,12 @@ function ReviewPanel({
           <Textarea id="f-note" value={note} onChange={(e) => setNote(e.target.value)} rows={2} placeholder="SFF 2026, introduced by…" data-testid="input-card-note" />
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 pt-1">
-          <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending || !draft.fullName.trim()} data-testid="button-card-save">
+        {/* Save also sits at the end of the form, for a long card reviewed top-down. */}
+        <div className="flex items-center gap-2 pt-1">
+          <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending || !draft.fullName.trim()} data-testid="button-card-save-bottom">
             {saveMutation.isPending ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <UserCheck className="h-4 w-4 mr-1.5" />}
             Save contact
           </Button>
-          <Button variant="outline" onClick={() => reparseMutation.mutate()} disabled={reparseMutation.isPending} data-testid="button-card-reparse">
-            {reparseMutation.isPending ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-1.5" />}
-            Re-read with AI
-          </Button>
-          <Button variant="outline" asChild>
-            <a href={`/api/cards/${card.id}/vcard`} download data-testid="link-card-vcard">
-              <Download className="h-4 w-4 mr-1.5" /> vCard
-            </a>
-          </Button>
-          <Button variant="ghost" onClick={() => deleteMutation.mutate()} data-testid="button-card-discard">
-            <Trash2 className="h-4 w-4 mr-1.5" /> Discard
-          </Button>
-          {card.model && <span className="text-xs text-muted-foreground ml-auto">read by {card.model.split("/").pop()}</span>}
         </div>
       </CardContent>
     </Card>
@@ -346,6 +376,7 @@ export default function ScanPage() {
   const [uploading, setUploading] = useState(0);
   const [eventNote, setEventNote] = useState("");
   const [dragging, setDragging] = useState(false);
+  const [zoomed, setZoomed] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<HTMLInputElement>(null);
 
@@ -509,8 +540,22 @@ export default function ScanPage() {
           <div className="space-y-4">
             {selected && (
               <>
+                {/* A thumbnail, not a poster. The photo is reference material —
+                    at full width an uncropped phone shot pushed the whole form
+                    and every button below the fold. Click to see it properly. */}
                 {selected.frontImage && (
-                  <img src={selected.frontImage} alt="Scanned card" className="w-full max-w-md rounded-md border" data-testid="img-card-front" />
+                  <button
+                    type="button"
+                    onClick={() => setZoomed(selected.frontImage)}
+                    className="group relative rounded-md border overflow-hidden hover-elevate"
+                    title="Click to enlarge"
+                    data-testid="img-card-front"
+                  >
+                    <img src={selected.frontImage} alt="Scanned card" className="h-28 w-auto object-cover" />
+                    <span className="absolute inset-0 hidden items-center justify-center bg-black/40 text-white text-xs group-hover:flex">
+                      <Maximize2 className="h-4 w-4 mr-1" /> Enlarge
+                    </span>
+                  </button>
                 )}
                 <ReviewPanel
                   card={selected}
@@ -522,6 +567,15 @@ export default function ScanPage() {
           </div>
         </div>
       )}
+
+      <Dialog open={!!zoomed} onOpenChange={(open) => !open && setZoomed(null)}>
+        <DialogContent className="max-w-4xl">
+          <DialogHeader>
+            <DialogTitle>Scanned card</DialogTitle>
+          </DialogHeader>
+          {zoomed && <img src={zoomed} alt="Scanned card, full size" className="w-full rounded-md" />}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

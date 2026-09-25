@@ -66,7 +66,8 @@ export function formatCardForTelegram(card: ParsedCard, opts?: { duplicates?: { 
       const icon = p.slot === "mobile" ? "📱" : p.slot === "fax" ? "📠" : p.slot === "office" ? "☎️" : "📞";
       const value = p.e164 ? p.display ?? p.e164 : `${p.raw} <i>(could not read)</i>`;
       const ext = p.extension ? ` ext ${p.extension}` : "";
-      return `${icon} ${escapeHtml(value)}${escapeHtml(ext)}`;
+      const borrowed = p.inheritedPrefix ? " <i>(area code added)</i>" : "";
+      return `${icon} ${escapeHtml(value)}${escapeHtml(ext)}${borrowed}`;
     });
   if (phoneLines.length) lines.push("", ...phoneLines);
 

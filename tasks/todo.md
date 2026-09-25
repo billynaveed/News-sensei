@@ -4,6 +4,33 @@ Current session task list with checkable progress items.
 
 ---
 
+## 2026-09-25 — Card scanner: usability fixes from Billy's first real scan ✅
+
+**Billy's report:** "It says Ready but it's not obvious what to do next. I can see a picture
+of it... I'm not really sure what to do next."
+
+**Diagnosis (measured, not guessed):** his uncropped phone photo rendered 597px tall and
+pushed everything below it — on a 900px screen the Save button sat at y=1669, so the edit
+form and every action were off-screen with nothing above the fold hinting they existed.
+"Ready" was a state, not an instruction.
+
+- [x] Review panel now LEADS with a sticky action header (name, role, Save contact + icon
+  buttons for re-read / vCard / discard). Save moved from y=1669 to y=571
+- [x] Card photo is a 112px click-to-enlarge thumbnail with a full-size dialog, not a poster
+- [x] Status labels say what to do: "Check & save", "Needs a fix", "Couldn't read"
+- [x] One-line instruction under the header: "Check the details below, correct anything
+  wrong, then save."
+- [x] **Real-card bug found in his scan:** "TEL: (632) 8817-0817 • 8982-3000" — the second
+  number shares the first's area code and could not validate alone (e164 was null).
+  `normalizePhones` now rebuilds it from a validated sibling's area code, accepting the
+  result only when the national number comes out the SAME LENGTH as the donor's (a
+  reconstruction, not a guess). Flagged "area code added" in both the web review panel and
+  the Telegram reply so it is checked, not trusted. His card: 2/3 → 3/3 numbers dialable
+
+### Still worth doing (from this scan)
+- [ ] Auto-crop/deskew the card out of the background before storing and before the model
+  sees it (his photo is a card on a wooden table; every commercial scanner does this)
+
 ## 2026-09-25 — Business card scanner ✅ shipped (v1)
 
 **Trigger:** Billy asked for a smart scanner that adds the "+" and understands international
@@ -48,7 +75,7 @@ That gap is the wedge. Design: `docs/plans/2026-09-25-business-card-scanner-desi
   Also cleared a stale orphan process that had been blocking polling since 2026-09-24 12:47.
 
 ### Verified
-- `npm run check` clean; `npm test` 228/228 (new `tests/card-normalize.test.ts`)
+- `npm run check` clean; `npm test` 234/234 (new `tests/card-normalize.test.ts`)
 - Two synthetic cards (ALL-CAPS SG + mixed-case MY) end to end in ~2.5s each:
   "TAN SRI DATO' LIM KOK THAY" → honorific "Tan Sri Dato'" + name "Lim Kok Thay" + 林国泰;
   DID 6225 1234 ext 205 → +6562251234 x205 office; HP → +6591234567 mobile; F → fax;

@@ -98,6 +98,28 @@ eq(
 );
 eq("card phones: blanks are dropped", normalizePhones([{ value: "  ", label: "T" }], null).length, 0);
 
+// A second number printed under the same area code ("Tel: (632) 8817-0817 • 8982-3000").
+const shared = normalizePhones(
+  [{ value: "(632) 8817-0817", label: "TEL." }, { value: "8982-3000", label: null }],
+  "Makati City 1231, Philippines",
+);
+eq("card phones: the fully written number parses", shared[0].e164, "+63288170817");
+eq("card phones: the bare sibling borrows the area code", shared[1].e164, "+63289823000");
+eq("card phones: a borrowed number is flagged as such", shared[1].inheritedPrefix, true);
+eq("card phones: the first number was not flagged", shared[0].inheritedPrefix, undefined);
+
+const sharedSg = normalizePhones(
+  [{ value: "+65 6225 1234", label: "Tel" }, { value: "6225 5678", label: null }],
+  "Singapore",
+);
+eq("card phones: an already-valid sibling is left alone", sharedSg[1].e164, "+6562255678");
+
+eq(
+  "card phones: nothing is borrowed when the result would change shape",
+  normalizePhones([{ value: "+65 6225 1234", label: "T" }, { value: "12", label: null }], "Singapore")[1].e164,
+  null,
+);
+
 // --- country detection --------------------------------------------------------
 
 eq("country: Singapore from the address", countryCodeFromText("1 Raffles Place, Singapore 048616"), "SG");

@@ -39,6 +39,8 @@ export interface NormalizedPhone {
   raw: string;
   /** libphonenumber's verdict, when it has one. */
   lineType: string | null;
+  /** True when the area code was borrowed from another number on the card. */
+  inheritedPrefix?: boolean;
 }
 
 /**
@@ -197,9 +199,38 @@ export function normalizePhones(
     }
   }
   const country = inferCountry(addressCountry, sibling);
-  return entries
+  const phones = entries
     .filter((e) => (e?.value ?? "").trim().length > 0)
     .map((e) => normalizePhone(e.value, e.label, { country }));
+
+  // Cards routinely list two numbers under one area code:
+  //   "Tel: (632) 8817-0817 • 8982-3000"
+  // The second is not dialable on its own. Rebuild it from the area code of a
+  // sibling that DID validate, and accept the result only when it comes out
+  // the same length as that sibling — same shape, same exchange, so it is a
+  // reconstruction rather than a guess.
+  const donor = phones.find((p) => p.e164);
+  if (donor?.e164) {
+    const donorNational = parsePhoneNumberFromString(donor.e164)?.nationalNumber ?? "";
+    for (const phone of phones) {
+      if (phone.e164 || !phone.raw) continue;
+      const digits = phone.raw.replace(/\D/g, "");
+      if (digits.length < 4 || digits.length >= donorNational.length) continue;
+      const borrow = donorNational.length - digits.length;
+      if (borrow > 4) continue;
+      const candidate = parsePhoneNumberFromString(donorNational.slice(0, borrow) + digits, country);
+      if (!candidate?.isValid() || candidate.nationalNumber.length !== donorNational.length) continue;
+      phone.e164 = candidate.number;
+      phone.display = candidate.formatInternational();
+      phone.lineType = candidate.getType() ?? null;
+      phone.inheritedPrefix = true;
+      const type = candidate.getType();
+      phone.slot =
+        slotFromLabel(phone.label) ??
+        (type === "MOBILE" || type === "FIXED_LINE_OR_MOBILE" ? "mobile" : type === "FIXED_LINE" ? "office" : donor.slot);
+    }
+  }
+  return phones;
 }
 
 // ---------------------------------------------------------------------------
