@@ -143,7 +143,15 @@ That gap is the wedge. Design: `docs/plans/2026-09-25-business-card-scanner-desi
   is not where this app keeps it — every other feature reads `settings.telegramChatId`, so
   the digest would have silently sent nothing forever
 - [ ] Google Contacts OAuth sync (vCard covers the phone today)
-- [ ] QR / LinkedIn-QR / vCard decode in the same scanner (younger founders hand over a QR)
+- [x] QR / vCard / MECARD / LinkedIn-QR decode — `client/src/lib/card-qr.ts` decodes in the
+  BROWSER (canvas already has the pixels, so no server image-decoding dependency) and the
+  payload is folded over the model's reading in `applyQrHint`. A vCard QR is EXACT data —
+  someone typed it, no OCR — so its fields win; a LinkedIn or website QR only fills a gap.
+  Handles RFC 6350 line folding, escaped characters, and TEL TYPE labels (CELL→Mobile,
+  FAX→Fax). 33 assertions incl. a fold→parse round-trip through our own writer.
+  Verified end to end: jsQR read the code off a generated card and recovered
+  "Khun Dhanin Chearavanont", both phones with correct slots, email and website.
+  Telegram-sourced photos have no browser, so those still use the vision model
 - [ ] Job-change alerts on saved contacts (Eight/Sansan's killer feature)
 - [ ] Offline capture with later sync
 

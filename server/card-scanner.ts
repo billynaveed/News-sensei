@@ -64,6 +64,57 @@ export interface ScanInput {
   batchId?: string | null;
   /** Skip the web lookups (used by tests and by the batch path). */
   skipEnrichment?: boolean;
+  /** A QR payload decoded from the same image, when the card carried one. */
+  qr?: QrHint | null;
+}
+
+/**
+ * What the browser decoded from a QR on the card. A vCard payload is EXACT —
+ * the person typed it, no OCR involved — so it beats anything the vision
+ * model reads off the print.
+ */
+export interface QrHint {
+  kind: string;
+  raw: string;
+  fields?: {
+    fullName?: string;
+    firstName?: string;
+    lastName?: string;
+    honorific?: string;
+    company?: string;
+    jobTitle?: string;
+    emails?: string[];
+    phones?: { value: string; label: string | null }[];
+    website?: string;
+    address?: string;
+    note?: string;
+  } | null;
+}
+
+/**
+ * Fold a QR payload over the model's reading. Structured QR fields win on the
+ * fields they cover; everything else is left as read. A LinkedIn or website
+ * QR only fills a gap.
+ */
+export function applyQrHint(raw: RawCard, qr: QrHint | null | undefined): RawCard {
+  if (!qr) return raw;
+  if (qr.kind === "linkedin") return { ...raw, linkedin: raw.linkedin || qr.raw };
+  if (qr.kind === "url") return { ...raw, websites: [...(raw.websites ?? []), qr.raw] };
+  if (qr.kind === "email") return { ...raw, emails: [...(raw.emails ?? []), qr.raw] };
+  if (qr.kind === "tel") return { ...raw, phones: [...(raw.phones ?? []), { value: qr.raw, label: null }] };
+  const f = qr.fields;
+  if (!f) return raw;
+  return {
+    ...raw,
+    fullName: [f.honorific, f.fullName].filter(Boolean).join(" ") || raw.fullName,
+    company: f.company || raw.company,
+    jobTitle: f.jobTitle || raw.jobTitle,
+    emails: f.emails?.length ? f.emails : raw.emails,
+    phones: f.phones?.length ? f.phones.map((p) => ({ value: p.value, label: p.label })) : raw.phones,
+    websites: f.website ? [f.website, ...(raw.websites ?? [])] : raw.websites,
+    address: f.address || raw.address,
+    otherText: [raw.otherText, f.note].filter(Boolean).join(" — ") || null,
+  };
 }
 
 export interface DuplicateMatch {
@@ -245,7 +296,7 @@ export async function scanCard(input: ScanInput): Promise<BusinessCard> {
     }
   }
 
-  const parsed = normalizeCard(raw);
+  const parsed = normalizeCard(applyQrHint(raw, input.qr));
   const duplicates = await findDuplicates(parsed);
   const enrichment = input.skipEnrichment ? null : await enrichCard(parsed);
   if (enrichment?.companyWebsite && !parsed.website) parsed.website = enrichment.companyWebsite;

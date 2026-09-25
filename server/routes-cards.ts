@@ -41,6 +41,9 @@ export function registerCardRoutes(app: Express): void {
         images,
         source: "web",
         eventNote: typeof eventNote === "string" ? eventNote : null,
+        // Decoded in the browser, where canvas gives the raw pixels. A vCard
+        // QR is exact data, so it overrides whatever the model reads.
+        qr: req.body?.qr ?? null,
       });
       res.json(card);
     } catch (error) {
@@ -79,6 +82,7 @@ export function registerCardRoutes(app: Express): void {
               source: "web",
               eventNote: typeof eventNote === "string" ? eventNote : null,
               batchId,
+              qr: entry?.qr ?? null,
             }),
           );
         } catch (error) {

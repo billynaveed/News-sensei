@@ -24,6 +24,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
+import { decodeQrFromDataUrl } from "@/lib/card-qr";
 import {
   AlertTriangle,
   Camera,
@@ -693,15 +694,21 @@ export default function ScanPage() {
       try {
         const images = await Promise.all(list.map((f) => fileToDataUrl(f)));
         if (images.length === 1) {
+          // A QR on the card is exact data — decode it here, where canvas has
+          // the pixels, and let it override what the model reads off the print.
+          const qr = await decodeQrFromDataUrl(images[0]);
           const res = await apiRequest("POST", "/api/cards/scan", {
             images,
             eventNote: eventNote || null,
+            qr,
           });
           const card = (await res.json()) as BusinessCard;
           setSelectedId(card.id);
         } else {
           const res = await apiRequest("POST", "/api/cards/scan-batch", {
-            cards: images.map((i) => ({ images: [i] })),
+            cards: await Promise.all(
+              images.map(async (i) => ({ images: [i], qr: await decodeQrFromDataUrl(i) })),
+            ),
             eventNote: eventNote || null,
           });
           const body = (await res.json()) as {
