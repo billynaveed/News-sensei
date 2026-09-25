@@ -12,6 +12,8 @@ export interface TelegramCallbackQuery {
   message?: {
     message_id: number;
     chat: { id: number };
+    // Present when the button was pressed inside a forum supergroup topic.
+    message_thread_id?: number;
     text?: string;
   };
   data?: string;
@@ -27,6 +29,14 @@ export interface TelegramUpdate {
     message_thread_id?: number;
     text?: string;
     from?: { id: number; first_name: string };
+    /** Photo sizes, smallest first; the last entry is the largest available. */
+    photo?: { file_id: string; file_unique_id: string; width: number; height: number; file_size?: number }[];
+    /** A card sent as an uncompressed file rather than a photo. */
+    document?: { file_id: string; file_name?: string; mime_type?: string; file_size?: number };
+    /** Caption under a photo — used as the "where we met" note. */
+    caption?: string;
+    /** Set on every photo of a multi-image album, shared across the group. */
+    media_group_id?: string;
   };
   callback_query?: TelegramCallbackQuery;
   channel_post?: {
@@ -169,8 +179,15 @@ export async function getTelegramUpdates(offset?: number): Promise<any[]> {
     throw new Error('TELEGRAM_BOT_TOKEN not configured');
   }
 
-  const params = offset ? `?offset=${offset}` : '';
-  const response = await fetch(`${TELEGRAM_API}${token}/getUpdates${params}`);
+  // allowed_updates must be sent explicitly: Telegram REMEMBERS the last list
+  // it was given (including one left behind by an old setWebhook call), and a
+  // list without "callback_query" silently stops every inline button from
+  // ever reaching the bot. Lead actions and card actions both depend on it.
+  const params = new URLSearchParams({
+    allowed_updates: JSON.stringify(['message', 'edited_message', 'channel_post', 'callback_query']),
+  });
+  if (offset) params.set('offset', String(offset));
+  const response = await fetch(`${TELEGRAM_API}${token}/getUpdates?${params}`);
   const result = await response.json();
 
   if (!result.ok) {
@@ -228,7 +245,7 @@ export async function setWebhook(webhookUrl: string): Promise<boolean> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       url: webhookUrl,
-      allowed_updates: ['message', 'callback_query'],
+      allowed_updates: ['message', 'edited_message', 'channel_post', 'callback_query'],
       // When configured, Telegram echoes this back in the
       // X-Telegram-Bot-Api-Secret-Token header so the webhook can verify
       // that incoming updates genuinely originate from Telegram.
@@ -361,4 +378,86 @@ export async function editMessageWithStatus(
   };
 
   return editMessageReplyMarkup(chatId, messageId, statusMarkup);
+}
+
+/**
+ * Resolve a Telegram file_id to a temporary download path.
+ * https://core.telegram.org/bots/api#getfile
+ */
+export async function getTelegramFilePath(fileId: string): Promise<string | null> {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) return null;
+  try {
+    const res = await fetch(`${TELEGRAM_API}${token}/getFile?file_id=${encodeURIComponent(fileId)}`, {
+      signal: AbortSignal.timeout(15_000),
+    });
+    const data = (await res.json()) as { ok: boolean; result?: { file_path?: string }; description?: string };
+    if (!data.ok || !data.result?.file_path) {
+      console.error(`[Telegram] getFile failed: ${data.description ?? "no file_path"}`);
+      return null;
+    }
+    return data.result.file_path;
+  } catch (error) {
+    console.error(`[Telegram] getFile error: ${(error as Error).message}`);
+    return null;
+  }
+}
+
+/**
+ * Download a Telegram file and return it as a data URL, which is the shape
+ * both the vision gateway and the database column want. Returns null on any
+ * failure — the caller reports it to the user rather than throwing.
+ */
+export async function downloadTelegramFileAsDataUrl(fileId: string): Promise<string | null> {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const filePath = await getTelegramFilePath(fileId);
+  if (!token || !filePath) return null;
+  try {
+    const res = await fetch(`https://api.telegram.org/file/bot${token}/${filePath}`, {
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!res.ok) {
+      console.error(`[Telegram] file download HTTP ${res.status}`);
+      return null;
+    }
+    const buffer = Buffer.from(await res.arrayBuffer());
+    const ext = filePath.split(".").pop()?.toLowerCase();
+    const mime = ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : ext === "heic" ? "image/heic" : "image/jpeg";
+    return `data:${mime};base64,${buffer.toString("base64")}`;
+  } catch (error) {
+    console.error(`[Telegram] file download error: ${(error as Error).message}`);
+    return null;
+  }
+}
+
+/** Send a file (e.g. a .vcf) as a Telegram document. */
+export async function sendTelegramDocument(
+  chatId: string,
+  content: string | Buffer,
+  filename: string,
+  caption?: string,
+  messageThreadId?: number,
+): Promise<boolean> {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) return false;
+  try {
+    const form = new FormData();
+    form.append("chat_id", chatId);
+    if (caption) { form.append("caption", caption); form.append("parse_mode", "HTML"); }
+    if (messageThreadId !== undefined) form.append("message_thread_id", String(messageThreadId));
+    const bytes = typeof content === "string" ? Buffer.from(content, "utf8") : content;
+    form.append("document", new Blob([new Uint8Array(bytes)], { type: "text/vcard" }), filename);
+
+    const res = await fetch(`${TELEGRAM_API}${token}/sendDocument`, {
+      method: "POST",
+      body: form,
+      signal: AbortSignal.timeout(30_000),
+    });
+    const data = (await res.json()) as { ok: boolean; description?: string };
+    if (!data.ok) console.error(`[Telegram] sendDocument failed: ${data.description}`);
+    return data.ok;
+  } catch (error) {
+    console.error(`[Telegram] sendDocument error: ${(error as Error).message}`);
+    return false;
+  }
 }

@@ -60,15 +60,28 @@ export async function upsertPersonByName(
 }
 
 /** Link a company to a person (idempotent). */
-async function linkCompany(personId: number, companyName: string | null | undefined, source: string) {
+export async function linkCompany(
+  personId: number,
+  companyName: string | null | undefined,
+  source: string,
+  /** Job title, when the caller knows it (a business card does). */
+  role?: string | null,
+) {
   const name = (companyName || "").trim();
   if (!name) return;
   const [existing] = await db.select().from(companies).where(eq(companies.name, name)).limit(1);
   const company = existing || (await db.insert(companies).values({ name, sourceUrls: [source] }).returning())[0];
   await db
     .insert(peopleCompanies)
-    .values({ personId, companyId: company.id, source })
+    .values({ personId, companyId: company.id, source, role: role?.trim() || null })
     .onConflictDoNothing();
+  // A link may already exist from an earlier, role-less source; fill the blank.
+  if (role?.trim()) {
+    await db.execute(sql`
+      UPDATE people_companies SET role = ${role.trim()}
+       WHERE person_id = ${personId} AND company_id = ${company.id} AND (role IS NULL OR role = '')
+    `);
+  }
 }
 
 /** Ensure a contact_meta row exists for a person (defaults to active). */

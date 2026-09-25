@@ -1,4 +1,4 @@
-import { LayoutDashboard, Settings, Activity, TrendingUp, BookmarkCheck, Bug, Building2, Sparkles, Users, MessageSquareWarning, Network } from "lucide-react";
+import { LayoutDashboard, Settings, Activity, TrendingUp, BookmarkCheck, Bug, Building2, Sparkles, Users, MessageSquareWarning, Network, ScanLine } from "lucide-react";
 import { Link, useLocation, useSearch } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -32,6 +32,11 @@ const menuItems = [
     title: "Families",
     url: "/families",
     icon: Network,
+  },
+  {
+    title: "Card Scanner",
+    url: "/scan",
+    icon: ScanLine,
   },
   {
     title: "Settings",

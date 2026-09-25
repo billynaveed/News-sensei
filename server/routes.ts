@@ -14,6 +14,7 @@ import { registerHealthRoutes } from "./routes-health";
 import { registerPeopleRoutes } from "./routes-people";
 import { registerPromptRoutes } from "./routes-prompts";
 import { registerFamilyRoutes } from "./routes-families";
+import { registerCardRoutes } from "./routes-cards";
 import { seedPromptsFromSettings } from "./prompts";
 import { buildWeeklyNote, sendWeeklyNoteNow } from "./weekly-note";
 import { getSearchStatus } from "./web-search";
@@ -689,6 +690,7 @@ export async function registerRoutes(
   registerPeopleRoutes(app);
   registerPromptRoutes(app);
   registerFamilyRoutes(app);
+  registerCardRoutes(app);
 
   // Weekly "what I learned" note: preview (text) and manual send.
   app.get("/api/weekly-note/preview", async (_req, res) => {
