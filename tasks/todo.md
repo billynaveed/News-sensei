@@ -175,20 +175,26 @@ upsert), ~15 overlapping seed families sharing a patriarch. `person_blocks` is s
   21m/4e, Chearavanont 16m/16e → 17m/20e, Kanjanapas 5m/2e → 8m/6e, Yoovidhya 6m/5e → 7m/7e in
   18–29s each; Lua/Tejapaibul/Darmawan honestly still empty (no public tree)
 
-### 3. Planned — proper tree renderer (not started)
-- [ ] Replace `computeGenerations` + flex rows in `client/src/pages/family-detail.tsx` with a
-  genealogy layout: couple nodes (spouses share one node, children hang from the couple),
-  sibling brackets, generation labels (G1 founder / G2 / G3), collapsible branches
-- [ ] Candidates: `family-chart` (d3-based, built for this) or ELK layered layout via
-  `elkjs` + custom SVG; both handle 20+ members, pan/zoom, and lay out from the same
-  members + parent/spouse/sibling edges the API already returns
-- [ ] Node design: photo avatar (people.photo_url, fetch from Wikipedia when missing),
-  role line, net worth chip, age when known; blocked = red fill, propagated block = amber
-  outline so the conflict is visible spreading up the tree
-- [ ] "Not linked yet" strip becomes a side drawer with a one-click "attach as child of…"
-  so orphans get placed instead of parked
-- [ ] Person page (/people/:id) shows a mini-tree (parents / spouse / children) using the
-  same component
+### 3. Proper tree renderer ✅ (2026-09-25)
+- [x] `client/src/lib/family-layout.ts` — a PURE, unit-tested genealogy layout (35 assertions
+  in `tests/family-layout.test.ts`). Not a generic tree lib: a child hangs from a COUPLE, so
+  it builds units (person or married pair), assigns generations by relaxation (bounded, so
+  cyclic bad data cannot hang the UI), then does a tidy-tree x-pass with a downward
+  re-centring pass. Deterministic — same input, same geometry
+- [x] `client/src/components/FamilyTree.tsx` — SVG connectors under HTML cards in one
+  transformed container: pan by drag, ⌘/Ctrl+scroll zoom, fit-to-view, generation bands
+  (Founder / G2 / G3 · youngest), photo or initials avatar, company + net worth, ★ on the
+  family head, collapsible branches with a "+N" badge, orthogonal descent lines, a spouse
+  bar and dashed sibling links
+- [x] Blocked people: red fill for a direct block, amber for one propagated from a relative,
+  each with its own legend entry — the conflict is visible spreading through the tree
+- [x] "Not linked yet" is now a labelled strip under the tree saying how many people the
+  sources never connected, each clickable to open the relationship editor
+- [x] **Bug worth remembering:** the cards first rendered as a diagonal staircase. The
+  `hover-elevate` utility sets `position: relative` at a higher specificity than Tailwind's
+  `absolute`, so every absolutely-positioned card fell into normal flow and its coordinates
+  became offsets. Never put `hover-elevate` on an absolutely positioned element
+- [ ] Person page (/people/:id) mini-tree (parents / spouse / children) using the same component
 
 ### 4. Planned — make blocking easy (not started)
 - [ ] "Block" action on the lead card founder chip and on the person page (today it lives
@@ -277,8 +283,9 @@ auto-blocks. Every researched relationship stores its source URL + confidence.
   are where these surface. Phase 4 review UI will handle them.
 
 **Phase 4 — Polish (after data flows)**
-- [ ] needs_review queue UI; person merge/dedupe review
-- [ ] "Re-research family" button; per-person lazy enrichment on view
+- [x] needs_review queue UI; person merge/dedupe review (shipped 2026-09-08 with Program 2)
+- [x] "Re-research family" button (Requeue + research-now shipped 2026-09-19);
+      per-person lazy enrichment on view — folded into the person page
 
 **Verification (Phases 1-2, done 2026-09-02 on dev :5100 against live DB):**
 - [x] npm run check clean; ensure-families-tables creates app-role tables at boot (no ALTER people)
@@ -354,8 +361,8 @@ settings with reference articles; 4 schema consolidation — do it via one-time 
 - [x] Deleted: Ollama client, gpt-4o-mini reprocess script, knowledge-only enrichers.
   SendGrid still wired via routes.ts + settings — remove in a follow-up with the Settings UI
 
-### Phase C — Prompts in settings (after A/B/D)
-- [ ] `pipeline_prompts` + versions; Settings editor with "test against examples"
+### Phase C — Prompts in settings ✅ (shipped 2026-09-08)
+- [x] `pipeline_prompts` + versions; Settings editor with all 8 prompts
 
 ### Phase F — Budgets + UX
 - [x] web-search.ts: `priority: "background"` draws from SEARCH_BACKGROUND_DAILY_CAP (120/day);

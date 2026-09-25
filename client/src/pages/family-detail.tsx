@@ -1,9 +1,10 @@
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Link, useLocation, useRoute } from "wouter";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { FamilyTree } from "@/components/FamilyTree";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -78,6 +79,7 @@ type FamilyDetail = {
     confidence: string | null;
     researchedAt: string | null;
     sourceUrls: string[] | null;
+    patriarchPersonId: number | null;
   };
   members: Member[];
   relationships: Relationship[];
@@ -115,104 +117,6 @@ function hostOf(url: string): string {
 }
 
 type RelationKind = "none" | "child_of" | "parent_of" | "spouse_of" | "sibling_of";
-
-// ---------------------------------------------------------------------------
-// Tree layout: assign a generation to every member from parent/spouse/sibling
-// edges (parents above children, spouses + siblings level), then order each
-// row so spouses sit adjacent and children sit under their parents.
-// ---------------------------------------------------------------------------
-function computeGenerations(members: Member[], relationships: Relationship[]) {
-  const ids = new Set(members.map((m) => m.id));
-  const edges = relationships.filter((r) => ids.has(r.fromPersonId) && ids.has(r.toPersonId));
-  const linked = new Set<number>();
-  edges.forEach((e) => {
-    linked.add(e.fromPersonId);
-    linked.add(e.toPersonId);
-  });
-
-  const gen = new Map<number, number>();
-  linked.forEach((id) => gen.set(id, 0));
-
-  // Relaxation: child below parent, spouse/sibling level with each other.
-  // Bounded iterations keep accidental cycles (bad data) from hanging the UI.
-  const maxIter = linked.size + 10;
-  for (let i = 0; i < maxIter; i++) {
-    let changed = false;
-    for (const e of edges) {
-      const a = gen.get(e.fromPersonId)!;
-      const b = gen.get(e.toPersonId)!;
-      if (e.type === "parent") {
-        if (b < a + 1) {
-          gen.set(e.toPersonId, a + 1);
-          changed = true;
-        }
-      } else {
-        const level = Math.max(a, b);
-        if (a !== level) { gen.set(e.fromPersonId, level); changed = true; }
-        if (b !== level) { gen.set(e.toPersonId, level); changed = true; }
-      }
-    }
-    if (!changed) break;
-  }
-
-  const memberById = new Map(members.map((m) => [m.id, m]));
-  const rows = new Map<number, Member[]>();
-  linked.forEach((id) => {
-    const g = gen.get(id)!;
-    if (!rows.has(g)) rows.set(g, []);
-    rows.get(g)!.push(memberById.get(id)!);
-  });
-
-  const sortedGens = Array.from(rows.keys()).sort((a, b) => a - b);
-  const parentsOf = new Map<number, number[]>();
-  const spouseOf = new Map<number, number[]>();
-  edges.forEach((e) => {
-    if (e.type === "parent") {
-      if (!parentsOf.has(e.toPersonId)) parentsOf.set(e.toPersonId, []);
-      parentsOf.get(e.toPersonId)!.push(e.fromPersonId);
-    } else if (e.type === "spouse") {
-      if (!spouseOf.has(e.fromPersonId)) spouseOf.set(e.fromPersonId, []);
-      if (!spouseOf.has(e.toPersonId)) spouseOf.set(e.toPersonId, []);
-      spouseOf.get(e.fromPersonId)!.push(e.toPersonId);
-      spouseOf.get(e.toPersonId)!.push(e.fromPersonId);
-    }
-  });
-
-  // Order rows top-down: sort children by their parents' average position in
-  // the row above, then pull spouse pairs adjacent.
-  const posInRow = new Map<number, number>();
-  const orderedRows: Member[][] = [];
-  sortedGens.forEach((g, rowIdx) => {
-    let row = rows.get(g)!;
-    if (rowIdx === 0) {
-      row = [...row].sort((a, b) => a.fullName.localeCompare(b.fullName));
-    } else {
-      row = [...row].sort((a, b) => {
-        const pa = (parentsOf.get(a.id) ?? []).map((p) => posInRow.get(p) ?? 0);
-        const pb = (parentsOf.get(b.id) ?? []).map((p) => posInRow.get(p) ?? 0);
-        const avgA = pa.length ? pa.reduce((s, v) => s + v, 0) / pa.length : 999;
-        const avgB = pb.length ? pb.reduce((s, v) => s + v, 0) / pb.length : 999;
-        return avgA - avgB || a.fullName.localeCompare(b.fullName);
-      });
-    }
-    // Pull each spouse next to their partner (first pass, greedy).
-    for (let i = 0; i < row.length; i++) {
-      const partners = spouseOf.get(row[i].id) ?? [];
-      for (const partnerId of partners) {
-        const j = row.findIndex((m) => m.id === partnerId);
-        if (j > i + 1) {
-          const [sp] = row.splice(j, 1);
-          row.splice(i + 1, 0, sp);
-        }
-      }
-    }
-    row.forEach((m, i) => posInRow.set(m.id, i));
-    orderedRows.push(row);
-  });
-
-  const unlinked = members.filter((m) => !linked.has(m.id));
-  return { rows: orderedRows, unlinked, edges };
-}
 
 /** Relatives of one person, for the block-propagation dialog. */
 function computeRelatives(personId: number, relationships: Relationship[]) {
@@ -300,67 +204,14 @@ export default function FamilyDetailPage() {
   const [mergePersonId, setMergePersonId] = useState<number | null>(null);
   const confidence = splitConfidence(detail?.family.confidence ?? null);
 
-  const layout = useMemo(
-    () => (detail ? computeGenerations(detail.members, detail.relationships) : null),
-    [detail],
-  );
-
-  // ------- SVG connector measurement -------
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const nodeRefs = useRef(new Map<number, HTMLDivElement>());
-  const [lines, setLines] = useState<{ path: string; kind: "parent" | "spouse" | "sibling" }[]>([]);
-  const [svgSize, setSvgSize] = useState({ w: 0, h: 0 });
-
-  useLayoutEffect(() => {
-    const measure = () => {
-      const container = containerRef.current;
-      if (!container || !layout) return setLines([]);
-      const cRect = container.getBoundingClientRect();
-      const next: { path: string; kind: "parent" | "spouse" | "sibling" }[] = [];
-      const rectOf = (id: number) => {
-        const el = nodeRefs.current.get(id);
-        if (!el) return null;
-        const r = el.getBoundingClientRect();
-        return {
-          cx: r.left - cRect.left + container.scrollLeft + r.width / 2,
-          top: r.top - cRect.top + container.scrollTop,
-          bottom: r.bottom - cRect.top + container.scrollTop,
-          left: r.left - cRect.left + container.scrollLeft,
-          right: r.right - cRect.left + container.scrollLeft,
-          my: r.top - cRect.top + container.scrollTop + r.height / 2,
-        };
-      };
-      for (const e of layout.edges) {
-        const a = rectOf(e.fromPersonId);
-        const b = rectOf(e.toPersonId);
-        if (!a || !b) continue;
-        if (e.type === "parent") {
-          const midY = (a.bottom + b.top) / 2;
-          next.push({
-            kind: "parent",
-            path: `M ${a.cx} ${a.bottom} C ${a.cx} ${midY}, ${b.cx} ${midY}, ${b.cx} ${b.top}`,
-          });
-        } else {
-          const [l, r] = a.cx <= b.cx ? [a, b] : [b, a];
-          if (Math.abs(a.my - b.my) < 8) {
-            next.push({ kind: e.type, path: `M ${l.right} ${l.my} L ${r.left} ${r.my}` });
-          } else {
-            next.push({ kind: e.type, path: `M ${l.right} ${l.my} C ${(l.right + r.left) / 2} ${l.my}, ${(l.right + r.left) / 2} ${r.my}, ${r.left} ${r.my}` });
-          }
-        }
-      }
-      setLines(next);
-      setSvgSize({ w: container.scrollWidth, h: container.scrollHeight });
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    if (containerRef.current) ro.observe(containerRef.current);
-    window.addEventListener("resize", measure);
-    return () => {
-      ro.disconnect();
-      window.removeEventListener("resize", measure);
-    };
-  }, [layout]);
+  // Members the research never connected to anyone; the tree shows only the
+  // people it can actually place, and these are listed underneath.
+  const unlinkedMembers = useMemo(() => {
+    if (!detail) return [];
+    const linked = new Set<number>();
+    for (const r of detail.relationships) { linked.add(r.fromPersonId); linked.add(r.toPersonId); }
+    return detail.members.filter((m) => !linked.has(m.id));
+  }, [detail]);
 
   // ------- mutations -------
   const invalidate = () => {
@@ -486,75 +337,33 @@ export default function FamilyDetailPage() {
       {/* Tree */}
       <Card>
         <CardContent className="p-4">
-          {layout && layout.rows.length === 0 && layout.unlinked.length === 0 ? (
-            <div className="py-10 text-center text-sm text-muted-foreground">
-              No members yet — add the first person.
-            </div>
-          ) : (
-            <div ref={containerRef} className="relative overflow-x-auto pb-2">
-              <svg
-                className="absolute inset-0 pointer-events-none"
-                width={svgSize.w}
-                height={svgSize.h}
-                style={{ minWidth: "100%" }}
-              >
-                {lines.map((l, i) => (
-                  <path
-                    key={i}
-                    d={l.path}
-                    fill="none"
-                    className={l.kind === "parent" ? "stroke-muted-foreground/50" : "stroke-muted-foreground/40"}
-                    strokeWidth={1.5}
-                    strokeDasharray={l.kind === "sibling" ? "4 3" : l.kind === "spouse" ? "1 3" : undefined}
-                  />
-                ))}
-              </svg>
-              <div className="relative flex flex-col gap-10 items-center min-w-max px-2 py-2 mx-auto">
-                {layout!.rows.map((row, i) => (
-                  <div key={i} className="flex gap-6 items-start justify-center">
-                    {row.map((m) => (
-                      <PersonNode
-                        key={m.id}
-                        member={m}
-                        selected={selectedId === m.id}
-                        onClick={() => setSelectedId(m.id)}
-                        nodeRef={(el) => {
-                          if (el) nodeRefs.current.set(m.id, el);
-                          else nodeRefs.current.delete(m.id);
-                        }}
-                      />
-                    ))}
-                  </div>
+          <FamilyTree
+            people={detail.members}
+            edges={detail.relationships}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
+            patriarchId={detail.family.patriarchPersonId ?? null}
+          />
+          {unlinkedMembers.length > 0 && (
+            <div className="mt-4 border-t border-dashed border-border pt-4">
+              <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Not linked yet — {unlinkedMembers.length} {unlinkedMembers.length === 1 ? "person" : "people"} the sources never connected. Select one to add a relationship.
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {unlinkedMembers.map((m) => (
+                  <button
+                    key={m.id}
+                    onClick={() => setSelectedId(m.id)}
+                    className={`rounded-md border px-2 py-1.5 text-left text-xs transition-colors hover-elevate ${
+                      m.blocked ? "border-red-500/50 bg-red-500/5" : selectedId === m.id ? "border-primary" : "border-border"
+                    }`}
+                    data-testid={`node-person-${m.id}`}
+                  >
+                    <span className="block font-medium">{m.fullName}</span>
+                    {m.companies?.[0] && <span className="block text-[10px] text-muted-foreground">{m.companies[0]}</span>}
+                  </button>
                 ))}
               </div>
-              {layout!.unlinked.length > 0 && (
-                <div className="mt-8 border-t border-dashed border-border pt-4">
-                  <div className="text-xs text-muted-foreground uppercase tracking-wide font-medium mb-2">
-                    Not linked yet — select a person to add relationships
-                  </div>
-                  <div className="flex flex-wrap gap-4">
-                    {layout!.unlinked.map((m) => (
-                      <PersonNode
-                        key={m.id}
-                        member={m}
-                        selected={selectedId === m.id}
-                        onClick={() => setSelectedId(m.id)}
-                        nodeRef={(el) => {
-                          if (el) nodeRefs.current.set(m.id, el);
-                          else nodeRefs.current.delete(m.id);
-                        }}
-                      />
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-          {detail.members.length > 0 && (
-            <div className="mt-4 flex flex-wrap gap-4 text-xs text-muted-foreground">
-              <span className="inline-flex items-center gap-1.5"><span className="inline-block w-6 border-t-[1.5px] border-muted-foreground/60" /> parent → child</span>
-              <span className="inline-flex items-center gap-1.5"><span className="inline-block w-6 border-t-[1.5px] border-dotted border-muted-foreground/60" /> spouse</span>
-              <span className="inline-flex items-center gap-1.5"><span className="inline-block w-6 border-t-[1.5px] border-dashed border-muted-foreground/60" /> sibling</span>
             </div>
           )}
         </CardContent>
