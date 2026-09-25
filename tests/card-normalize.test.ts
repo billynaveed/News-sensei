@@ -20,6 +20,7 @@ import {
   titleCaseName,
   toVCard,
   foldVCardLine,
+  normalizeBounds,
   buildCardNote,
   formatScanDate,
 } from "../server/card-normalize";
@@ -269,6 +270,21 @@ eq("card: no mobile is null", sparse.phoneMobile, null);
 eq("card: empty raw card does not throw", normalizeCard({}).fullName, "");
 
 // --- vCard ----------------------------------------------------------------------
+
+// --- card bounds (auto-crop) ----------------------------------------------------
+
+eq(
+  "bounds: a sensible rectangle is kept",
+  normalizeBounds({ x: 0.1, y: 0.2, width: 0.7, height: 0.5 }),
+  { x: 0.1, y: 0.2, width: 0.7, height: 0.5 },
+);
+eq("bounds: a full-frame box means nothing to crop", normalizeBounds({ x: 0, y: 0, width: 1, height: 1 }), null);
+eq("bounds: a sliver is rejected", normalizeBounds({ x: 0.4, y: 0.4, width: 0.05, height: 0.4 }), null);
+eq("bounds: a box running off the edge is rejected", normalizeBounds({ x: 0.6, y: 0.1, width: 0.8, height: 0.5 }), null);
+eq("bounds: negative origin is rejected", normalizeBounds({ x: -0.2, y: 0.1, width: 0.5, height: 0.5 }), null);
+eq("bounds: missing values are rejected", normalizeBounds({ x: 0.1, y: 0.1 }), null);
+eq("bounds: null passes through", normalizeBounds(null), null);
+eq("bounds: nonsense passes through", normalizeBounds({ x: NaN, y: 0, width: 0.5, height: 0.5 }), null);
 
 // --- note with the scan date ----------------------------------------------------
 

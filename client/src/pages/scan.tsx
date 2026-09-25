@@ -73,6 +73,7 @@ interface ParsedCard {
   address: string | null;
   country: string | null;
   otherText: string | null;
+  cardBounds: { x: number; y: number; width: number; height: number } | null;
 }
 
 interface BusinessCard {
@@ -157,6 +158,38 @@ async function fileToDataUrl(file: File, maxEdge = 1600): Promise<string> {
     // HEIC and friends may not decode in-browser; let the server try.
     return original;
   }
+}
+
+/**
+ * Show only the card, not the table it was lying on. The model reports the
+ * card's rectangle, so the crop is done with CSS over the original image: no
+ * re-encoding, and the full photo is still there for audit and for "Enlarge".
+ */
+function CroppedCard({
+  src,
+  bounds,
+  className,
+}: {
+  src: string;
+  bounds?: { x: number; y: number; width: number; height: number } | null;
+  className?: string;
+}) {
+  if (!bounds) {
+    return <img src={src} alt="Scanned card" className={`object-cover ${className ?? ""}`} />;
+  }
+  return (
+    <span className={`block overflow-hidden ${className ?? ""}`}>
+      <img
+        src={src}
+        alt="Scanned card"
+        className="h-full w-full object-cover"
+        style={{
+          transform: `scale(${1 / bounds.width}, ${1 / bounds.height}) translate(${-bounds.x * 100}%, ${-bounds.y * 100}%)`,
+          transformOrigin: "top left",
+        }}
+      />
+    </span>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -300,10 +333,10 @@ function ReviewPanel({
             title="Click to enlarge"
             data-testid="img-card-front"
           >
-            <img
+            <CroppedCard
               src={card.frontImage}
-              alt="Scanned card"
-              className="h-full w-full object-cover"
+              bounds={draft?.cardBounds}
+              className="h-full w-full"
             />
             <span className="absolute inset-0 hidden items-center justify-center bg-black/50 text-[11px] text-white group-hover:flex">
               <Maximize2 className="mr-1 h-3 w-3" /> Enlarge
@@ -888,10 +921,10 @@ export default function ScanPage() {
                     data-testid={`card-queue-${c.id}`}
                   >
                     {c.frontImage && (
-                      <img
+                      <CroppedCard
                         src={c.frontImage}
-                        alt=""
-                        className="h-9 w-14 shrink-0 rounded border object-cover"
+                        bounds={c.parsed?.cardBounds}
+                        className="h-9 w-14 shrink-0 rounded border"
                       />
                     )}
                     <span className="min-w-0 flex-1">

@@ -67,8 +67,15 @@ hand-off was missing and the vCard was a bare download icon.
 - [x] The header vCard button is a phone icon titled "Contact card for your phone (.vcf)"
 
 ### Still worth doing (from this scan)
-- [ ] Auto-crop/deskew the card out of the background before storing and before the model
-  sees it (his photo is a card on a wooden table; every commercial scanner does this)
+- [x] Auto-crop: the model now returns `cardBounds` (the card's rectangle as 0-1 fractions)
+  and the UI crops to it with CSS over the original image — no re-encoding, no new dependency,
+  and the full photo is kept for audit and "Enlarge". `normalizeBounds` rejects a box that is
+  inverted, tiny or off-frame rather than cropping the card in half.
+  **Prompt lesson:** the first version used `{"x":0,"y":0,"width":1,"height":1}` as the schema
+  example and the model simply echoed it every time. A non-trivial example plus "MEASURE it
+  from this photo — the numbers above are only an example of the format" fixed it: Billy's
+  card on a wooden table now reports {x:0.09, y:0.29, w:0.81, h:0.43}
+- [ ] Deskew (rotating a card photographed at an angle) — still open
 
 ## 2026-09-25 — Business card scanner ✅ shipped (v1)
 

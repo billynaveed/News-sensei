@@ -44,6 +44,7 @@ Return ONLY JSON with this exact shape:
   "address": "the full postal address as printed, newlines preserved, or null",
   "addressCountry": "the country named in the address, or null if not printed",
   "otherText": "anything else worth keeping (tagline, licence number, WeChat ID), else null",
+  "cardBounds": {"x": 0.12, "y": 0.31, "width": 0.74, "height": 0.42},
   "confidence": {"fullName": 0.0-1.0, "company": 0.0-1.0, "phones": 0.0-1.0, "emails": 0.0-1.0, "jobTitle": 0.0-1.0}
 }
 
@@ -53,7 +54,8 @@ Rules:
 - If the card is bilingual, put the Latin-script values in the main fields and the other script in nativeName/nativeCompany. Never translate; transcribe.
 - If several images are given, they are the FRONT and BACK of the SAME card: merge them into one result.
 - Never invent a value. If something is not printed on the card, use null (or an empty array). A blank field is correct; a guessed field is not.
-- confidence is your own reading confidence per field: 1.0 = crisp and unambiguous, below 0.6 = blurred, cropped or uncertain.`;
+- confidence is your own reading confidence per field: 1.0 = crisp and unambiguous, below 0.6 = blurred, cropped or uncertain.
+- cardBounds is the rectangle the CARD ITSELF occupies, as fractions of the image width and height (0-1), so the desk, hand, table or background can be cropped away. MEASURE it from this photo — the numbers above are only an example of the format, not an answer. A card photographed on a desk typically covers half to three quarters of the frame, not all of it. Only return {"x":0,"y":0,"width":1,"height":1} when the card genuinely runs edge to edge.`;
 
 export interface ScanInput {
   images: string[];

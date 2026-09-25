@@ -587,6 +587,8 @@ export interface RawCard {
   addressCountry?: string | null;
   otherText?: string | null;
   confidence?: Record<string, number> | null;
+  /** Where the card sits in the photo, as 0-1 fractions, for cropping the background away. */
+  cardBounds?: { x: number; y: number; width: number; height: number } | null;
 }
 
 /** The cleaned card the UI edits and the saver writes. */
@@ -611,6 +613,8 @@ export interface ParsedCard {
   address: string | null;
   country: string | null;
   otherText: string | null;
+  /** The card's rectangle within the photo, 0-1, or null when unusable. */
+  cardBounds: { x: number; y: number; width: number; height: number } | null;
 }
 
 /** Apply every rule above to one raw extraction. Never throws. */
@@ -647,7 +651,28 @@ export function normalizeCard(raw: RawCard): ParsedCard {
     address: normalizeAddress(raw.address ?? ""),
     country,
     otherText: (raw.otherText ?? "").trim() || null,
+    cardBounds: normalizeBounds(raw.cardBounds),
   };
+}
+
+/**
+ * Sanity-check the model's card rectangle. A box that is inverted, tiny, or
+ * runs outside the frame is discarded rather than used to crop the card in
+ * half — a wrong crop hides the very text the reviewer is checking.
+ */
+export function normalizeBounds(
+  b: { x?: number; y?: number; width?: number; height?: number } | null | undefined,
+): { x: number; y: number; width: number; height: number } | null {
+  if (!b) return null;
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : NaN);
+  const x = num(b.x), y = num(b.y), width = num(b.width), height = num(b.height);
+  if ([x, y, width, height].some(Number.isNaN)) return null;
+  if (width <= 0.15 || height <= 0.08) return null;       // too small to be the card
+  if (x < -0.01 || y < -0.01) return null;                 // starts outside the frame
+  if (x + width > 1.01 || y + height > 1.01) return null;  // runs past the edge
+  if (width >= 0.995 && height >= 0.995) return null;      // fills the frame: nothing to crop
+  const clamp = (v: number) => Math.min(1, Math.max(0, v));
+  return { x: clamp(x), y: clamp(y), width: clamp(width), height: clamp(height) };
 }
 
 // ---------------------------------------------------------------------------
