@@ -19,6 +19,8 @@ import {
   splitHonorifics,
   titleCaseName,
   toVCard,
+  buildCardNote,
+  formatScanDate,
 } from "../server/card-normalize";
 
 // --- phones: E.164 with country inference ------------------------------------
@@ -245,7 +247,32 @@ eq("card: empty raw card does not throw", normalizeCard({}).fullName, "");
 
 // --- vCard ----------------------------------------------------------------------
 
-const vcf = toVCard(card, { note: "Met at SFF 2026" });
+// --- note with the scan date ----------------------------------------------------
+
+eq("scan date: formatted unambiguously", formatScanDate("2026-09-25T04:30:00Z"), "25 Sep 2026");
+eq("scan date: a Date works too", formatScanDate(new Date("2026-01-05T12:00:00Z")), "5 Jan 2026");
+eq("scan date: missing is null", formatScanDate(null), null);
+eq("scan date: junk is null", formatScanDate("not a date"), null);
+eq("scan date: late-evening UTC is already the next day in Singapore", formatScanDate("2026-09-25T17:30:00Z"), "26 Sep 2026");
+
+eq(
+  "note: where we met, extra text and the scan date",
+  buildCardNote({ eventNote: "SFF 2026", otherText: "introduced by Alan", scannedAt: "2026-09-25T04:30:00Z" }),
+  "SFF 2026 — introduced by Alan — Card scanned 25 Sep 2026",
+);
+eq(
+  "note: the date alone when nothing else was captured",
+  buildCardNote({ scannedAt: "2026-09-25T04:30:00Z" }),
+  "Card scanned 25 Sep 2026",
+);
+eq("note: nothing at all gives null", buildCardNote({}), null);
+eq(
+  "note: no date still records where we met",
+  buildCardNote({ eventNote: "SFF 2026" }),
+  "SFF 2026",
+);
+
+const vcf = toVCard(card, { note: "Met at SFF 2026", scannedAt: "2026-09-25T04:30:00Z" });
 check("vcard: begins correctly", vcf.startsWith("BEGIN:VCARD\r\nVERSION:3.0"));
 check("vcard: ends correctly", vcf.trimEnd().endsWith("END:VCARD"));
 check("vcard: display name carries the honorific", vcf.includes("FN:Tan Sri Dato' Lim Kok Thay"));
@@ -254,6 +281,6 @@ check("vcard: mobile typed as CELL", vcf.includes("TEL;TYPE=CELL:+60123456789"))
 check("vcard: office typed as WORK", vcf.includes("TEL;TYPE=WORK,VOICE:+60321782288"));
 check("vcard: fax typed as FAX", vcf.includes("TEL;TYPE=WORK,FAX:"));
 check("vcard: organisation present", vcf.includes("ORG:Genting Berhad"));
-check("vcard: note carries where we met", vcf.includes("NOTE:Met at SFF 2026"));
+check("vcard: note carries where we met and the scan date", vcf.includes("NOTE:Met at SFF 2026 — Card scanned 25 Sep 2026"));
 check("vcard: uses CRLF line endings", vcf.includes("\r\n"));
 check("vcard: a card with no phones still renders", toVCard(sparse).includes("FN:Jane Low"));

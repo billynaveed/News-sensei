@@ -623,6 +623,37 @@ export function normalizeCard(raw: RawCard): ParsedCard {
 // vCard
 // ---------------------------------------------------------------------------
 
+/**
+ * "25 Sep 2026" — the date the card was scanned, for the contact note. Short
+ * and unambiguous across locales (never 09/25 vs 25/09), and it answers the
+ * question a note in a contact record actually has to answer: when did I meet
+ * this person?
+ */
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+export function formatScanDate(when: Date | string | null | undefined): string | null {
+  if (!when) return null;
+  const d = when instanceof Date ? when : new Date(when);
+  if (Number.isNaN(d.getTime())) return null;
+  // Built by hand rather than toLocaleDateString: ICU renders September as
+  // "Sept" under en-GB and the abbreviations shift between Node builds, which
+  // would quietly change what lands in a saved contact.
+  const sgt = new Date(d.getTime() + 8 * 60 * 60 * 1000); // Asia/Singapore, no DST
+  return `${sgt.getUTCDate()} ${MONTHS[sgt.getUTCMonth()]} ${sgt.getUTCFullYear()}`;
+}
+
+/** The note stored on a contact: where we met, anything extra, and when. */
+export function buildCardNote(parts: {
+  eventNote?: string | null;
+  otherText?: string | null;
+  scannedAt?: Date | string | null;
+}): string | null {
+  const date = formatScanDate(parts.scannedAt);
+  const pieces = [parts.eventNote, parts.otherText].map((p) => (p ?? "").trim()).filter(Boolean);
+  if (date) pieces.push(`Card scanned ${date}`);
+  return pieces.length ? pieces.join(" — ") : null;
+}
+
 function vcardEscape(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\n/g, "\\n");
 }
@@ -631,7 +662,7 @@ function vcardEscape(value: string): string {
  * RFC 6350 vCard 3.0 (3.0 rather than 4.0: iOS and Android both import it
  * without complaint, which 4.0 does not reliably do).
  */
-export function toVCard(card: ParsedCard, extra?: { note?: string | null }): string {
+export function toVCard(card: ParsedCard, extra?: { note?: string | null; scannedAt?: Date | string | null }): string {
   const lines = ["BEGIN:VCARD", "VERSION:3.0"];
   const display = [card.honorific, card.fullName, card.suffix].filter(Boolean).join(" ");
   lines.push(`N:${vcardEscape(card.lastName ?? "")};${vcardEscape(card.firstName ?? "")};;${vcardEscape(card.honorific ?? "")};${vcardEscape(card.suffix ?? "")}`);
@@ -648,7 +679,7 @@ export function toVCard(card: ParsedCard, extra?: { note?: string | null }): str
   if (card.website) lines.push(`URL:${vcardEscape(card.website)}`);
   if (card.linkedin) lines.push(`X-SOCIALPROFILE;TYPE=linkedin:${vcardEscape(card.linkedin)}`);
   if (card.address) lines.push(`ADR;TYPE=WORK:;;${vcardEscape(card.address)};;;;${vcardEscape(card.country ?? "")}`);
-  const note = [extra?.note, card.otherText].filter(Boolean).join(" — ");
+  const note = buildCardNote({ eventNote: extra?.note, otherText: card.otherText, scannedAt: extra?.scannedAt });
   if (note) lines.push(`NOTE:${vcardEscape(note)}`);
   lines.push(`REV:${new Date().toISOString()}`);
   lines.push("END:VCARD");

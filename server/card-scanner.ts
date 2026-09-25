@@ -18,7 +18,7 @@ import { callJsonStage } from "./llm-json";
 import { searchWeb } from "./web-search";
 import { resolvePersonByName } from "./families";
 import { ensureContactMeta, linkCompany } from "./contacts";
-import { normalizeCard, normalizeLinkedIn, normalizeUrl, toVCard, type ParsedCard, type RawCard } from "./card-normalize";
+import { buildCardNote, normalizeCard, normalizeLinkedIn, normalizeUrl, toVCard, type ParsedCard, type RawCard } from "./card-normalize";
 import { businessCards, contactMeta, people, type BusinessCard } from "@shared/schema";
 
 /** Vision-capable and cheap; the whole point is reading text off a photo. */
@@ -356,7 +356,14 @@ export async function saveCard(
   if (parsed.company) await linkCompany(personId, parsed.company, "business-card", parsed.jobTitle);
 
   await ensureContactMeta(personId);
-  const note = [edits?.eventNote ?? card.eventNote, parsed.otherText].filter(Boolean).join(" — ") || null;
+  // The note records where we met AND when the card was scanned — a contact
+  // read months later needs both. createdAt, not now: a card photographed at
+  // an event may not be reviewed until days afterwards.
+  const note = buildCardNote({
+    eventNote: edits?.eventNote ?? card.eventNote,
+    otherText: parsed.otherText,
+    scannedAt: card.createdAt,
+  });
   const other = parsed.phones.find((p) => p.e164 && p.slot !== "mobile" && p.slot !== "office")?.e164 ?? null;
   await db
     .update(contactMeta)
@@ -416,7 +423,7 @@ export async function cardVCard(cardId: string): Promise<{ vcf: string; parsed: 
   const card = await getCard(cardId);
   if (!card?.parsed) return null;
   const parsed = card.parsed as ParsedCard;
-  return { vcf: toVCard(parsed, { note: card.eventNote }), parsed };
+  return { vcf: toVCard(parsed, { note: card.eventNote, scannedAt: card.createdAt }), parsed };
 }
 
 /** Counts for the page header and the sidebar badge. */

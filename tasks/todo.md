@@ -48,7 +48,7 @@ That gap is the wedge. Design: `docs/plans/2026-09-25-business-card-scanner-desi
   Also cleared a stale orphan process that had been blocking polling since 2026-09-24 12:47.
 
 ### Verified
-- `npm run check` clean; `npm test` 219/219 (new `tests/card-normalize.test.ts`)
+- `npm run check` clean; `npm test` 228/228 (new `tests/card-normalize.test.ts`)
 - Two synthetic cards (ALL-CAPS SG + mixed-case MY) end to end in ~2.5s each:
   "TAN SRI DATO' LIM KOK THAY" → honorific "Tan Sri Dato'" + name "Lim Kok Thay" + 林国泰;
   DID 6225 1234 ext 205 → +6562251234 x205 office; HP → +6591234567 mobile; F → fax;
