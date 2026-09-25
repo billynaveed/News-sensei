@@ -16,7 +16,8 @@ form and every action were off-screen with nothing above the fold hinting they e
 
 - [x] Review panel now LEADS with a sticky action header (name, role, Save contact + icon
   buttons for re-read / vCard / discard). Save moved from y=1669 to y=571
-- [x] Card photo is a 112px click-to-enlarge thumbnail with a full-size dialog, not a poster
+- [x] Card photo is a click-to-enlarge thumbnail inside the panel header, beside the parsed
+  name — reviewing a card is a comparison task, so the photo and the fields belong together
 - [x] Status labels say what to do: "Check & save", "Needs a fix", "Couldn't read"
 - [x] One-line instruction under the header: "Check the details below, correct anything
   wrong, then save."
@@ -26,6 +27,22 @@ form and every action were off-screen with nothing above the fold hinting they e
   result only when the national number comes out the SAME LENGTH as the donor's (a
   reconstruction, not a guess). Flagged "area code added" in both the web review panel and
   the Telegram reply so it is checked, not trusted. His card: 2/3 → 3/3 numbers dialable
+
+**Second pass — Billy: "look at the screenshot its a mess":** measured the layout and found
+real structural problems, not cosmetics:
+- [x] A 320px queue sidebar reserved 922px of height for ONE 80px item (~840px of void).
+  Replaced with a horizontal strip that only appears when there are 2+ cards
+- [x] The photo thumbnail floated orphaned above the review card with a gap; it now sits
+  inside the panel header next to the name
+- [x] Fields stretched to fill an 800px column: Honorific (4 chars) and Name were both 377px
+  and Honorific held the prime top-left slot. Now a 3-column grid where Name/Title/Company
+  span two columns and Honorific one, inside a max-w-3xl page — a form column, not a dashboard
+- [x] Phone inputs were 638/590/638px wide (ragged right edge, 12-char content). Now a fixed
+  190px monospace tabular field with every annotation in one aligned column
+- [x] The 766x80 note textarea became a single input; flat wall of inputs became labelled
+  Person / Contact / Where we met sections; the duplicate bottom Save button is gone
+- [x] Mobile: phone annotations were squeezed into a 43px column and wrapped to three lines;
+  the row now wraps so each annotation gets its own full-width line
 
 ### Still worth doing (from this scan)
 - [ ] Auto-crop/deskew the card out of the background before storing and before the model
