@@ -44,6 +44,13 @@ real structural problems, not cosmetics:
 - [x] Mobile: phone annotations were squeezed into a 43px column and wrapped to three lines;
   the row now wraps so each annotation gets its own full-width line
 
+**App-wide scroll bug (Billy: "i cant scroll down the page to see the rest of the card"):**
+- [x] `client/src/App.tsx` — the shell is `h-screen` and `<main>` was `overflow-hidden`, so
+  ANY page taller than the window was clipped with no scrollbar. It only worked where a page
+  remembered to add its own `h-full overflow-auto` (settings.tsx, logs.tsx did; families,
+  ipo-filings and scan did not). `<main>` is now `overflow-y-auto`, so no page can be clipped
+  again and new pages need no workaround. Verified by wheel-scrolling all 8 pages
+
 ### Still worth doing (from this scan)
 - [ ] Auto-crop/deskew the card out of the background before storing and before the model
   sees it (his photo is a card on a wooden table; every commercial scanner does this)

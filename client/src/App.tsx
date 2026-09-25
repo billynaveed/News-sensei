@@ -76,7 +76,11 @@ function App() {
                   <ThemeToggle />
                 </div>
               </header>
-              <main className="flex-1 overflow-hidden bg-background">
+              {/* The shell is h-screen, so main must be the scroll container.
+                  With overflow-hidden any page taller than the window was
+                  simply clipped — pages worked only if they remembered to add
+                  their own "h-full overflow-auto", and several did not. */}
+              <main className="flex-1 overflow-y-auto bg-background">
                 <Router />
               </main>
             </div>
