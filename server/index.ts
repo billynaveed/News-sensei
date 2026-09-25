@@ -9,6 +9,7 @@ import { startBot, stopBot, enableWebhookMode } from "./telegram-bot";
 import { setWebhook, deleteWebhook } from "./telegram";
 import { startScheduler, stopScheduler } from "./scheduler";
 import { startFamilyResearch, stopFamilyResearch } from "./family-research";
+import { startFollowUps, stopFollowUps } from "./follow-ups";
 import { startHealthMonitor, stopHealthMonitor } from "./health-monitor";
 import { startWeeklyNote, stopWeeklyNote } from "./weekly-note";
 
@@ -148,6 +149,7 @@ app.use((req, res, next) => {
       // Start scan scheduler
       startScheduler().catch(err => log(`Failed to start scheduler: ${err}`, "error"));
       startFamilyResearch();
+      startFollowUps();
       startHealthMonitor();
       startWeeklyNote();
     },

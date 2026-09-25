@@ -124,8 +124,17 @@ That gap is the wedge. Design: `docs/plans/2026-09-25-business-card-scanner-desi
 - Scan page screenshotted at desktop and 430px mobile width
 
 ### Deferred to v2 (not built)
-- [ ] Drafted follow-up message (email/WhatsApp) from the card + "where we met" context
-- [ ] Follow-up reminders on a scanned contact (contact_meta.remind_at already exists)
+- [x] Drafted follow-up message (email/WhatsApp) — `draftFollowUp` in `server/follow-ups.ts`
+  writes from the notes ONLY; the prompt forbids inventing a conversation, a shared contact
+  or a business detail, so a sparse note gives a short honest note rather than a fluent lie.
+  Honorifics are used. `FollowUpDraftDialog` on the person page, editable + copy
+- [x] Follow-up reminders — `contact_meta.remind_at` existed but NOTHING ever fired on it.
+  Daily cron (09:00 SGT) sends a Telegram digest of everything due, each line carrying the
+  "where we met" note that makes the reminder worth anything. Reminder buttons on the card
+  save screen (tomorrow / 3 days / a week) and in the draft dialog
+- [x] Bug caught in testing: the digest read `TELEGRAM_CHAT_ID` from the environment, which
+  is not where this app keeps it — every other feature reads `settings.telegramChatId`, so
+  the digest would have silently sent nothing forever
 - [ ] Google Contacts OAuth sync (vCard covers the phone today)
 - [ ] QR / LinkedIn-QR / vCard decode in the same scanner (younger founders hand over a QR)
 - [ ] Job-change alerts on saved contacts (Eight/Sansan's killer feature)

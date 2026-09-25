@@ -605,6 +605,7 @@ export default function ScanPage() {
   const [dragging, setDragging] = useState(false);
   const [zoomed, setZoomed] = useState<string | null>(null);
   const [justSaved, setJustSaved] = useState<{ cardId: string; personId: number; fullName: string } | null>(null);
+  const [reminderDays, setReminderDays] = useState<number | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<HTMLInputElement>(null);
 
@@ -826,6 +827,28 @@ export default function ScanPage() {
                 Done
               </Button>
             </div>
+            {/* The 48 hours after meeting is where these go cold, so the nudge
+                is offered at the one moment the context is fresh. */}
+            <div className="flex flex-wrap items-center justify-center gap-2 border-t pt-3 text-sm">
+              <span className="text-muted-foreground">Remind me to follow up in</span>
+              {[1, 3, 7].map((d) => (
+                <Button
+                  key={d}
+                  size="sm"
+                  variant={reminderDays === d ? "default" : "outline"}
+                  onClick={() => {
+                    setReminderDays(d);
+                    void apiRequest("POST", `/api/people/${justSaved.personId}/follow-up`, { days: d });
+                  }}
+                  data-testid={`button-remind-${d}`}
+                >
+                  {d === 1 ? "tomorrow" : d === 7 ? "a week" : `${d} days`}
+                </Button>
+              ))}
+              {reminderDays !== null && (
+                <span className="text-xs text-emerald-600 dark:text-emerald-400">✓ reminder set</span>
+              )}
+            </div>
             <p className="text-xs text-muted-foreground">
               Scanning through the Telegram bot sends this card straight to your phone, so there
               it is a single tap.
@@ -894,6 +917,7 @@ export default function ScanPage() {
                 // Hold the card id: saving removes it from the queue, so the
                 // hand-off screen cannot live inside the panel itself.
                 setJustSaved({ cardId: selected.id, ...result });
+                setReminderDays(null);
                 setSelectedId(null);
                 refresh();
               }}

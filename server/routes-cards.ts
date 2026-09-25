@@ -20,6 +20,7 @@ import {
   validateImage,
 } from "./card-scanner";
 import { vcardFilename } from "./card-normalize";
+import { draftFollowUp, listDueFollowUps, runFollowUpDigest, setFollowUp } from "./follow-ups";
 import type { ParsedCard } from "./card-normalize";
 
 export function registerCardRoutes(app: Express): void {
@@ -148,6 +149,52 @@ export function registerCardRoutes(app: Express): void {
     } catch (error) {
       console.error("Error deleting card:", error);
       res.status(500).json({ error: "Failed to delete card" });
+    }
+  });
+
+  /** Set or clear a follow-up reminder on a person, in days from now. */
+  app.post("/api/people/:id/follow-up", async (req, res) => {
+    try {
+      const personId = parseInt(req.params.id, 10);
+      if (!Number.isFinite(personId)) return res.status(400).json({ error: "invalid person id" });
+      const days = req.body?.days;
+      const remindAt = await setFollowUp(personId, typeof days === "number" ? days : null);
+      res.json({ remindAt });
+    } catch (error) {
+      console.error("Error setting follow-up:", error);
+      res.status(500).json({ error: "Failed to set the reminder" });
+    }
+  });
+
+  /** Draft the follow-up message from what the card and the notes actually say. */
+  app.post("/api/people/:id/follow-up-draft", async (req, res) => {
+    try {
+      const personId = parseInt(req.params.id, 10);
+      if (!Number.isFinite(personId)) return res.status(400).json({ error: "invalid person id" });
+      const channel = req.body?.channel === "whatsapp" ? "whatsapp" : "email";
+      res.json(await draftFollowUp(personId, channel));
+    } catch (error) {
+      console.error("Error drafting follow-up:", error);
+      res.status(500).json({ error: (error as Error).message || "Failed to draft the message" });
+    }
+  });
+
+  /** Everything due now, for the UI and for a manual digest run. */
+  app.get("/api/follow-ups", async (_req, res) => {
+    try {
+      res.json({ due: await listDueFollowUps() });
+    } catch (error) {
+      console.error("Error listing follow-ups:", error);
+      res.status(500).json({ error: "Failed to list follow-ups" });
+    }
+  });
+
+  app.post("/api/follow-ups/digest", async (_req, res) => {
+    try {
+      res.json(await runFollowUpDigest("manual"));
+    } catch (error) {
+      console.error("Error sending follow-up digest:", error);
+      res.status(500).json({ error: "Failed to send the digest" });
     }
   });
 

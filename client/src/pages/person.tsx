@@ -23,6 +23,7 @@ import {
   ExternalLink,
   Loader2,
   MapPin,
+  PenLine,
   ShieldCheck,
   StickyNote,
   TreePine,
@@ -32,6 +33,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { BlockPersonDialog } from "@/components/BlockPersonDialog";
+import { FollowUpDraftDialog } from "@/components/FollowUpDraftDialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -235,6 +237,7 @@ export default function PersonPage() {
   const validId = Number.isFinite(personId) && personId > 0;
 
   const [blockOpen, setBlockOpen] = useState(false);
+  const [draftOpen, setDraftOpen] = useState(false);
 
   const { data, isLoading, isError } = useQuery<PersonProfile>({
     queryKey: [`/api/people/${personId}/profile`],
@@ -363,6 +366,9 @@ export default function PersonPage() {
                 )}
                 {/* Coverage conflicts used to be reachable only from inside a
                     family tree, which is why no block had ever been recorded. */}
+                <Button size="sm" variant="outline" onClick={() => setDraftOpen(true)} data-testid="button-draft-followup">
+                  <PenLine className="mr-1.5 h-4 w-4" /> Draft follow-up
+                </Button>
                 {block ? (
                   <Button size="sm" variant="outline" disabled={unblock.isPending} onClick={() => unblock.mutate()} data-testid="button-unblock-person">
                     <ShieldCheck className="mr-1.5 h-4 w-4" /> Unblock
@@ -480,6 +486,14 @@ export default function PersonPage() {
           </CardContent>
         </Card>
       </div>
+
+      {draftOpen && (
+        <FollowUpDraftDialog
+          personId={personId}
+          fullName={person.fullName}
+          onOpenChange={(o) => !o && setDraftOpen(false)}
+        />
+      )}
 
       {blockOpen && (
         <BlockPersonDialog
