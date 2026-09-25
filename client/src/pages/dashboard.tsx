@@ -86,6 +86,7 @@ import { BellOff } from "lucide-react";
 import { Card, CardContent, CardHeader, CardFooter } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { BlockPersonDialog } from "@/components/BlockPersonDialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Select,
@@ -167,10 +168,33 @@ const BAD_REASONS: { value: string; label: string }[] = [
  * Rendered only from data the batched lookup already returned — no per-card
  * queries (LeadCard is memoized and the feed is performance-sensitive).
  */
-function FounderChips({ person, leadId, name }: { person: PersonLookup | undefined; leadId: string; name: string }) {
+function FounderChips({
+  person,
+  leadId,
+  name,
+  onBlock,
+}: {
+  person: PersonLookup | undefined;
+  leadId: string;
+  name: string;
+  onBlock?: (person: PersonLookup) => void;
+}) {
   if (!person) return null;
   return (
     <>
+      {/* Recording a coverage conflict where the name is read, rather than
+          only from inside a family tree. */}
+      {onBlock && !person.blocked && (
+        <button
+          type="button"
+          onClick={() => onBlock(person)}
+          title={`Mark ${name} as covered by another banker`}
+          className="rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:border-red-500/50 hover:text-red-600 dark:hover:text-red-400"
+          data-testid={`chip-block-${leadId}-${name}`}
+        >
+          ⛔ covered?
+        </button>
+      )}
       {person.familyId && (
         <Link href={`/families/${person.familyId}`}>
           <Badge
@@ -213,13 +237,14 @@ function FounderChips({ person, leadId, name }: { person: PersonLookup | undefin
   );
 }
 
-const LeadCard = memo(function LeadCard({ lead, isTop, onUpdateStatus, onFeedback, onEnrich, onMute, blockedMap, personMap }: {
+const LeadCard = memo(function LeadCard({ lead, isTop, onUpdateStatus, onFeedback, onEnrich, onMute, onBlockPerson, blockedMap, personMap }: {
   lead: Lead;
   isTop?: boolean;
   onUpdateStatus: (id: string, status: LeadStatus) => void;
   onFeedback: (id: string, reason: string) => void;
   onEnrich: (id: string) => Promise<void>;
   onMute: (id: string, names: string[]) => void;
+  onBlockPerson?: (person: PersonLookup) => void;
   blockedMap: Map<string, BlockedInfo>;
   personMap: Map<string, PersonLookup>;
 }) {
@@ -363,7 +388,7 @@ const LeadCard = memo(function LeadCard({ lead, isTop, onUpdateStatus, onFeedbac
                         ) : (
                           nameBadge
                         )}
-                        <FounderChips person={person} leadId={lead.id} name={f} />
+                        <FounderChips person={person} leadId={lead.id} name={f} onBlock={onBlockPerson} />
                       </span>
                     );
                   })}
@@ -942,6 +967,14 @@ export default function Dashboard() {
     queryKey: [`/api/people/lookup?names=${encodeURIComponent(founderNamesKey)}`],
     enabled: founderNamesKey.length > 0,
   });
+  // Coverage conflict recorded straight from the feed. Relatives are fetched
+  // on demand so the parent pre-check matches the family-tree dialog.
+  const [blockTarget, setBlockTarget] = useState<PersonLookup | null>(null);
+  const { data: blockTargetProfile } = useQuery<{ relationships: { personId: number; fullName: string; kind?: string; blocked?: boolean }[] }>({
+    queryKey: [`/api/people/${blockTarget?.personId}/profile`],
+    enabled: !!blockTarget,
+  });
+
   const personMap = useMemo(
     () => new Map((personLookup ?? []).map((p) => [p.queryName, p])),
     [personLookup],
@@ -1167,6 +1200,7 @@ export default function Dashboard() {
                     onFeedback={handleFeedback}
                     onEnrich={handleEnrich}
                     onMute={handleMute}
+                    onBlockPerson={setBlockTarget}
                     blockedMap={blockedMap}
                     personMap={personMap}
                   />
@@ -1203,6 +1237,27 @@ export default function Dashboard() {
           </>
         )}
       </div>
+
+      {blockTarget && (
+        <BlockPersonDialog
+          personId={blockTarget.personId}
+          fullName={blockTarget.fullName}
+          relatives={(blockTargetProfile?.relationships ?? [])
+            .filter((r) => r.kind && r.kind !== "other")
+            .map((r) => ({
+              personId: r.personId,
+              fullName: r.fullName,
+              kind: r.kind as "parent" | "child" | "spouse" | "sibling",
+              blocked: r.blocked,
+            }))}
+          onOpenChange={(o) => !o && setBlockTarget(null)}
+          onBlocked={() => {
+            setBlockTarget(null);
+            queryClient.invalidateQueries({ queryKey: ["/api/founders/blocked"] });
+            queryClient.invalidateQueries({ queryKey: ["/api/people/lookup"] });
+          }}
+        />
+      )}
     </div>
   );
 }

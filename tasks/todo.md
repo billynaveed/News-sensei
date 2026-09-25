@@ -209,11 +209,15 @@ upsert), ~15 overlapping seed families sharing a patriarch. `person_blocks` is s
   who covers them, with links to the person and their family
 - [x] Verified end to end: blocking Wee Ee Cheong propagated to his father Wee Cho Yaw
   (direct + propagated rows), and the tree renders him red and his father amber "via family"
-- [ ] "Block" action on the lead card founder chip
+- [x] Lead card: a "⛔ covered?" chip beside each founder name in the feed, opening the same
+  dialog with relatives fetched from the person profile
+- [x] Telegram: a "⛔ Covered" button on every lead alert. `blockByNames` resolves each
+  founder, blocks them AND their parents automatically (the one propagation safe to apply
+  unasked), then replies naming exactly who was blocked and who is not in Sensei yet —
+  a silent block would be worse than none
 - [ ] Telegram alert buttons: "⛔ Blocked" on a lead alert → block the named founder, reply
   with the propagated relatives so Billy can confirm parents
-- [ ] Families page: a "Blocked" tab and count in the progress card; weekly note lists new
-  blocks + which leads they suppressed
+- [ ] Weekly note lists new blocks + which leads they suppressed
 - [ ] Pipeline: a lead whose founder is blocked stays visible with the ⛔ badge (Billy's
   2026-09-02 rule); add a settings toggle to hide once he trusts propagation
 

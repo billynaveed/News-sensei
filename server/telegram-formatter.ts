@@ -161,6 +161,7 @@ export const LEAD_CALLBACK = {
   dismiss: "lead_dismiss_",
   reviewed: "lead_reviewed_",
   mute: "lead_mute_",
+  covered: "lead_cov_",
   good: "fb_good_",
   bad: "fb_bad_",
   higher: "fb_high_",
@@ -207,6 +208,7 @@ export function leadActionRow(leadId: string): InlineButton[] {
     { text: "💾 Save", callback_data: leadCallbackData(LEAD_CALLBACK.save, leadId) },
     { text: "🗑 Dismiss", callback_data: leadCallbackData(LEAD_CALLBACK.dismiss, leadId) },
     { text: "🔇 Mute founders", callback_data: leadCallbackData(LEAD_CALLBACK.mute, leadId) },
+    { text: "⛔ Covered", callback_data: leadCallbackData(LEAD_CALLBACK.covered, leadId) },
   ];
 }
 

@@ -2,9 +2,12 @@ import { and, eq } from 'drizzle-orm';
 import { leadFeedback, type Lead } from '@shared/schema';
 import { getTelegramUpdates, sendTelegramMessage, answerCallbackQuery, editMessageWithStatus, editMessageReplyMarkup, type TelegramUpdate } from './telegram';
 import { handleStartCommand, handleHelpCommand, handleResearchCommand, handleLeadsCommand, handleSaveCallback, handleHereCommand, handleTeachCommand, handleHealthCommand } from './telegram-commands';
-import { LEAD_CALLBACK, leadActionRow, statusRow } from './telegram-formatter';
+import { LEAD_CALLBACK, leadActionRow, statusRow,
+  escapeHtml,
+} from './telegram-formatter';
 import { upsertExample } from './pipeline-examples';
 import { muteByNames } from './contacts';
+import { blockByNames } from './families';
 import { storage } from './storage';
 import { db } from './db';
 import { handleCardCallback, handleCardPhoto, isCardMessage } from './telegram-cards';
@@ -119,6 +122,7 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
         [LEAD_CALLBACK.reviewed, (id) => handleLeadReviewedCallback(id, chatId, callbackQueryId, messageId)],
         [LEAD_CALLBACK.dismiss, (id) => handleLeadDismissCallback(id, chatId, callbackQueryId, messageId)],
         [LEAD_CALLBACK.mute, (id) => handleLeadMuteCallback(id, chatId, callbackQueryId, messageId)],
+        [LEAD_CALLBACK.covered, (id) => handleLeadCoveredCallback(id, chatId, callbackQueryId, messageId)],
         [LEAD_CALLBACK.good, (id) => handleLeadFeedbackCallback(id, 'good', chatId, callbackQueryId, messageId)],
         [LEAD_CALLBACK.bad, (id) => handleLeadFeedbackCallback(id, 'bad', chatId, callbackQueryId, messageId)],
         [LEAD_CALLBACK.higher, (id) => handleScoredTooLowCallback(id, chatId, callbackQueryId, messageId)],
@@ -401,6 +405,53 @@ async function reportCallbackError(
  * to dismissed), but calls the same storage/contacts functions directly instead
  * of looping back through HTTP.
  */
+/**
+ * "⛔ Covered": the founders on this lead are already banked elsewhere. Blocks
+ * each of them and, per Billy's rule, their parents too — then says exactly
+ * who was blocked, because a silent block would be worse than none.
+ */
+async function handleLeadCoveredCallback(
+  leadId: string,
+  chatId: string,
+  callbackQueryId: string,
+  messageId?: number,
+): Promise<void> {
+  try {
+    const lead = await loadLeadForCallback(leadId, chatId, callbackQueryId, messageId);
+    if (!lead) return;
+
+    const names = (lead.founderNames || []).filter((n) => n && n.trim().length >= 2);
+    if (names.length === 0) {
+      await answerCallbackQuery(callbackQueryId, "No founders named on this lead");
+      return;
+    }
+
+    const { blocked, skipped } = await blockByNames(names, "Covered by another banker", null);
+    if (blocked.length === 0) {
+      await answerCallbackQuery(callbackQueryId, "Nobody on this lead is in Sensei yet");
+      await sendTelegramMessage(
+        chatId,
+        `⛔ Could not mark anyone as covered — ${skipped.join(", ")} ${skipped.length === 1 ? "is" : "are"} not in Sensei yet.`,
+        "HTML",
+      );
+      return;
+    }
+
+    const propagated = blocked.flatMap((b) => b.parents);
+    await answerCallbackQuery(callbackQueryId, `⛔ Blocked ${blocked.length}`);
+    const lines = [
+      `⛔ <b>Marked as covered</b>`,
+      ...blocked.map((b) => `• ${escapeHtml(b.name)}${b.parents.length ? ` — and ${escapeHtml(b.parents.join(", "))} (parents)` : ""}`),
+    ];
+    if (skipped.length) lines.push(`<i>Not in Sensei yet: ${escapeHtml(skipped.join(", "))}</i>`);
+    if (propagated.length) lines.push("", "<i>Parents are blocked automatically: a covered child means the parents are covered too.</i>");
+    await sendTelegramMessage(chatId, lines.join("\n"), "HTML");
+  } catch (error) {
+    console.error("Error handling covered callback:", error);
+    await answerCallbackQuery(callbackQueryId, "Could not mark as covered");
+  }
+}
+
 async function handleLeadMuteCallback(
   leadId: string,
   chatId: string,

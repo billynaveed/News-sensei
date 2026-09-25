@@ -763,3 +763,47 @@ export async function pruneThinFamilies(country: string, dryRun = false): Promis
   }
   return { deleted: dryRun ? 0 : rows.length, names: rows.map((r) => r.name) };
 }
+
+/**
+ * A person's parents, for propagating a coverage block. Billy's rule: if a
+ * child is covered by another banker, the parents are covered too — that one
+ * is safe to apply without asking, which is what makes a one-tap "⛔ Covered"
+ * button in Telegram workable.
+ */
+export async function parentsOf(personId: number): Promise<{ id: number; fullName: string }[]> {
+  const rows = (await db.execute(sql`
+    SELECT p.id, p.full_name AS "fullName"
+      FROM family_relationships r
+      JOIN people p ON p.id = r.from_person_id
+     WHERE r.type = 'parent' AND r.to_person_id = ${personId}
+       AND p.merged_into_id IS NULL
+       AND NOT EXISTS (SELECT 1 FROM person_blocks pb WHERE pb.person_id = p.id)
+  `)).rows as { id: number; fullName: string }[];
+  return rows;
+}
+
+/**
+ * Block every named person (creating the `people` row if the name is new) and
+ * propagate to their parents. Returns what happened, so the caller can say so
+ * rather than claiming a silent success.
+ */
+export async function blockByNames(
+  names: string[],
+  reason?: string | null,
+  coveredBy?: string | null,
+): Promise<{ blocked: { name: string; parents: string[] }[]; skipped: string[] }> {
+  const blocked: { name: string; parents: string[] }[] = [];
+  const skipped: string[] = [];
+  for (const raw of names) {
+    const name = (raw ?? "").trim();
+    if (name.length < 2) continue;
+    const [existing] = (await db.execute(sql`
+      SELECT id FROM people WHERE lower(full_name) = lower(${name}) AND merged_into_id IS NULL LIMIT 1
+    `)).rows as { id: number }[];
+    if (!existing) { skipped.push(name); continue; }
+    const parents = await parentsOf(existing.id);
+    await blockPersons(existing.id, parents.map((p) => p.id), reason ?? null, coveredBy ?? null);
+    blocked.push({ name, parents: parents.map((p) => p.fullName) });
+  }
+  return { blocked, skipped };
+}
