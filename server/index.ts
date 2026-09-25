@@ -25,6 +25,9 @@ declare module "http" {
 
 app.use(
   express.json({
+    // Business card photos are posted as data URLs, so the default 100kb cap
+    // is far too small. The scanner itself rejects anything over ~6MB/image.
+    limit: process.env.JSON_BODY_LIMIT || "16mb",
     verify: (req, _res, buf) => {
       req.rawBody = buf;
     },

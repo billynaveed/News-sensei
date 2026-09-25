@@ -17,6 +17,7 @@ import SavedLeadsPage from "@/pages/saved-leads";
 import IpoFilingsPage from "@/pages/ipo-filings";
 import LifestyleLeadsPage from "@/pages/lifestyle-leads";
 import ContactsPage from "@/pages/contacts";
+import ScanPage from "@/pages/scan";
 import FeedbackPage from "@/pages/feedback";
 import FamiliesPage from "@/pages/families";
 import FamilyDetailPage from "@/pages/family-detail";
@@ -28,6 +29,7 @@ function Router() {
     <Switch>
       <Route path="/" component={Dashboard} />
       <Route path="/contacts" component={ContactsPage} />
+      <Route path="/scan" component={ScanPage} />
       <Route path="/families" component={FamiliesPage} />
       <Route path="/families/:id" component={FamilyDetailPage} />
       <Route path="/people/:id" component={PersonPage} />

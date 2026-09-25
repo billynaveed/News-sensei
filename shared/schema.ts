@@ -645,6 +645,22 @@ export const contactMeta = pgTable("contact_meta", {
   status: text("status").notNull().$type<"active" | "saved" | "muted" | "deleted">().default("active"),
   remindAt: timestamp("remind_at"),
   notes: text("notes"),
+  // Contact details, mostly filled by the business card scanner. Phones are
+  // stored in E.164 so WhatsApp/dialler links work without further cleaning.
+  phoneMobile: text("phone_mobile"),
+  phoneOffice: text("phone_office"),
+  phoneOther: text("phone_other"),
+  jobTitle: text("job_title"),
+  companyName: text("company_name"),
+  linkedinUrl: text("linkedin_url"),
+  website: text("website"),
+  address: text("address"),
+  /** Honorific as printed ("Tan Sri Dato'"), kept out of people.full_name. */
+  honorific: text("honorific"),
+  /** Name in the card's other script, e.g. 林国泰. */
+  nativeName: text("native_name"),
+  /** The business_cards row this contact was created from, if any. */
+  cardId: varchar("card_id"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });
@@ -753,3 +769,41 @@ export const pipelinePromptVersions = pgTable("pipeline_prompt_versions", {
   keyVersionUnique: uniqueIndex("pipeline_prompt_versions_key_version_uq").on(t.key, t.version),
 }));
 export type PipelinePromptVersion = typeof pipelinePromptVersions.$inferSelect;
+
+// ---------------------------------------------------------------------------
+// Business cards. One row per scanned card: the images, exactly what the
+// vision model returned (for audit and re-parse), and the normalised result
+// the review screen edits. A card stays in the queue until it is saved, so a
+// failed parse is visible rather than silently dropped.
+// ---------------------------------------------------------------------------
+export const businessCards = pgTable("business_cards", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  /** Set when the card has been saved as a contact. */
+  personId: integer("person_id"),
+  frontImage: text("front_image"),
+  backImage: text("back_image"),
+  /** Verbatim model output, so a re-parse never needs the LLM again for audit. */
+  rawExtraction: jsonb("raw_extraction"),
+  /** The normalised ParsedCard the UI edits. */
+  parsed: jsonb("parsed"),
+  /** Per-field confidence 0-1 from the model, for the amber highlights. */
+  confidence: jsonb("confidence"),
+  status: text("status").notNull().$type<"parsed" | "needs_review" | "saved" | "failed">().default("parsed"),
+  source: text("source").notNull().default("web"),
+  /** "Where we met" — the Telegram caption or the web field. */
+  eventNote: text("event_note"),
+  /** Groups the cards from one multi-photo upload. */
+  batchId: varchar("batch_id"),
+  /** Existing people this card might duplicate, as [{id, fullName, reason}]. */
+  duplicates: jsonb("duplicates"),
+  /** Company website / LinkedIn found after the parse; blank when unverified. */
+  enrichment: jsonb("enrichment"),
+  model: text("model"),
+  error: text("error"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
+}, (table) => ({
+  statusIdx: index("idx_business_cards_status").on(table.status),
+}));
+export type BusinessCard = typeof businessCards.$inferSelect;
+export type InsertBusinessCard = typeof businessCards.$inferInsert;

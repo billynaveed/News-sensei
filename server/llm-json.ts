@@ -54,6 +54,12 @@ export interface JsonStageOptions {
    * strict object mode can push a model into wrapping the array in an object.
    */
   jsonMode?: boolean;
+  /**
+   * Data URLs or https URLs of images to send alongside the prompt, for the
+   * vision-capable models. The gateway takes OpenAI's content-part shape
+   * unchanged, so this works for both gemini-* and claude-* ids.
+   */
+  images?: string[];
 }
 
 /** Issue one completion and return the raw reply text (empty string if none). */
@@ -65,7 +71,15 @@ async function requestJson(opts: JsonStageOptions, prompt: string): Promise<stri
         ...(opts.systemPrompt !== undefined
           ? [{ role: "system" as const, content: opts.systemPrompt }]
           : []),
-        { role: "user" as const, content: prompt },
+        {
+          role: "user" as const,
+          content: opts.images?.length
+            ? [
+                { type: "text" as const, text: prompt },
+                ...opts.images.map((url) => ({ type: "image_url" as const, image_url: { url } })),
+              ]
+            : prompt,
+        },
       ],
       ...(opts.maxTokens !== undefined ? { max_completion_tokens: opts.maxTokens } : {}),
       ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),

@@ -7,6 +7,7 @@ import { upsertExample } from './pipeline-examples';
 import { muteByNames } from './contacts';
 import { storage } from './storage';
 import { db } from './db';
+import { handleCardCallback, handleCardPhoto, isCardMessage } from './telegram-cards';
 
 /** Whether the bot is operating in webhook mode (true) or polling mode (false) */
 let webhookMode = false;
@@ -130,6 +131,11 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
         }
       }
 
+      // Business card buttons (save / re-read / discard).
+      if (await handleCardCallback(callbackData, chatId, callbackQueryId, callbackQuery.message?.message_thread_id)) {
+        return;
+      }
+
       // Handle research save callback
       if (callbackData.startsWith('save_')) {
         const researchId = callbackData.substring(5); // Remove 'save_' prefix
@@ -137,6 +143,12 @@ export async function handleUpdate(update: TelegramUpdate): Promise<void> {
         return;
       }
 
+      return;
+    }
+
+    // A photo (or an image sent as a file) is a business card to scan.
+    if (isCardMessage(update.message)) {
+      await handleCardPhoto(update.message!);
       return;
     }
 

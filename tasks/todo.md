@@ -4,6 +4,67 @@ Current session task list with checkable progress items.
 
 ---
 
+## 2026-09-25 — Business card scanner ✅ shipped (v1)
+
+**Trigger:** Billy asked for a smart scanner that adds the "+" and understands international
+dialling conventions, fixes ALL-CAPS to proper case, looks up the company, and does both
+single and batch capture — "think about how we can use AI".
+
+**Research (Sept 2026, 12 apps):** CamCard, ABBYY, Covve, HiHello, Haystack, Sansan/Eight,
+ScanBizCards, Wantedly People, Blinq, Popl, Habsy, Card2Gold. They converge on batch capture,
+both sides, bilingual cards, enrichment, dedupe, one-tap save, "where we met", reminders.
+**Nobody documents** (a) E.164 normalisation with the country inferred from the card plus the
+SEA labels (DID/HP/M/O/F/ext), or (b) SEA name handling (Tan Sri/Dato'/Dr, Chinese surname
+order, ALL CAPS without breaking McDonald/d'Souza/DBS). Sansan only gets there with humans.
+That gap is the wedge. Design: `docs/plans/2026-09-25-business-card-scanner-design.md`.
+
+### Shipped
+- [x] `server/card-normalize.ts` — PURE, 100+ assertions. Phones→E.164 via libphonenumber-js/max
+  (country order: explicit + → card address → sibling number → SG default), label→typed slot,
+  extensions (ext/x/#); honorific split (Tan Sri, Dato' Seri, Datuk, Khun, Haji, Dr…);
+  Title Case that preserves McDonald/MacLeod/O'Brien/d'Souza/bin/binti/a-l/van der and leaves
+  deliberate mixed case alone; Chinese/Thai script untouched and word order never reordered;
+  company + title casing with a SEA dictionary (Pte Ltd, Sdn Bhd, PT/Tbk, DBS/UOB/OCBC/CIMB);
+  email/url/LinkedIn validation that BLANKS rather than guesses; RFC 6350 vCard 3.0
+- [x] `server/card-scanner.ts` — gemini-2.5-flash vision (claude-sonnet-4 fallback + "re-read"),
+  prompt transcribes verbatim and never tidies; dedupe by email/E.164 phone (conclusive → merge)
+  and by name (suggestion); enrichment (company site, LinkedIn) that only accepts a hit whose
+  domain/URL contains the company token or surname; failures stored as `failed` rows, never dropped
+- [x] `shared/schema.ts` — `business_cards` table (images, raw + parsed + confidence, duplicates,
+  status, batchId, eventNote); `contact_meta` gains phone_mobile/office/other, job_title,
+  company_name, linkedin_url, website, address, honorific, native_name, card_id
+- [x] `server/routes-cards.ts` — scan, scan-batch (≤25), list+counts, get, reparse, save, delete,
+  vcard download. `express.json` limit raised to 16mb for data-URL images
+- [x] Telegram: photo/document/caption/media_group on `TelegramUpdate`, `getTelegramFilePath` +
+  `downloadTelegramFileAsDataUrl` + `sendTelegramDocument` (all new); `server/telegram-cards.ts`
+  handles a photo (or an album, debounced 2.5s, one card per photo) → parsed contact + Save /
+  Fix / Re-read / Discard buttons → `.vcf` document to tap-save to the phone
+- [x] `client/src/pages/scan.tsx` + sidebar entry — camera capture, drag-drop batch, client-side
+  downscale to 1600px, queue with status tabs, review form with amber rings on low-confidence
+  fields, duplicate banner, vCard download. Deep link `/scan?card=<id>` from the Telegram Fix button
+- [x] **Bug found and fixed en route:** Telegram polling never requested `callback_query`
+  (`allowed_updates` was left at a stale list from an old setWebhook), so EVERY inline button —
+  card actions and the existing lead Save/Dismiss/Mute — was silently dead. Now sent explicitly.
+  Also cleared a stale orphan process that had been blocking polling since 2026-09-24 12:47.
+
+### Verified
+- `npm run check` clean; `npm test` 228/228 (new `tests/card-normalize.test.ts`)
+- Two synthetic cards (ALL-CAPS SG + mixed-case MY) end to end in ~2.5s each:
+  "TAN SRI DATO' LIM KOK THAY" → honorific "Tan Sri Dato'" + name "Lim Kok Thay" + 林国泰;
+  DID 6225 1234 ext 205 → +6562251234 x205 office; HP → +6591234567 mobile; F → fax;
+  MY card with no country code → +60321181118 / +60123456789 from the KL address
+- Live endpoints: scan, batch (2 cards, 18s), vCard download, save → contact_meta + company link;
+  duplicate by email caught on a re-scan; invalid/empty input rejected. Test rows cleaned up
+- Scan page screenshotted at desktop and 430px mobile width
+
+### Deferred to v2 (not built)
+- [ ] Drafted follow-up message (email/WhatsApp) from the card + "where we met" context
+- [ ] Follow-up reminders on a scanned contact (contact_meta.remind_at already exists)
+- [ ] Google Contacts OAuth sync (vCard covers the phone today)
+- [ ] QR / LinkedIn-QR / vCard decode in the same scanner (younger founders hand over a QR)
+- [ ] Job-change alerts on saved contacts (Eight/Sansan's killer feature)
+- [ ] Offline capture with later sync
+
 ## 2026-09-19 — Family trees: pass 2 + dedupe ✅ shipped; renderer + blocking planned
 
 **Trigger:** Billy: "it didn't seem to be crawling properly and the family tree as a visual is
