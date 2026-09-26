@@ -75,7 +75,10 @@ hand-off was missing and the vCard was a bare download icon.
   example and the model simply echoed it every time. A non-trivial example plus "MEASURE it
   from this photo — the numbers above are only an example of the format" fixed it: Billy's
   card on a wooden table now reports {x:0.09, y:0.29, w:0.81, h:0.43}
-- [ ] Deskew (rotating a card photographed at an angle) — still open
+- [ ] Deskew (rotating a card photographed at an angle). NOT DONE ON PURPOSE: the crop
+  already removes the desk, and the vision model reads a tilted card fine — every test card
+  parsed at an angle. Real deskew needs corner detection plus a perspective transform, i.e.
+  a native image dependency, for a cosmetic gain. Revisit only if a tilted card misreads.
 
 ## 2026-09-25 — Business card scanner ✅ shipped (v1)
 
@@ -142,7 +145,10 @@ That gap is the wedge. Design: `docs/plans/2026-09-25-business-card-scanner-desi
 - [x] Bug caught in testing: the digest read `TELEGRAM_CHAT_ID` from the environment, which
   is not where this app keeps it — every other feature reads `settings.telegramChatId`, so
   the digest would have silently sent nothing forever
-- [ ] Google Contacts OAuth sync (vCard covers the phone today)
+- [ ] Google Contacts OAuth sync. BLOCKED ON BILLY: needs a Google Cloud project, an OAuth
+  consent screen and a client ID/secret, which only the account owner can create. The vCard
+  hand-off already puts a contact on the phone, so this is convenience, not capability.
+  Say the word and I will do the code side once the credentials exist.
 - [x] QR / vCard / MECARD / LinkedIn-QR decode — `client/src/lib/card-qr.ts` decodes in the
   BROWSER (canvas already has the pixels, so no server image-decoding dependency) and the
   payload is folded over the model's reading in `applyQrHint`. A vCard QR is EXACT data —
@@ -160,7 +166,11 @@ That gap is the wedge. Design: `docs/plans/2026-09-25-business-card-scanner-desi
   gets one shot at "congratulations on the new role". Nothing is written to the contact
   automatically; Billy confirms. **Verified on a real contact:** the card said "Treasurer &
   Director" and the watch found "Vice Chairperson and Treasurer" with a source URL
-- [ ] Offline capture with later sync
+- [ ] Offline capture with later sync. DEFERRED, with a reason: it needs a service worker
+  plus an IndexedDB queue, and a service worker on a Vite app is the classic way to serve
+  someone a stale bundle for weeks. The Telegram path already covers the real case — the bot
+  queues the photo on the phone and delivers it when signal returns — so the gain is small
+  and the deploy risk is not.
 
 ## 2026-09-19 — Family trees: pass 2 + dedupe ✅ shipped; renderer + blocking planned
 
