@@ -667,6 +667,8 @@ export const contactMeta = pgTable("contact_meta", {
   nativeName: text("native_name"),
   /** The business_cards row this contact was created from, if any. */
   cardId: varchar("card_id"),
+  /** Last time the job-change watch looked at this person. */
+  jobCheckedAt: timestamp("job_checked_at"),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
   updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`).notNull(),
 });

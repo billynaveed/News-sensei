@@ -21,6 +21,7 @@ import {
 } from "./card-scanner";
 import { vcardFilename } from "./card-normalize";
 import { draftFollowUp, listDueFollowUps, runFollowUpDigest, setFollowUp } from "./follow-ups";
+import { runJobChangeCheck } from "./job-changes";
 import type { ParsedCard } from "./card-normalize";
 
 export function registerCardRoutes(app: Express): void {
@@ -190,6 +191,16 @@ export function registerCardRoutes(app: Express): void {
     } catch (error) {
       console.error("Error listing follow-ups:", error);
       res.status(500).json({ error: "Failed to list follow-ups" });
+    }
+  });
+
+  /** Run the job-change watch now (the cron does this daily). */
+  app.post("/api/job-changes/run", async (_req, res) => {
+    try {
+      res.json(await runJobChangeCheck("manual"));
+    } catch (error) {
+      console.error("Error running job-change check:", error);
+      res.status(500).json({ error: "Failed to run the job-change check" });
     }
   });
 

@@ -152,7 +152,14 @@ That gap is the wedge. Design: `docs/plans/2026-09-25-business-card-scanner-desi
   Verified end to end: jsQR read the code off a generated card and recovered
   "Khun Dhanin Chearavanont", both phones with correct slots, email and website.
   Telegram-sourced photos have no browser, so those still use the vision model
-- [ ] Job-change alerts on saved contacts (Eight/Sansan's killer feature)
+- [x] Job-change alerts — `server/job-changes.ts`. A daily cron checks 8 saved contacts
+  (longest-unchecked first, re-check every 30 days, background search budget, blocked people
+  skipped), asks whether the role on file still holds, and Telegrams anything that moved with
+  the source link. The prompt defaults to "no change": a repeated profile page, a reworded
+  title, or a namesake are explicitly NOT changes, and low confidence is dropped — a banker
+  gets one shot at "congratulations on the new role". Nothing is written to the contact
+  automatically; Billy confirms. **Verified on a real contact:** the card said "Treasurer &
+  Director" and the watch found "Vice Chairperson and Treasurer" with a source URL
 - [ ] Offline capture with later sync
 
 ## 2026-09-19 — Family trees: pass 2 + dedupe ✅ shipped; renderer + blocking planned
@@ -241,8 +248,7 @@ upsert), ~15 overlapping seed families sharing a patriarch. `person_blocks` is s
   founder, blocks them AND their parents automatically (the one propagation safe to apply
   unasked), then replies naming exactly who was blocked and who is not in Sensei yet —
   a silent block would be worse than none
-- [ ] Telegram alert buttons: "⛔ Blocked" on a lead alert → block the named founder, reply
-  with the propagated relatives so Billy can confirm parents
+- [x] Telegram alert buttons: "⛔ Covered" on a lead alert — shipped 2026-09-25 (see above)
 - [x] Weekly note carries a coverage line: who was marked covered this week and how many
   relatives were blocked with them ("No new coverage conflicts this week." when none)
 - [x] Pipeline: a covered lead still shows with the ⛔ badge (Billy's 2026-09-02 rule), and

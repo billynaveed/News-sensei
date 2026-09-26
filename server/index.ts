@@ -10,6 +10,7 @@ import { setWebhook, deleteWebhook } from "./telegram";
 import { startScheduler, stopScheduler } from "./scheduler";
 import { startFamilyResearch, stopFamilyResearch } from "./family-research";
 import { startFollowUps, stopFollowUps } from "./follow-ups";
+import { startJobChanges, stopJobChanges } from "./job-changes";
 import { startHealthMonitor, stopHealthMonitor } from "./health-monitor";
 import { startWeeklyNote, stopWeeklyNote } from "./weekly-note";
 
@@ -150,6 +151,7 @@ app.use((req, res, next) => {
       startScheduler().catch(err => log(`Failed to start scheduler: ${err}`, "error"));
       startFamilyResearch();
       startFollowUps();
+      startJobChanges();
       startHealthMonitor();
       startWeeklyNote();
     },
