@@ -770,3 +770,33 @@ export function vcardFilename(card: ParsedCard): string {
   const base = (card.fullName || "contact").normalize("NFKD").replace(/[^\w]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase();
   return `${base || "contact"}.vcf`;
 }
+
+// ---------------------------------------------------------------------------
+// vCard links that work on a phone
+// ---------------------------------------------------------------------------
+
+/**
+ * A phone opening a .vcf link is a fresh, cookie-less request as often as not
+ * — a new tab, a link handed to the Contacts importer, a tap from a message.
+ * Requiring the web session there produced a 401 and a blank page instead of
+ * a contact, so the vCard URL carries its own unguessable token derived from
+ * the card id.
+ *
+ * It grants read access to ONE card's contact details and nothing else, and
+ * it changes if the signing secret changes.
+ */
+export function vcardToken(cardId: string, secret: string): string {
+  // Imported lazily so this module stays usable in the browser bundle.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { createHmac } = require("crypto") as typeof import("crypto");
+  return createHmac("sha256", `vcard:${secret}`).update(cardId).digest("hex").slice(0, 32);
+}
+
+/** Constant-time-ish comparison so a token cannot be guessed a byte at a time. */
+export function vcardTokenValid(cardId: string, secret: string, given: string | undefined): boolean {
+  if (!given || given.length !== 32) return false;
+  const expected = vcardToken(cardId, secret);
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++) diff |= expected.charCodeAt(i) ^ given.charCodeAt(i);
+  return diff === 0;
+}

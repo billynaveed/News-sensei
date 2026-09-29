@@ -32,8 +32,9 @@ import {
   Loader2,
   Maximize2,
   RefreshCw,
-  Smartphone,
   ScanLine,
+  Send,
+  Smartphone,
   Trash2,
   Upload,
   UserCheck,
@@ -89,6 +90,8 @@ interface BusinessCard {
   eventNote: string | null;
   model: string | null;
   error: string | null;
+  /** Tokenised .vcf link that works without a session — safe to open on a phone. */
+  vcardUrl?: string;
   createdAt: string;
 }
 
@@ -225,12 +228,14 @@ function ReviewPanel({
         eventNote: note || null,
         ...(conclusive ? { mergeIntoPersonId: conclusive.personId } : {}),
       });
-      return (await res.json()) as { personId: number; fullName: string };
+      return (await res.json()) as { personId: number; fullName: string; vcardUrl: string };
     },
     onSuccess: (data) => {
-      // Deliberately NOT clearing the panel: saving writes to Sensei, it does
-      // not put anything on the phone, and a card that vanished left no route
-      // to the address book.
+      // One button, both destinations. Saving writes the contact to Sensei
+      // and immediately hands the .vcf to the phone, which is what opens the
+      // "Add Contact" sheet on iOS. Two buttons meant people saved to Sensei
+      // and assumed their phone had it.
+      if (data.vcardUrl) window.location.href = data.vcardUrl;
       onSaved(data);
     },
     onError: (e: Error) =>
@@ -373,7 +378,7 @@ function ReviewPanel({
             ) : (
               <UserCheck className="mr-1.5 h-4 w-4" />
             )}
-            {conclusiveDup ? "Merge & save" : "Save contact"}
+            {conclusiveDup ? "Merge & save to phone" : "Save to Sensei + phone"}
           </Button>
           <Button
             variant="outline"
@@ -390,12 +395,7 @@ function ReviewPanel({
             )}
           </Button>
           <Button variant="outline" size="icon" title="Contact card for your phone (.vcf)" asChild>
-            <a
-              href={`/api/cards/${card.id}/vcard`}
-              target="_blank"
-              rel="noopener noreferrer"
-              data-testid="link-card-vcard"
-            >
+            <a href={card.vcardUrl ?? `/api/cards/${card.id}/vcard`} data-testid="link-card-vcard">
               <Smartphone className="h-4 w-4" />
             </a>
           </Button>
@@ -638,7 +638,7 @@ export default function ScanPage() {
   const [eventNote, setEventNote] = useState("");
   const [dragging, setDragging] = useState(false);
   const [zoomed, setZoomed] = useState<string | null>(null);
-  const [justSaved, setJustSaved] = useState<{ cardId: string; personId: number; fullName: string } | null>(null);
+  const [justSaved, setJustSaved] = useState<{ cardId: string; personId: number; fullName: string; vcardUrl?: string } | null>(null);
   const [reminderDays, setReminderDays] = useState<number | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<HTMLInputElement>(null);
@@ -671,6 +671,22 @@ export default function ScanPage() {
     () => cards.find((c) => c.id === selectedId) ?? cards[0] ?? null,
     [cards, selectedId],
   );
+
+  // Telegram is the one route that reliably opens Contacts in a single tap,
+  // whatever iOS decides to do with a .vcf in Safari.
+  const sendToTelegram = useMutation({
+    mutationFn: async (cardId: string) => {
+      const res = await apiRequest("POST", `/api/cards/${cardId}/send-to-telegram`, {});
+      return (await res.json()) as { sent: boolean };
+    },
+    onSuccess: (r) =>
+      toast(
+        r.sent
+          ? { title: "Sent to Telegram", description: "Tap the file there to add them to your phone." }
+          : { title: "Not sent", description: "Telegram is not configured in Settings.", variant: "destructive" },
+      ),
+    onError: (e: Error) => toast({ title: "Not sent", description: e.message, variant: "destructive" }),
+  });
 
   const refresh = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["/api/cards"] });
@@ -851,14 +867,23 @@ export default function ScanPage() {
               <span className="font-medium">{justSaved.fullName} saved to Sensei</span>
             </div>
             <p className="mx-auto max-w-md text-sm text-muted-foreground">
-              That saved them in Sensei only — it does not touch your phone. Open the contact
-              card below and iPhone will offer to add them to Contacts.
+              Saved to Sensei, and the contact card was handed to your phone — iPhone should
+              have offered to add them. If it did not, open it again below.
             </p>
             <div className="flex flex-wrap items-center justify-center gap-2">
-              <Button asChild size="lg" data-testid="button-add-to-phone">
-                <a href={`/api/cards/${justSaved.cardId}/vcard`} target="_blank" rel="noopener noreferrer">
-                  <Smartphone className="mr-2 h-4 w-4" /> Add to my phone
+              <Button asChild size="lg" variant="outline" data-testid="button-add-to-phone">
+                <a href={justSaved.vcardUrl ?? `/api/cards/${justSaved.cardId}/vcard`}>
+                  <Smartphone className="mr-2 h-4 w-4" /> Open contact card again
                 </a>
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => sendToTelegram.mutate(justSaved.cardId)}
+                disabled={sendToTelegram.isPending}
+                data-testid="button-send-telegram"
+              >
+                {sendToTelegram.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />}
+                Send to my Telegram
               </Button>
               <Button variant="outline" asChild>
                 <a href={`/people/${justSaved.personId}`} data-testid="link-open-person">Open in Sensei</a>
@@ -890,8 +915,7 @@ export default function ScanPage() {
               )}
             </div>
             <p className="text-xs text-muted-foreground">
-              Scanning through the Telegram bot sends this card straight to your phone, so there
-              it is a single tap.
+              Scanning through the Telegram bot does the same thing in one tap.
             </p>
           </CardContent>
         </Card>

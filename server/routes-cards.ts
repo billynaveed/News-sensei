@@ -19,9 +19,13 @@ import {
   scanCard,
   validateImage,
 } from "./card-scanner";
-import { vcardFilename } from "./card-normalize";
+import { vcardFilename, vcardToken } from "./card-normalize";
+
+const APP_PASSWORD = process.env.APP_PASSWORD || "openup";
 import { draftFollowUp, listDueFollowUps, runFollowUpDigest, setFollowUp } from "./follow-ups";
 import { runJobChangeCheck } from "./job-changes";
+import { storage } from "./storage";
+import { sendTelegramDocument } from "./telegram";
 import type { ParsedCard } from "./card-normalize";
 
 export function registerCardRoutes(app: Express): void {
@@ -46,7 +50,7 @@ export function registerCardRoutes(app: Express): void {
         // QR is exact data, so it overrides whatever the model reads.
         qr: req.body?.qr ?? null,
       });
-      res.json(card);
+      res.json(withVcardUrl(card));
     } catch (error) {
       console.error("Error scanning card:", error);
       res.status(500).json({ error: (error as Error).message || "Failed to scan card" });
@@ -97,12 +101,18 @@ export function registerCardRoutes(app: Express): void {
     }
   });
 
+  /** Add the phone-ready vCard link to a card (or a list of them). */
+  const withVcardUrl = <T extends { id?: string } | null>(card: T): T => {
+    if (!card?.id) return card;
+    return { ...card, vcardUrl: `/api/cards/${card.id}/vcard?t=${vcardToken(card.id, APP_PASSWORD)}` } as T;
+  };
+
   /** The review queue. `?status=parsed|needs_review|failed|saved|all`. */
   app.get("/api/cards", async (req, res) => {
     try {
       const status = typeof req.query.status === "string" ? req.query.status : undefined;
       const [cards, counts] = await Promise.all([listCards(status), cardCounts()]);
-      res.json({ cards, counts });
+      res.json({ cards: cards.map(withVcardUrl), counts });
     } catch (error) {
       console.error("Error listing cards:", error);
       res.status(500).json({ error: "Failed to list cards" });
@@ -140,7 +150,8 @@ export function registerCardRoutes(app: Express): void {
         ...(typeof eventNote === "string" ? { eventNote } : {}),
         ...(typeof mergeIntoPersonId === "number" ? { mergeIntoPersonId } : {}),
       };
-      res.json(await saveCard(req.params.id, edits));
+      const saved = await saveCard(req.params.id, edits);
+      res.json({ ...saved, vcardUrl: `/api/cards/${req.params.id}/vcard?t=${vcardToken(req.params.id, APP_PASSWORD)}` });
     } catch (error) {
       console.error("Error saving card:", error);
       res.status(400).json({ error: (error as Error).message || "Failed to save card" });
@@ -214,6 +225,34 @@ export function registerCardRoutes(app: Express): void {
   });
 
   /**
+   * Push the contact card to Telegram as a document. Tapping a .vcf in
+   * Telegram opens Contacts directly, which is the most reliable route onto
+   * an iPhone — Safari's own handling of a .vcf varies by iOS version.
+   */
+  app.post("/api/cards/:id/send-to-telegram", async (req, res) => {
+    try {
+      const result = await cardVCard(req.params.id);
+      if (!result) return res.status(404).json({ error: "Card not found or not parsed yet" });
+      const settings = await storage.getSettings();
+      const chatId = settings?.telegramChatId;
+      if (!settings?.telegramEnabled || !chatId) {
+        return res.status(400).json({ error: "Telegram is not configured in Settings" });
+      }
+      const ok = await sendTelegramDocument(
+        chatId,
+        result.vcf,
+        vcardFilename(result.parsed),
+        `📇 <b>${result.parsed.fullName}</b> — tap to add to your phone.`,
+        settings.telegramTopicId ?? undefined,
+      );
+      res.json({ sent: ok });
+    } catch (error) {
+      console.error("Error sending card to Telegram:", error);
+      res.status(500).json({ error: "Failed to send to Telegram" });
+    }
+  });
+
+  /**
    * The contact as a .vcf the phone can import.
    *
    * Served INLINE by default: on iOS, `attachment` drops the file into Files
@@ -225,12 +264,13 @@ export function registerCardRoutes(app: Express): void {
     try {
       const result = await cardVCard(req.params.id);
       if (!result) return res.status(404).json({ error: "Card not found or not parsed yet" });
-      const asAttachment = req.query.download === "1";
+      // Attachment, not inline. iOS shows an inline text/vcard as a blank
+      // page; served as a named .vcf attachment it hands the file to
+      // Contacts, which is the "Add Contact" sheet Billy expects.
       res.setHeader("Content-Type", "text/vcard; charset=utf-8");
-      res.setHeader(
-        "Content-Disposition",
-        `${asAttachment ? "attachment" : "inline"}; filename="${vcardFilename(result.parsed)}"`,
-      );
+      res.setHeader("Content-Disposition", `attachment; filename="${vcardFilename(result.parsed)}"`);
+      // A contact card is per-person data; never let a proxy hold on to it.
+      res.setHeader("Cache-Control", "no-store, private");
       res.send(result.vcf);
     } catch (error) {
       console.error("Error building vCard:", error);

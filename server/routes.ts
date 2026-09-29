@@ -15,6 +15,7 @@ import { registerPeopleRoutes } from "./routes-people";
 import { registerPromptRoutes } from "./routes-prompts";
 import { registerFamilyRoutes } from "./routes-families";
 import { registerCardRoutes } from "./routes-cards";
+import { vcardTokenValid } from "./card-normalize";
 import { seedPromptsFromSettings } from "./prompts";
 import { buildWeeklyNote, sendWeeklyNoteNow } from "./weekly-note";
 import { getSearchStatus } from "./web-search";
@@ -108,6 +109,13 @@ async function registrationAllowed(req: Request): Promise<boolean> {
 async function authMiddleware(req: Request, res: Response, next: NextFunction) {
   // Skip auth routes, telegram webhook, and browser ingest
   if (req.path.startsWith("/api/auth/") || req.path === "/api/telegram-webhook" || req.path === "/api/browser-ingest") {
+    return next();
+  }
+  // A vCard link is opened by the PHONE, often in a fresh tab with no session
+  // cookie — requiring one there returned 401 and a blank page instead of a
+  // contact. The URL carries its own token, scoped to that one card.
+  const vcardMatch = req.path.match(/^\/api\/cards\/([^/]+)\/vcard$/);
+  if (vcardMatch && vcardTokenValid(vcardMatch[1], APP_PASSWORD, String(req.query.t ?? ""))) {
     return next();
   }
   // Only protect /api/* routes

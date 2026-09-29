@@ -80,6 +80,32 @@ hand-off was missing and the vCard was a bare download icon.
   parsed at an angle. Real deskew needs corner detection plus a perspective transform, i.e.
   a native image dependency, for a cosmetic gain. Revisit only if a tilted card misreads.
 
+## 2026-09-29 — "Save to Phone" did nothing; two buttons where there should be one ✅
+
+**Billy:** "When I click Save to Phone it just brings up a Sensei web page and doesn't
+actually save it... it seems to be a two-button solution... when I scan the card and I say
+Save, it should only save to Sensei AND to my phone."
+
+**Root cause (measured, not guessed):** the vCard URL sat behind the web session. Opened on a
+phone — a new tab, a link handed to another app — the request carries no `ns_auth` cookie, so
+it 401'd, and a 401 in a fresh tab is what looked like "a Sensei web page". It also went out
+as `Content-Disposition: inline`, which iOS renders as a blank page rather than handing the
+file to Contacts (my own earlier change; wrong call).
+
+- [x] The vCard URL now carries its own HMAC token derived from the card id
+  (`vcardToken`/`vcardTokenValid` in `card-normalize.ts`), scoped to ONE card, and the auth
+  middleware lets a valid token through. Verified: works with no cookie, 401 on a bad or
+  missing token
+- [x] Served as `attachment` with a real `.vcf` filename + `Cache-Control: no-store, private`
+- [x] ONE button. "Save to Sensei + phone" writes the contact AND navigates to the vCard in
+  the same action. Two buttons meant saving to Sensei and assuming the phone had it
+- [x] `POST /api/cards/:id/send-to-telegram` + a "Send to my Telegram" button, because
+  tapping a .vcf in Telegram opens Contacts in one tap on any iOS version — the one delivery
+  path I can be certain about. Verified end to end (`{"sent":true}`)
+- [ ] NOT verified by me: exactly what iOS Safari does with the downloaded .vcf. I can prove
+  the file is correct, reachable without a cookie and typed properly, but I have no iPhone
+  here. If Safari still misbehaves, the Telegram button is the guaranteed route
+
 ## 2026-09-25 — Business card scanner ✅ shipped (v1)
 
 **Trigger:** Billy asked for a smart scanner that adds the "+" and understands international
