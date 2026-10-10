@@ -14,6 +14,7 @@ import "./family-pages.test";
 import "./card-normalize.test";
 import "./family-layout.test";
 import "./card-qr.test";
+import "./follow-up-format.test";
 import { summary } from "./harness";
 
 const failed = summary("All suites");

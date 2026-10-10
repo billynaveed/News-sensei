@@ -13,6 +13,7 @@ import {
   cardVCard,
   deleteCard,
   getCard,
+  listCardHistory,
   listCards,
   reparseCard,
   saveCard,
@@ -22,7 +23,7 @@ import {
 import { vcardFilename, vcardToken } from "./card-normalize";
 
 const APP_PASSWORD = process.env.APP_PASSWORD || "openup";
-import { draftFollowUp, listDueFollowUps, runFollowUpDigest, setFollowUp } from "./follow-ups";
+import { draftFollowUp, listDueFollowUps, listUpcomingFollowUps, runFollowUpDigest, setFollowUp } from "./follow-ups";
 import { runJobChangeCheck } from "./job-changes";
 import { storage } from "./storage";
 import { sendTelegramDocument } from "./telegram";
@@ -119,11 +120,21 @@ export function registerCardRoutes(app: Express): void {
     }
   });
 
+  /** Saved cards, most recently saved first — the scanner's History. */
+  app.get("/api/cards/history", async (_req, res) => {
+    try {
+      res.json({ cards: (await listCardHistory()).map(withVcardUrl) });
+    } catch (error) {
+      console.error("Error listing card history:", error);
+      res.status(500).json({ error: "Failed to load history" });
+    }
+  });
+
   app.get("/api/cards/:id", async (req, res) => {
     try {
       const card = await getCard(req.params.id);
       if (!card) return res.status(404).json({ error: "Card not found" });
-      res.json(card);
+      res.json(withVcardUrl(card));
     } catch (error) {
       console.error("Error fetching card:", error);
       res.status(500).json({ error: "Failed to fetch card" });
@@ -195,10 +206,11 @@ export function registerCardRoutes(app: Express): void {
     }
   });
 
-  /** Everything due now, for the UI and for a manual digest run. */
+  /** Reminders that are due now (the notification bell) and the ones still ahead. */
   app.get("/api/follow-ups", async (_req, res) => {
     try {
-      res.json({ due: await listDueFollowUps() });
+      const [due, upcoming] = await Promise.all([listDueFollowUps(50), listUpcomingFollowUps(20)]);
+      res.json({ due, upcoming });
     } catch (error) {
       console.error("Error listing follow-ups:", error);
       res.status(500).json({ error: "Failed to list follow-ups" });

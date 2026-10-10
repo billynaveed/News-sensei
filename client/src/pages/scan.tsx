@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { useSearch } from "wouter";
+import { Link, useSearch } from "wouter";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -25,10 +25,14 @@ import {
 } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { decodeQrFromDataUrl } from "@/lib/card-qr";
+import type { BusinessCard, ParsedCard } from "@/lib/card-types";
+import { CroppedCard } from "@/components/CroppedCard";
+import { REMINDER_CHOICES, useSetReminder } from "@/lib/follow-ups";
 import {
   AlertTriangle,
   Camera,
   CheckCircle2,
+  History,
   Loader2,
   Maximize2,
   RefreshCw,
@@ -40,60 +44,6 @@ import {
   UserCheck,
   XCircle,
 } from "lucide-react";
-
-// ---------------------------------------------------------------------------
-// Types mirroring server/card-normalize.ts
-// ---------------------------------------------------------------------------
-
-interface NormalizedPhone {
-  e164: string | null;
-  display: string | null;
-  extension: string | null;
-  slot: "mobile" | "office" | "fax" | "other";
-  label: string | null;
-  raw: string;
-  inheritedPrefix?: boolean;
-}
-
-interface ParsedCard {
-  fullName: string;
-  nativeName: string | null;
-  honorific: string | null;
-  suffix: string | null;
-  firstName: string | null;
-  lastName: string | null;
-  jobTitle: string | null;
-  department: string | null;
-  company: string | null;
-  nativeCompany: string | null;
-  phones: NormalizedPhone[];
-  phoneMobile: string | null;
-  phoneOffice: string | null;
-  emails: string[];
-  website: string | null;
-  linkedin: string | null;
-  address: string | null;
-  country: string | null;
-  otherText: string | null;
-  cardBounds: { x: number; y: number; width: number; height: number } | null;
-}
-
-interface BusinessCard {
-  id: string;
-  personId: number | null;
-  frontImage: string | null;
-  parsed: ParsedCard | null;
-  confidence: Record<string, number> | null;
-  duplicates: { personId: number; fullName: string; reason: string }[] | null;
-  status: "parsed" | "needs_review" | "saved" | "failed";
-  source: string;
-  eventNote: string | null;
-  model: string | null;
-  error: string | null;
-  /** Tokenised .vcf link that works without a session — safe to open on a phone. */
-  vcardUrl?: string;
-  createdAt: string;
-}
 
 /** Labels say what to DO, not what state a row is in ("Ready" told nobody anything). */
 const STATUS_BADGE: Record<
@@ -162,38 +112,6 @@ async function fileToDataUrl(file: File, maxEdge = 1600): Promise<string> {
     // HEIC and friends may not decode in-browser; let the server try.
     return original;
   }
-}
-
-/**
- * Show only the card, not the table it was lying on. The model reports the
- * card's rectangle, so the crop is done with CSS over the original image: no
- * re-encoding, and the full photo is still there for audit and for "Enlarge".
- */
-function CroppedCard({
-  src,
-  bounds,
-  className,
-}: {
-  src: string;
-  bounds?: { x: number; y: number; width: number; height: number } | null;
-  className?: string;
-}) {
-  if (!bounds) {
-    return <img src={src} alt="Scanned card" className={`object-cover ${className ?? ""}`} />;
-  }
-  return (
-    <span className={`block overflow-hidden ${className ?? ""}`}>
-      <img
-        src={src}
-        alt="Scanned card"
-        className="h-full w-full object-cover"
-        style={{
-          transform: `scale(${1 / bounds.width}, ${1 / bounds.height}) translate(${-bounds.x * 100}%, ${-bounds.y * 100}%)`,
-          transformOrigin: "top left",
-        }}
-      />
-    </span>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -642,6 +560,7 @@ export default function ScanPage() {
   const [reminderDays, setReminderDays] = useState<number | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<HTMLInputElement>(null);
+  const setReminder = useSetReminder();
 
   // Deep link from the Telegram "Fix" button: /scan?card=<id>
   useEffect(() => {
@@ -706,6 +625,12 @@ export default function ScanPage() {
         });
         return;
       }
+      // A new photo replaces whatever is on screen. Without this the "saved"
+      // hand-off from the previous card stayed up while the next one was
+      // read and queued out of sight, so it looked as if nothing happened.
+      setJustSaved(null);
+      setSelectedId(null);
+      setView("all");
       setUploading((n) => n + list.length);
       try {
         const images = await Promise.all(list.map((f) => fileToDataUrl(f)));
@@ -756,9 +681,16 @@ export default function ScanPage() {
   return (
     <div className="mx-auto max-w-3xl space-y-6 p-6">
       <div>
-        <h1 className="text-2xl font-semibold flex items-center gap-2">
-          <ScanLine className="h-6 w-6" /> Card Scanner
-        </h1>
+        <div className="flex items-center justify-between gap-2">
+          <h1 className="text-2xl font-semibold flex items-center gap-2">
+            <ScanLine className="h-6 w-6" /> Card Scanner
+          </h1>
+          <Button variant="outline" asChild>
+            <Link href="/scan/history" data-testid="link-scan-history">
+              <History className="h-4 w-4 mr-1.5" /> History
+            </Link>
+          </Button>
+        </div>
         <p className="text-sm text-muted-foreground mt-1">
           Photograph a business card and it becomes a contact: numbers in
           international format, names and companies cased properly, duplicates
@@ -829,7 +761,11 @@ export default function ScanPage() {
             accept="image/*"
             capture="environment"
             className="hidden"
-            onChange={(e) => e.target.files && handleFiles(e.target.files)}
+            onChange={(e) => {
+              if (e.target.files) void handleFiles(Array.from(e.target.files));
+              // Clear it, or picking the same file again fires no change event.
+              e.target.value = "";
+            }}
           />
           <input
             ref={fileRef}
@@ -837,7 +773,11 @@ export default function ScanPage() {
             accept="image/*,.heic,.heif"
             multiple
             className="hidden"
-            onChange={(e) => e.target.files && handleFiles(e.target.files)}
+            onChange={(e) => {
+              if (e.target.files) void handleFiles(Array.from(e.target.files));
+              // Clear it, or picking the same file again fires no change event.
+              e.target.value = "";
+            }}
           />
         </CardContent>
       </Card>
@@ -859,7 +799,13 @@ export default function ScanPage() {
         </TabsList>
       </Tabs>
 
-      {justSaved ? (
+      {uploading > 0 ? (
+        <Card data-testid="card-reading">
+          <CardContent className="flex items-center justify-center gap-2 p-10 text-sm text-muted-foreground">
+            <Loader2 className="h-5 w-5 animate-spin" /> Reading the new card{uploading === 1 ? "" : "s"}…
+          </CardContent>
+        </Card>
+      ) : justSaved ? (
         <Card data-testid="card-saved-handoff">
           <CardContent className="space-y-4 p-6 text-center">
             <div className="flex items-center justify-center gap-2 text-emerald-600 dark:text-emerald-400">
@@ -888,6 +834,9 @@ export default function ScanPage() {
               <Button variant="outline" asChild>
                 <a href={`/people/${justSaved.personId}`} data-testid="link-open-person">Open in Sensei</a>
               </Button>
+              <Button onClick={() => cameraRef.current?.click()} data-testid="button-scan-next">
+                <Camera className="mr-2 h-4 w-4" /> Scan next card
+              </Button>
               <Button variant="ghost" onClick={() => setJustSaved(null)} data-testid="button-next-card">
                 Done
               </Button>
@@ -896,22 +845,29 @@ export default function ScanPage() {
                 is offered at the one moment the context is fresh. */}
             <div className="flex flex-wrap items-center justify-center gap-2 border-t pt-3 text-sm">
               <span className="text-muted-foreground">Remind me to follow up in</span>
-              {[1, 3, 7].map((d) => (
+              {REMINDER_CHOICES.map(({ days: d, label }) => (
                 <Button
                   key={d}
                   size="sm"
                   variant={reminderDays === d ? "default" : "outline"}
-                  onClick={() => {
-                    setReminderDays(d);
-                    void apiRequest("POST", `/api/people/${justSaved.personId}/follow-up`, { days: d });
-                  }}
+                  disabled={setReminder.isPending}
+                  onClick={() =>
+                    setReminder.mutate(
+                      { personId: justSaved.personId, days: d },
+                      {
+                        onSuccess: () => setReminderDays(d),
+                        onError: (e: Error) =>
+                          toast({ title: "Reminder not set", description: e.message, variant: "destructive" }),
+                      },
+                    )
+                  }
                   data-testid={`button-remind-${d}`}
                 >
-                  {d === 1 ? "tomorrow" : d === 7 ? "a week" : `${d} days`}
+                  {label}
                 </Button>
               ))}
               {reminderDays !== null && (
-                <span className="text-xs text-emerald-600 dark:text-emerald-400">✓ reminder set</span>
+                <span className="text-xs text-emerald-600 dark:text-emerald-400">✓ reminder set — it will show under the bell</span>
               )}
             </div>
             <p className="text-xs text-muted-foreground">

@@ -462,6 +462,39 @@ export async function listCards(status?: string, limit = 60): Promise<BusinessCa
   return await query.orderBy(desc(businessCards.createdAt)).limit(limit);
 }
 
+export interface CardHistoryEntry {
+  id: string;
+  personId: number | null;
+  parsed: ParsedCard | null;
+  eventNote: string | null;
+  source: string;
+  savedAt: string;
+  remindAt: string | null;
+}
+
+/**
+ * Saved cards, most recently saved first. No images: the list is a log to
+ * scroll through, and sixty inline photos would be a 15MB response. The
+ * detail view fetches the one card it shows.
+ */
+export async function listCardHistory(limit = 200): Promise<CardHistoryEntry[]> {
+  return (await db.execute(sql`
+    SELECT bc.id,
+           bc.person_id  AS "personId",
+           bc.parsed,
+           bc.event_note AS "eventNote",
+           bc.source,
+           -- timestamp columns hold UTC; say so, or the browser reads it as local time.
+           to_char(bc.updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "savedAt",
+           to_char(cm.remind_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "remindAt"
+      FROM business_cards bc
+      LEFT JOIN contact_meta cm ON cm.person_id = bc.person_id
+     WHERE bc.status = 'saved'
+     ORDER BY bc.updated_at DESC
+     LIMIT ${limit}
+  `)).rows as unknown as CardHistoryEntry[];
+}
+
 export async function getCard(cardId: string): Promise<BusinessCard | null> {
   const [card] = await db.select().from(businessCards).where(eq(businessCards.id, cardId));
   return card ?? null;

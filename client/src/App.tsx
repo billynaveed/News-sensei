@@ -7,6 +7,7 @@ import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { HealthBanner } from "@/components/HealthBanner";
+import { NotificationBell } from "@/components/NotificationBell";
 import { LockScreen } from "@/components/lock-screen";
 import { useAuth } from "@/hooks/use-auth";
 import Dashboard from "@/pages/dashboard";
@@ -18,6 +19,7 @@ import IpoFilingsPage from "@/pages/ipo-filings";
 import LifestyleLeadsPage from "@/pages/lifestyle-leads";
 import ContactsPage from "@/pages/contacts";
 import ScanPage from "@/pages/scan";
+import CardHistoryPage from "@/pages/card-history";
 import FeedbackPage from "@/pages/feedback";
 import FamiliesPage from "@/pages/families";
 import FamilyDetailPage from "@/pages/family-detail";
@@ -29,6 +31,7 @@ function Router() {
     <Switch>
       <Route path="/" component={Dashboard} />
       <Route path="/contacts" component={ContactsPage} />
+      <Route path="/scan/history" component={CardHistoryPage} />
       <Route path="/scan" component={ScanPage} />
       <Route path="/families" component={FamiliesPage} />
       <Route path="/families/:id" component={FamilyDetailPage} />
@@ -73,6 +76,7 @@ function App() {
                 <SidebarTrigger data-testid="button-sidebar-toggle" />
                 <div className="flex items-center gap-2">
                   <HealthBanner />
+                  <NotificationBell />
                   <ThemeToggle />
                 </div>
               </header>

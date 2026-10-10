@@ -8,7 +8,8 @@
 
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest } from "@/lib/queryClient";
+import { mailtoUrl, refreshReminders, whatsappUrl } from "@/lib/follow-ups";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
@@ -33,10 +34,15 @@ interface Draft {
 export function FollowUpDraftDialog({
   personId,
   fullName,
+  email,
+  mobile,
   onOpenChange,
 }: {
   personId: number;
   fullName: string;
+  /** When known, the draft opens straight in Mail / WhatsApp, addressed. */
+  email?: string | null;
+  mobile?: string | null;
   onOpenChange: (open: boolean) => void;
 }) {
   const { toast } = useToast();
@@ -58,7 +64,7 @@ export function FollowUpDraftDialog({
       await apiRequest("POST", `/api/people/${personId}/follow-up`, { days });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [`/api/people/${personId}/profile`] });
+      refreshReminders(personId);
       toast({ title: "Reminder set" });
     },
   });
@@ -160,8 +166,22 @@ export function FollowUpDraftDialog({
           </div>
         </div>
 
-        <DialogFooter>
+        <DialogFooter className="flex-wrap gap-2">
           <Button variant="ghost" onClick={() => onOpenChange(false)}>Close</Button>
+          {draft?.channel === "email" && email && (
+            <Button variant="outline" asChild>
+              <a href={mailtoUrl(email, draft.subject, draft.message)} data-testid="link-draft-open-mail">
+                <Mail className="mr-1.5 h-4 w-4" /> Open in Mail
+              </a>
+            </Button>
+          )}
+          {draft?.channel === "whatsapp" && mobile && (
+            <Button variant="outline" asChild>
+              <a href={whatsappUrl(mobile, draft.message)} target="_blank" rel="noreferrer" data-testid="link-draft-open-whatsapp">
+                <MessageCircle className="mr-1.5 h-4 w-4" /> Open in WhatsApp
+              </a>
+            </Button>
+          )}
           <Button onClick={copy} disabled={!draft} data-testid="button-copy-draft">
             {copied ? <Check className="mr-1.5 h-4 w-4" /> : <Copy className="mr-1.5 h-4 w-4" />}
             {copied ? "Copied" : "Copy"}

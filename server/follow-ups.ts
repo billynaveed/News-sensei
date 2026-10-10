@@ -34,10 +34,16 @@ export interface DueContact {
   email: string | null;
   phoneMobile: string | null;
   remindAt: string;
+  /** The scanned card behind this contact, when there is one. */
+  cardId: string | null;
 }
 
-/** Contacts whose reminder has come due and who are not muted or deleted. */
-export async function listDueFollowUps(limit = 20): Promise<DueContact[]> {
+/**
+ * Contacts with a reminder, split by whether it has come due. Muted and
+ * deleted contacts never nag.
+ */
+async function listFollowUps(when: "due" | "upcoming", limit: number): Promise<DueContact[]> {
+  const window = when === "due" ? sql`cm.remind_at <= now()` : sql`cm.remind_at > now()`;
   return (await db.execute(sql`
     SELECT cm.person_id AS "personId",
            p.full_name   AS "fullName",
@@ -46,17 +52,22 @@ export async function listDueFollowUps(limit = 20): Promise<DueContact[]> {
            cm.notes,
            cm.email,
            cm.phone_mobile AS "phoneMobile",
-           cm.remind_at   AS "remindAt"
+           -- timestamp columns hold UTC; say so, or the browser reads it as local time.
+           to_char(cm.remind_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "remindAt",
+           cm.card_id     AS "cardId"
       FROM contact_meta cm
       JOIN people p ON p.id = cm.person_id
      WHERE cm.remind_at IS NOT NULL
-       AND cm.remind_at <= now()
+       AND ${window}
        AND cm.status NOT IN ('deleted', 'muted')
        AND p.merged_into_id IS NULL
      ORDER BY cm.remind_at ASC
      LIMIT ${limit}
   `)).rows as unknown as DueContact[];
 }
+
+export const listDueFollowUps = (limit = 20) => listFollowUps("due", limit);
+export const listUpcomingFollowUps = (limit = 20) => listFollowUps("upcoming", limit);
 
 /** Set or clear a follow-up reminder. `days` of 0 or null clears it. */
 export async function setFollowUp(personId: number, days: number | null): Promise<string | null> {
